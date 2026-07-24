@@ -1,0 +1,30 @@
+name: Feature or product feedback
+description: Suggest an improvement or describe a missing workflow
+title: "[Feedback]: "
+body:
+  - type: textarea
+    id: situation
+    attributes:
+      label: Situation
+      description: What are you trying to observe, preserve, or act on?
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current experience
+      description: What is difficult, unclear, or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the result you need without assuming a particular implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Device type, connector, evidence, action, or UI context that may help.

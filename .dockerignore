@@ -1,0 +1,22 @@
+.venv
+.uv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+*.egg-info
+build
+dist
+.git
+docs/
+samples/
+tests/
+*.md
+LICENSE
+!README.md
+!LICENSE
+
+# Never send private runtime state or credentials to the Docker daemon.
+episode.json
+.env
+data/

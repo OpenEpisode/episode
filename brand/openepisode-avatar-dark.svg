@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">OpenEpisode</title>
+  <defs>
+    <linearGradient id="episode-gradient" x1="40" y1="64" x2="216" y2="192" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00C2C7"/>
+      <stop offset=".52" stop-color="#3D8BFF"/>
+      <stop offset="1" stop-color="#7B5CFF"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="104" fill="#0F1115"/>
+  <g transform="translate(64 64) scale(1.5)">
+    <g fill="none" stroke="url(#episode-gradient)" stroke-linecap="round" stroke-linejoin="round" stroke-width="18">
+      <path d="M201 76a88 88 0 1 0 0 104"/>
+      <path d="M79 87h26c25 0 27 27 49 41"/>
+      <path d="M79 128h122"/>
+      <path d="M79 169h26c25 0 27-27 49-41"/>
+    </g>
+    <g fill="url(#episode-gradient)">
+      <circle cx="79" cy="87" r="10"/>
+      <circle cx="79" cy="128" r="10"/>
+      <circle cx="79" cy="169" r="10"/>
+      <circle cx="154" cy="128" r="11"/>
+    </g>
+  </g>
+</svg>

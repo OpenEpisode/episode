@@ -1,0 +1,133 @@
+{
+  "data_dir": "/var/episode/data",
+  "api_host": "0.0.0.0",
+  "api_port": 8989,
+  "episode_timeout": 30,
+  "log_level": "INFO",
+  "recording": {
+    "post_seconds": 30
+  },
+  "connectors": [
+    {
+      "type": "alarm_server",
+      "enabled": true,
+      "settings": {
+        "name": "Alarm Server",
+        "path": "/alarm"
+      }
+    },
+    {
+      "type": "ftp",
+      "enabled": true,
+      "settings": {
+        "name": "FTP Snapshots",
+        "host": "0.0.0.0",
+        "port": 2121,
+        "username": "episode",
+        "password": "replace-with-a-long-password",
+        "passive_ports": [
+          30000,
+          30009
+        ]
+      }
+    }
+  ],
+  "areas": [
+    {
+      "id": "front-gate",
+      "name": "Front Gate",
+      "location": "Main entrance"
+    },
+    {
+      "id": "driveway",
+      "name": "Driveway",
+      "location": "Side entrance"
+    }
+  ],
+  "devices": [
+    {
+      "id": "cam-front-gate",
+      "name": "Front Gate Camera",
+      "device_type": "hikvision",
+      "area_id": "front-gate",
+      "capabilities": [
+        "onvif",
+        "video",
+        "isapi"
+      ],
+      "ip_address": "192.168.1.100",
+      "username": "admin",
+      "password": "changeme",
+      "configs": {
+        "video": {
+          "protocol": "rtsp",
+          "port": 554,
+          "path": "/Streaming/Channels/101"
+        },
+        "isapi": {
+          "protocol": "http",
+          "port": 80,
+          "path": "/ISAPI/Event/notification/alertStream",
+          "settings": {
+            "ignore_events": [
+              "videoloss"
+            ]
+          }
+        },
+        "onvif": {
+          "protocol": "http",
+          "port": 80,
+          "path": "/onvif/device_service",
+          "settings": {
+            "auth_mode": "digest_wsse",
+            "events_enabled": false
+          }
+        }
+      }
+    },
+    {
+      "id": "cam-driveway",
+      "name": "Driveway Camera",
+      "device_type": "hikvision",
+      "area_id": "driveway",
+      "capabilities": [
+        "onvif",
+        "video",
+        "isapi"
+      ],
+      "ip_address": "192.168.1.101",
+      "username": "admin",
+      "password": "changeme",
+      "configs": {
+        "video": {
+          "protocol": "rtsp",
+          "port": 554,
+          "path": "/Streaming/Channels/101"
+        },
+        "isapi": {
+          "protocol": "http",
+          "port": 80,
+          "path": "/ISAPI/Event/notification/alertStream",
+          "settings": {
+            "ignore_events": [
+              "videoloss"
+            ]
+          }
+        },
+        "onvif": {
+          "protocol": "http",
+          "port": 80,
+          "path": "/onvif/device_service",
+          "settings": {
+            "auth_mode": "digest_wsse"
+          }
+        }
+      }
+    }
+  ],
+  "actions": {
+    "snapshot": {
+      "enabled": false
+    }
+  }
+}

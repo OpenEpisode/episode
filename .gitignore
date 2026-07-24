@@ -1,0 +1,20 @@
+# Local data
+/data/
+
+# Local configuration and environment
+/episode.json
+/.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+/build/
+/dist/
+/.pytest_cache/
+/.ruff_cache/
+
+# IDE
+.vscode/
+.idea/

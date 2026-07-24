@@ -1,0 +1,33 @@
+name: episode
+
+# Values in ${...} come from the explicitly supplied .env file. Docker Compose
+# also discovers .env by convention, but the documented commands use
+# `docker compose --env-file .env` so that the source is unambiguous.
+services:
+  episode:
+    image: "${EPISODE_IMAGE:-ghcr.io/openepisode/episode:alpha}"
+    init: true
+    user: "${EPISODE_UID:-1000}:${EPISODE_GID:-1000}"
+    ports:
+      # Safe by default: the UI/API is available only on this host.
+      # Set EPISODE_HTTP_BIND=0.0.0.0 on a trusted network when cameras
+      # must reach the Alarm Server endpoint directly.
+      - "${EPISODE_HTTP_BIND:-127.0.0.1}:8989:8989"
+      - "${EPISODE_FTP_BIND:-0.0.0.0}:2121:2121"
+      - "${EPISODE_FTP_BIND:-0.0.0.0}:30000-30009:30000-30009"
+    volumes:
+      - ./data:/var/episode/data
+      - ./episode.json:/app/config.json:ro
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8989/health', timeout=2)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

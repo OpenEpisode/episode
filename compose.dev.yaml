@@ -1,0 +1,6 @@
+services:
+  episode:
+    build:
+      context: .
+    image: episode:local
+    pull_policy: build
