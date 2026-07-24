@@ -40,8 +40,19 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Smoke test container
         run: |
+          cat > "${RUNNER_TEMP}/episode-ci.json" <<'EOF'
+          {
+            "data_dir": "/var/episode/data",
+            "api_host": "0.0.0.0",
+            "api_port": 8989,
+            "connectors": [],
+            "areas": [],
+            "devices": []
+          }
+          EOF
           docker run --detach --name episode-ci \
-            --publish 127.0.0.1:8989:8989 episode:ci
+            --publish 127.0.0.1:8989:8989 \
+            --volume "${RUNNER_TEMP}/episode-ci.json:/app/config.json:ro" episode:ci
           for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:8989/health; then
               exit 0
