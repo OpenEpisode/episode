@@ -99,6 +99,7 @@ async def test_inactive_event_attaches_without_extending_episode(tmp_path):
                 },
             )
         )
+        activity_before = (await repo.list_episodes())[0].last_activity_at
         await bus.publish(
             Message(
                 type="event.received",
@@ -116,7 +117,8 @@ async def test_inactive_event_attaches_without_extending_episode(tmp_path):
         events = await repo.list_events(episode_id=episodes[0].id)
         assert len(episodes) == 1
         assert episodes[0].event_count == 2
-        assert episodes[0].last_event_time == timestamp
+        assert episodes[0].last_event_time == timestamp + timedelta(seconds=10)
+        assert episodes[0].last_activity_at == activity_before
         assert {event.event_state for event in events} == {
             EventState.ACTIVE,
             EventState.INACTIVE,

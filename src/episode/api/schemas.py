@@ -33,6 +33,7 @@ class EpisodeResponse(ApiModel):
     primary_area_id: str
     start_time: datetime
     last_event_time: datetime | None
+    last_activity_at: datetime | None
     end_time: datetime | None
     state: EpisodeState
     event_count: int

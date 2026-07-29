@@ -990,6 +990,7 @@ async function updateSidebarStatus() {
   const el = $("#sidebar-status");
   try {
     const st = await api("/status");
+    $("#app-version").textContent = st.server.version ? `v${st.server.version}` : "";
     const allOnline = st.connectors.every(connectorHealthy)
       && st.engine.running && st.recorder.running
       && (!st.snapshotter.enabled || st.snapshotter.running);

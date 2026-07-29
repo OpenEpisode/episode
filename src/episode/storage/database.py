@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     primary_area_id TEXT NOT NULL REFERENCES areas(id),
     start_time TEXT NOT NULL,
     last_event_time TEXT,
+    last_activity_at TEXT,
     end_time TEXT,
     state TEXT NOT NULL DEFAULT 'new',
     event_count INTEGER NOT NULL DEFAULT 0,

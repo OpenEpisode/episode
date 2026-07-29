@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import shutil
@@ -122,3 +123,12 @@ def move_to_episode(
         dest = available_destination(dest)
         shutil.move(current_path, dest)
     return dest
+
+
+async def async_move_to_episode(
+    data_root: str,
+    episode_id: str,
+    current_path: str,
+    subdir: str,
+) -> str:
+    return await asyncio.to_thread(move_to_episode, data_root, episode_id, current_path, subdir)

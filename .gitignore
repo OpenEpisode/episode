@@ -4,6 +4,7 @@
 # Local configuration and environment
 /episode.json
 /.env
+/compose.override.yaml
 
 # Python
 __pycache__/

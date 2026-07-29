@@ -10,7 +10,7 @@ RUN uv sync --locked --no-dev
 
 FROM python:3.12-slim
 
-ARG EPISODE_VERSION=0.1.0-alpha.1
+ARG EPISODE_VERSION=0.1.0-alpha.2
 ARG EPISODE_REVISION=unknown
 
 LABEL org.opencontainers.image.title="Episode" \

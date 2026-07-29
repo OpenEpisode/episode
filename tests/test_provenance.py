@@ -220,6 +220,9 @@ async def test_legacy_database_receives_additive_provenance_columns(tmp_path):
     repo = Repository(config)
     await repo.initialize()
     try:
+        episode_columns = {
+            row["name"] for row in await repo._conn.execute_fetchall("PRAGMA table_info(episodes)")
+        }
         event_columns = {
             row["name"] for row in await repo._conn.execute_fetchall("PRAGMA table_info(events)")
         }
@@ -232,6 +235,7 @@ async def test_legacy_database_receives_additive_provenance_columns(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
+        assert "last_activity_at" in episode_columns
         assert {"device_id", "area_id", "dedup_key"} <= event_columns
         assert {"device_id", "area_id", "artifact_id", "byte_size", "sha256"} <= (evidence_columns)
         assert {"areas", "devices", "raw_artifacts", "ingestion_receipts"} <= tables

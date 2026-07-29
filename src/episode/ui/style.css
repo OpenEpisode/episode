@@ -89,6 +89,13 @@ aside {
   background-clip: text;
   letter-spacing: -0.02em;
 }
+.app-version {
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+  white-space: nowrap;
+}
 nav { display: flex; flex-direction: column; gap: 2px; }
 nav a {
   color: var(--text-muted);

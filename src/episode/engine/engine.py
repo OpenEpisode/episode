@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from episode.domain.models import (
@@ -30,6 +31,7 @@ class EpisodeEngine:
         self._timeout = timeout
         self._running = False
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._lifecycle_lock = asyncio.Lock()
 
     async def start(self):
         self._running = True
@@ -64,9 +66,34 @@ class EpisodeEngine:
     async def _on_event_received(self, msg: Message):
         receipt = await self._persist_delivery(msg)
         candidate = Event(**msg.data["event"])
+        logger.debug(
+            "Event received: id=%s, area=%s, device=%s, type=%s, state=%s, ts=%s",
+            candidate.id,
+            candidate.area_id,
+            candidate.device_id,
+            candidate.event_type,
+            candidate.event_state,
+            candidate.timestamp,
+        )
 
+        logger.debug(
+            "Waiting for lock on area %s (event %s)",
+            candidate.area_id,
+            candidate.id,
+        )
         async with self._locks[candidate.area_id]:
+            logger.debug(
+                "Acquired lock for event %s (area %s)",
+                candidate.id,
+                candidate.area_id,
+            )
             event, created = await self._repo.canonicalize_event(candidate)
+            logger.debug(
+                "Canonicalize: event=%s, created=%s, episode_id=%s",
+                event.id,
+                created,
+                event.episode_id,
+            )
             if receipt:
                 await self._repo.link_ingestion_receipt(
                     receipt.id,
@@ -75,13 +102,22 @@ class EpisodeEngine:
                 )
             if created:
                 logger.info("Persisted canonical event %s (%s)", event.id, event.event_type)
-                await self._correlate(event)
+                async with self._lifecycle_lock:
+                    await self._correlate(event)
             else:
                 logger.info(
                     "Linked duplicate %s delivery to canonical event %s",
                     receipt.source if receipt else candidate.source,
                     event.id,
                 )
+
+        # After lock: refresh the portable bundle and match any earlier evidence.
+        if created and event.episode_id:
+            await self._repo.refresh_episode_manifest(event.episode_id)
+
+            orphan = await self._repo.find_orphan_evidence_by_device(event.device_id)
+            for ev in orphan:
+                await self._match_orphan_evidence(ev)
 
         msg.data["event"] = {
             **msg.data["event"],
@@ -99,17 +135,46 @@ class EpisodeEngine:
                 receipt.id,
                 evidence_id=evidence.id,
             )
-        logger.info("Persisted evidence %s (no event yet)", evidence.id)
+        logger.info(
+            "Persisted evidence %s (no event yet, episode_id=%s)", evidence.id, evidence.episode_id
+        )
         if evidence.episode_id:
+            logger.debug(
+                "Evidence %s has pre-set episode_id=%s, linking directly",
+                evidence.id,
+                evidence.episode_id,
+            )
             await self._repo.add_evidence_to_episode(evidence.id, evidence.episode_id)
         else:
+            logger.debug("Evidence %s has no episode_id, attempting orphan match", evidence.id)
             await self._match_orphan_evidence(evidence)
 
     async def _correlate(self, event: Event):
+        activity_time = datetime.now(tz=timezone.utc)
+        logger.debug(
+            "Correlating event %s (area=%s, state=%s, timeout=%s, now=%s, event_ts=%s)",
+            event.id,
+            event.area_id,
+            event.event_state,
+            self._timeout,
+            activity_time.isoformat(),
+            event.timestamp,
+        )
         episode = await self._repo.find_open_episode_for_area(event.area_id, self._timeout)
+        logger.debug(
+            "find_open_episode_for_area(%s, %s) -> %s",
+            event.area_id,
+            self._timeout,
+            episode.id if episode else None,
+        )
 
         if not episode:
             episode = await self._repo.find_any_open_episode(self._timeout)
+            logger.debug(
+                "find_any_open_episode(%s) -> %s",
+                self._timeout,
+                episode.id if episode else None,
+            )
 
         if event.event_state == EventState.INACTIVE:
             if not episode:
@@ -118,7 +183,17 @@ class EpisodeEngine:
                     event.id,
                 )
                 return
-            await self._repo.add_event_to_episode(event.id, episode.id)
+            await self._repo.update_episode_times(
+                episode.id,
+                event.timestamp,
+                activity_time=None,
+                _defer_manifest=True,
+            )
+            await self._repo.add_event_to_episode(
+                event.id,
+                episode.id,
+                _defer_manifest=True,
+            )
             event.episode_id = episode.id
             await self._bus.publish(
                 Message(type="episode.updated", data={"episode_id": episode.id})
@@ -126,10 +201,23 @@ class EpisodeEngine:
             return
 
         if episode:
-            await self._repo.add_event_to_episode(event.id, episode.id)
-            await self._repo.update_episode_last_event(episode.id, event.timestamp)
+            await self._repo.add_event_to_episode(
+                event.id,
+                episode.id,
+                _defer_manifest=True,
+            )
+            await self._repo.update_episode_times(
+                episode.id,
+                event.timestamp,
+                activity_time=datetime.now(tz=timezone.utc),
+                _defer_manifest=True,
+            )
             if episode.state == EpisodeState.QUIESCENT:
-                await self._repo.update_episode_state(episode.id, EpisodeState.ACTIVE)
+                await self._repo.update_episode_state(
+                    episode.id,
+                    EpisodeState.ACTIVE,
+                    _defer_manifest=True,
+                )
             event.episode_id = episode.id
             logger.debug(
                 "Added event %s to %s episode %s",
@@ -143,19 +231,21 @@ class EpisodeEngine:
                 primary_area_id=event.area_id,
                 start_time=event.timestamp,
                 last_event_time=event.timestamp,
+                last_activity_at=activity_time,
                 state=EpisodeState.ACTIVE,
             )
             await self._repo.create_episode(episode)
-            await self._repo.add_event_to_episode(event.id, episode.id)
+            await self._repo.add_event_to_episode(event.id, episode.id, _defer_manifest=True)
+            await self._repo.update_episode_times(
+                episode.id,
+                event.timestamp,
+                activity_time=datetime.now(tz=timezone.utc),
+                _defer_manifest=True,
+            )
             event.episode_id = episode.id
             logger.info("Created episode %s for area %s", episode.id, event.area_id)
 
         await self._bus.publish(Message(type="episode.updated", data={"episode_id": episode.id}))
-
-        # Re-check orphan evidence that may have arrived before events
-        orphan = await self._repo.find_orphan_evidence_by_device(event.device_id)
-        for ev in orphan:
-            await self._match_orphan_evidence(ev)
 
     async def _match_orphan_evidence(self, evidence: Evidence):
         if evidence.episode_id:
@@ -191,7 +281,8 @@ class EpisodeEngine:
         while self._running:
             await asyncio.sleep(1)
             try:
-                closed = await self._repo.close_timed_out_episodes(self._timeout)
+                async with self._lifecycle_lock:
+                    closed = await self._repo.close_timed_out_episodes(self._timeout)
                 for ep in closed:
                     logger.info("Episode %s closed (inactivity timeout)", ep.id)
                     await self._bus.publish(

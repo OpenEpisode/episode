@@ -87,3 +87,19 @@ async def migrate_legacy_identity_schema(connection: aiosqlite.Connection) -> No
             await _copy_identity_column(connection, table, old_name, new_name)
 
     await connection.commit()
+
+
+async def migrate_episode_activity_schema(connection: aiosqlite.Connection) -> None:
+    """Add server-side episode activity time without changing event chronology."""
+    tables = await _tables(connection)
+    if "episodes" not in tables:
+        return
+    columns = await _columns(connection, "episodes")
+    if "last_activity_at" not in columns:
+        await connection.execute("ALTER TABLE episodes ADD COLUMN last_activity_at TEXT")
+    await connection.execute(
+        """UPDATE episodes
+           SET last_activity_at = COALESCE(last_event_time, start_time)
+           WHERE last_activity_at IS NULL"""
+    )
+    await connection.commit()

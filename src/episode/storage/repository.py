@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -25,17 +26,21 @@ from episode.domain.models import (
 )
 from episode.storage.bundles import append_journal, relative_bundle_path, write_manifest
 from episode.storage.database import SCHEMA_SQL
-from episode.storage.files import describe_artifact, move_to_episode
-from episode.storage.migrations import migrate_legacy_identity_schema
+from episode.storage.files import async_move_to_episode, describe_artifact, move_to_episode
+from episode.storage.migrations import (
+    migrate_episode_activity_schema,
+    migrate_legacy_identity_schema,
+)
 from episode.storage.provenance import ProvenanceStore
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_iso(dt: datetime | None) -> str | None:
     if dt is None:
         return None
-    if dt.tzinfo is not None:
-        return dt.astimezone(timezone.utc).isoformat()
-    return dt.isoformat()
+    normalized = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return normalized.isoformat(timespec="microseconds")
 
 
 class Repository:
@@ -46,6 +51,7 @@ class Repository:
         self._provenance: ProvenanceStore | None = None
         self._precache_task: asyncio.Task | None = None
         self._legacy_identity_schema = False
+        self._manifest_locks: dict[str, asyncio.Lock] = {}
 
     async def initialize(self):
         os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
@@ -56,6 +62,7 @@ class Repository:
         self._conn.row_factory = aiosqlite.Row
         await migrate_legacy_identity_schema(self._conn)
         await self._conn.executescript(SCHEMA_SQL)
+        await migrate_episode_activity_schema(self._conn)
         event_columns = await self._conn.execute_fetchall("PRAGMA table_info(events)")
         self._legacy_identity_schema = "sensor_id" in {row["name"] for row in event_columns}
         self._provenance = ProvenanceStore(self._conn)
@@ -356,7 +363,9 @@ class Repository:
             "snapshot": "snapshots",
             "recording": "recordings",
         }.get(artifact.artifact_type, "other")
-        new_path = move_to_episode(self._data_dir, episode_id, artifact.file_path, subdir)
+        new_path = await async_move_to_episode(
+            self._data_dir, episode_id, artifact.file_path, subdir
+        )
         if new_path != artifact.file_path:
             await self._provenance.update_artifact_path(artifact.id, new_path)
 
@@ -811,16 +820,17 @@ class Repository:
             await self._conn.execute(
                 """INSERT INTO episodes (
                     id, primary_area_id, primary_asset_id, start_time,
-                    last_event_time, end_time, state,
+                    last_event_time, last_activity_at, end_time, state,
                     event_count, evidence_count, summary
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     episode.id,
                     episode.primary_area_id,
                     episode.primary_area_id,
                     _utc_iso(episode.start_time),
                     _utc_iso(episode.last_event_time),
+                    _utc_iso(episode.last_activity_at),
                     _utc_iso(episode.end_time),
                     episode.state.value,
                     episode.event_count,
@@ -832,15 +842,16 @@ class Repository:
             await self._conn.execute(
                 """INSERT INTO episodes (
                     id, primary_area_id, start_time,
-                    last_event_time, end_time, state,
+                    last_event_time, last_activity_at, end_time, state,
                     event_count, evidence_count, summary
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     episode.id,
                     episode.primary_area_id,
                     _utc_iso(episode.start_time),
                     _utc_iso(episode.last_event_time),
+                    _utc_iso(episode.last_activity_at),
                     _utc_iso(episode.end_time),
                     episode.state.value,
                     episode.event_count,
@@ -890,31 +901,54 @@ class Repository:
         return [self._row_to_episode(r) for r in rows]
 
     async def find_open_episode_for_area(self, area_id: str, timeout: int) -> Episode | None:
-        cutoff = (datetime.now(tz=timezone.utc) - timedelta(seconds=timeout)).isoformat()
+        cutoff = _utc_iso(datetime.now(tz=timezone.utc) - timedelta(seconds=timeout))
         rows = await self._conn.execute_fetchall(
             """SELECT * FROM episodes
                WHERE primary_area_id = ?
                AND state IN ('active', 'quiescent')
-               AND (last_event_time >= ? OR start_time >= ?)
-               ORDER BY last_event_time DESC NULLS LAST, start_time DESC
+               AND julianday(COALESCE(last_activity_at, last_event_time, start_time))
+                   >= julianday(?)
+               ORDER BY julianday(
+                   COALESCE(last_activity_at, last_event_time, start_time)
+               ) DESC
                LIMIT 1""",
-            (area_id, cutoff, cutoff),
+            (area_id, cutoff),
         )
-        return self._row_to_episode(rows[0]) if rows else None
+        episode = self._row_to_episode(rows[0]) if rows else None
+        logger.debug(
+            "Open episode for area %s: %s (cutoff=%s, activity=%s)",
+            area_id,
+            episode.id if episode else None,
+            cutoff,
+            episode.last_activity_at if episode else None,
+        )
+        return episode
 
     async def find_any_open_episode(self, timeout: int) -> Episode | None:
-        cutoff = (datetime.now(tz=timezone.utc) - timedelta(seconds=timeout)).isoformat()
+        cutoff = _utc_iso(datetime.now(tz=timezone.utc) - timedelta(seconds=timeout))
         rows = await self._conn.execute_fetchall(
             """SELECT * FROM episodes
                WHERE state IN ('active', 'quiescent')
-               AND (last_event_time >= ? OR start_time >= ?)
-               ORDER BY last_event_time DESC NULLS LAST, start_time DESC
+               AND julianday(COALESCE(last_activity_at, last_event_time, start_time))
+                   >= julianday(?)
+               ORDER BY julianday(
+                   COALESCE(last_activity_at, last_event_time, start_time)
+               ) DESC
                LIMIT 1""",
-            (cutoff, cutoff),
+            (cutoff,),
         )
-        return self._row_to_episode(rows[0]) if rows else None
+        episode = self._row_to_episode(rows[0]) if rows else None
+        logger.debug(
+            "Most recent open episode: %s (cutoff=%s, activity=%s)",
+            episode.id if episode else None,
+            cutoff,
+            episode.last_activity_at if episode else None,
+        )
+        return episode
 
-    async def add_event_to_episode(self, event_id: str, episode_id: str):
+    async def add_event_to_episode(
+        self, event_id: str, episode_id: str, *, _defer_manifest: bool = False
+    ):
         event = await self.get_event(event_id)
         raw_payload_path = event.raw_payload_path if event else None
         receipts = await self.list_ingestion_receipts(event_id=event_id)
@@ -924,7 +958,9 @@ class Repository:
                 artifact = await self._provenance.get_artifact(receipt.artifact_id)
                 if artifact:
                     old_path = artifact.file_path
-                    new_path = move_to_episode(self._data_dir, episode_id, old_path, "events")
+                    new_path = await async_move_to_episode(
+                        self._data_dir, episode_id, old_path, "events"
+                    )
                     if new_path != old_path:
                         await self._provenance.update_artifact_path(artifact.id, new_path)
                     if raw_payload_path == old_path:
@@ -935,7 +971,7 @@ class Repository:
                 )
 
         if raw_payload_path and not receipts:
-            raw_payload_path = move_to_episode(
+            raw_payload_path = await async_move_to_episode(
                 self._data_dir, episode_id, raw_payload_path, "events"
             )
 
@@ -955,9 +991,12 @@ class Repository:
             "event.added",
             {"event_id": event_id},
         )
-        await self.refresh_episode_manifest(episode_id)
+        if not _defer_manifest:
+            await self.refresh_episode_manifest(episode_id)
 
-    async def add_evidence_to_episode(self, evidence_id: str, episode_id: str):
+    async def add_evidence_to_episode(
+        self, evidence_id: str, episode_id: str, *, _defer_manifest: bool = False
+    ):
         evidence = await self.get_evidence(evidence_id)
         new_path = evidence.file_path if evidence else ""
         if evidence and evidence.file_path:
@@ -965,7 +1004,9 @@ class Repository:
                 "snapshot": "snapshots",
                 "recording": "recordings",
             }.get(evidence.evidence_type, "other")
-            new_path = move_to_episode(self._data_dir, episode_id, evidence.file_path, subdir)
+            new_path = await async_move_to_episode(
+                self._data_dir, episode_id, evidence.file_path, subdir
+            )
             if (
                 evidence.artifact_id
                 and self._provenance is not None
@@ -995,9 +1036,12 @@ class Repository:
             "evidence.added",
             {"evidence_id": evidence_id},
         )
-        await self.refresh_episode_manifest(episode_id)
+        if not _defer_manifest:
+            await self.refresh_episode_manifest(episode_id)
 
-    async def update_episode_state(self, episode_id: str, state: EpisodeState):
+    async def update_episode_state(
+        self, episode_id: str, state: EpisodeState, *, _defer_manifest: bool = False
+    ):
         if state in (EpisodeState.CLOSED, EpisodeState.ARCHIVED):
             await self._conn.execute(
                 "UPDATE episodes SET state = ?, end_time = ? WHERE id = ?",
@@ -1016,31 +1060,73 @@ class Repository:
             "episode.state_changed",
             {"state": state.value},
         )
-        await self.refresh_episode_manifest(episode_id)
+        if not _defer_manifest:
+            await self.refresh_episode_manifest(episode_id)
 
-    async def update_episode_last_event(self, episode_id: str, timestamp: datetime):
+    async def update_episode_times(
+        self,
+        episode_id: str,
+        event_time: datetime,
+        *,
+        activity_time: datetime | None,
+        _defer_manifest: bool = False,
+    ) -> None:
+        event_value = _utc_iso(event_time)
+        activity_value = _utc_iso(activity_time)
         await self._conn.execute(
-            "UPDATE episodes SET last_event_time = ? WHERE id = ?",
-            (_utc_iso(timestamp), episode_id),
+            """UPDATE episodes
+               SET last_event_time = CASE
+                       WHEN last_event_time IS NULL
+                         OR julianday(last_event_time) < julianday(?)
+                       THEN ?
+                       ELSE last_event_time
+                   END,
+                   last_activity_at = COALESCE(?, last_activity_at)
+               WHERE id = ?""",
+            (event_value, event_value, activity_value, episode_id),
         )
         await self._conn.commit()
-        await self.refresh_episode_manifest(episode_id)
+        if not _defer_manifest:
+            await self.refresh_episode_manifest(episode_id)
 
     async def close_timed_out_episodes(self, timeout: int) -> list[Episode]:
-        cutoff = (datetime.now(tz=timezone.utc) - timedelta(seconds=timeout)).isoformat()
+        now = datetime.now(tz=timezone.utc)
+        now_value = _utc_iso(now)
+        cutoff = _utc_iso(now - timedelta(seconds=timeout))
         rows = await self._conn.execute_fetchall(
             """SELECT * FROM episodes
                WHERE state IN ('active', 'quiescent')
-               AND (last_event_time IS NULL OR last_event_time < ?)
-               AND start_time < ?""",
-            (cutoff, cutoff),
+               AND julianday(COALESCE(last_activity_at, last_event_time, start_time))
+                   < julianday(?)""",
+            (cutoff,),
         )
         closed = []
         for row in rows:
-            ep = self._row_to_episode(row)
-            await self.update_episode_state(ep.id, EpisodeState.CLOSED)
-            ep.state = EpisodeState.CLOSED
-            closed.append(ep)
+            episode = self._row_to_episode(row)
+            cursor = await self._conn.execute(
+                """UPDATE episodes
+                   SET state = ?, end_time = ?
+                   WHERE id = ?
+                     AND state IN ('active', 'quiescent')
+                     AND julianday(
+                         COALESCE(last_activity_at, last_event_time, start_time)
+                     ) < julianday(?)""",
+                (EpisodeState.CLOSED.value, now_value, episode.id, cutoff),
+            )
+            await self._conn.commit()
+            if cursor.rowcount != 1:
+                continue
+            await asyncio.to_thread(
+                append_journal,
+                self._data_dir,
+                episode.id,
+                "episode.state_changed",
+                {"state": EpisodeState.CLOSED.value},
+            )
+            episode.state = EpisodeState.CLOSED
+            episode.end_time = now
+            closed.append(episode)
+            await self.refresh_episode_manifest(episode.id)
         return closed
 
     # --- Portable Episode bundles ---
@@ -1051,6 +1137,11 @@ class Repository:
             await self.refresh_episode_manifest(row["id"])
 
     async def refresh_episode_manifest(self, episode_id: str) -> None:
+        lock = self._manifest_locks.setdefault(episode_id, asyncio.Lock())
+        async with lock:
+            await self._refresh_episode_manifest(episode_id)
+
+    async def _refresh_episode_manifest(self, episode_id: str) -> None:
         episode = await self.get_episode(episode_id)
         if not episode:
             return
@@ -1117,6 +1208,7 @@ class Repository:
                 "primary_area_id": episode.primary_area_id,
                 "start_time": _utc_iso(episode.start_time),
                 "last_event_time": _utc_iso(episode.last_event_time),
+                "last_activity_at": _utc_iso(episode.last_activity_at),
                 "end_time": _utc_iso(episode.end_time),
                 "summary": episode.summary,
             },
@@ -1258,6 +1350,9 @@ class Repository:
             start_time=datetime.fromisoformat(row["start_time"]),
             last_event_time=datetime.fromisoformat(row["last_event_time"])
             if row["last_event_time"]
+            else None,
+            last_activity_at=datetime.fromisoformat(row["last_activity_at"])
+            if row["last_activity_at"]
             else None,
             end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
             state=EpisodeState(row["state"]),

@@ -173,6 +173,7 @@ class Episode:
     primary_area_id: str = ""
     start_time: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
     last_event_time: datetime | None = None
+    last_activity_at: datetime | None = None
     end_time: datetime | None = None
     state: EpisodeState = EpisodeState.NEW
     event_count: int = 0
