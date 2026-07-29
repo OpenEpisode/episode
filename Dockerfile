@@ -22,7 +22,8 @@ LABEL org.opencontainers.image.title="Episode" \
       org.opencontainers.image.version="${EPISODE_VERSION}" \
       org.opencontainers.image.revision="${EPISODE_REVISION}"
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r episode \
     && useradd -r -g episode -d /var/episode -s /bin/false episode
