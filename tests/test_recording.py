@@ -363,6 +363,66 @@ async def test_same_prefix_devices_get_distinct_recording_paths(repo, bus, confi
 
 
 @pytest.mark.asyncio
+async def test_completed_segments_are_published_while_latest_remains_active(
+    repo, bus, config, monkeypatch
+):
+    recorder = RecordingEngine(repo, bus, config.evidence_dir, segment_seconds=60)
+    release = asyncio.Event()
+    published = []
+
+    async def hold_recording(recording, rtsp_url):
+        await release.wait()
+
+    async def capture_evidence(msg):
+        published.append(msg.data["evidence"])
+
+    async def valid_video(path):
+        return True
+
+    recorder._record_episode = hold_recording
+    monkeypatch.setattr(recorder, "_has_video_stream", valid_video)
+    bus.subscribe("evidence.received", capture_evidence)
+
+    await recorder._start_recording(
+        "episode-1",
+        _video_device("camera-x", "area-1", "on_episode"),
+        "rtsp://camera-x/stream",
+    )
+    recording = recorder._recordings[("episode-1", "camera-x")]
+    first_working = recording.working_path.replace("%06d", "000000")
+    second_working = recording.working_path.replace("%06d", "000001")
+    os.makedirs(os.path.dirname(first_working), exist_ok=True)
+    with open(first_working, "wb") as f:
+        f.write(b"0" * 4096)
+    with open(second_working, "wb") as f:
+        f.write(b"1" * 4096)
+
+    await recorder._finalize_ready_segments(recording, include_latest=False)
+
+    first_output = first_working.removesuffix(".part")
+    second_output = second_working.removesuffix(".part")
+    assert os.path.exists(first_output)
+    assert not os.path.exists(first_working)
+    assert os.path.exists(second_working)
+    assert not os.path.exists(second_output)
+    assert len(published) == 1
+    assert published[0]["file_path"] == first_output
+    assert published[0]["metadata"]["segment_index"] == 0
+    assert published[0]["metadata"]["segment_seconds"] == 60
+
+    await recorder._finalize_ready_segments(recording, include_latest=True)
+
+    assert os.path.exists(second_output)
+    assert not os.path.exists(second_working)
+    assert [item["metadata"]["segment_index"] for item in published] == [0, 1]
+    assert len({item["metadata"]["recording_session_id"] for item in published}) == 1
+
+    release.set()
+    await recording.task
+    await recorder.stop()
+
+
+@pytest.mark.asyncio
 async def test_failed_recording_does_not_retry_after_episode_closes(repo, bus, config, monkeypatch):
     await repo.initialize()
     episode = Episode(
@@ -373,6 +433,7 @@ async def test_failed_recording_does_not_retry_after_episode_closes(repo, bus, c
     await repo.create_episode(episode)
     recorder = RecordingEngine(repo, bus, config.evidence_dir)
     attempts = 0
+    commands = []
 
     class FailedProcess:
         returncode = 1
@@ -383,6 +444,7 @@ async def test_failed_recording_does_not_retry_after_episode_closes(repo, bus, c
     async def failed_ffmpeg(*args, **kwargs):
         nonlocal attempts
         attempts += 1
+        commands.append(args)
         return FailedProcess()
 
     async def close_episode_during_retry(delay):
@@ -390,6 +452,7 @@ async def test_failed_recording_does_not_retry_after_episode_closes(repo, bus, c
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", failed_ffmpeg)
     monkeypatch.setattr(asyncio, "sleep", close_episode_during_retry)
+    await recorder.start()
 
     await recorder._start_recording(
         episode.id,
@@ -400,6 +463,9 @@ async def test_failed_recording_does_not_retry_after_episode_closes(repo, bus, c
     await recording.task
 
     assert attempts == 1
+    assert commands[0][commands[0].index("-f") + 1] == "segment"
+    assert commands[0][commands[0].index("-segment_time") + 1] == "600"
+    assert commands[0][-1].endswith("_%06d.mp4.part")
     assert recorder._recordings == {}
 
     await recorder.stop()

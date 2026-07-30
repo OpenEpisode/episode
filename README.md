@@ -99,6 +99,12 @@ All participating cameras record until the Episode closes after
 `episode_timeout` seconds without active Event activity. Inactive observations
 and duplicate connector deliveries do not start recordings.
 
+Long recordings are finalized as immutable, sync-friendly segments while capture
+continues through the same FFmpeg connection. Set
+`actions.recording.segment_seconds` to control their length (default: 600 seconds).
+The final partial segment is closed when the Episode closes; this setting limits
+file size, not the Episode or recording duration.
+
 ### Network access
 
 The UI/API binds to `127.0.0.1:8989` by default. FTP listens on port `2121` so

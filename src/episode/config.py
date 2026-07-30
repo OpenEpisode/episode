@@ -18,8 +18,18 @@ class SnapshotActionConfig:
 
 
 @dataclass
+class RecordingActionConfig:
+    segment_seconds: int = 600
+
+    def __post_init__(self):
+        if self.segment_seconds <= 0:
+            raise ValueError("recording segment_seconds must be greater than zero")
+
+
+@dataclass
 class ActionsConfig:
     snapshot: SnapshotActionConfig = field(default_factory=SnapshotActionConfig)
+    recording: RecordingActionConfig = field(default_factory=RecordingActionConfig)
 
 
 @dataclass
@@ -50,10 +60,14 @@ class EpisodeConfig:
             self.events_dir = os.path.join(self.data_dir, "orphans")
         if isinstance(self.actions, dict):
             snapshot = self.actions.get("snapshot", {})
+            recording = self.actions.get("recording", {})
             self.actions = ActionsConfig(
                 snapshot=SnapshotActionConfig(**snapshot)
                 if isinstance(snapshot, dict)
-                else snapshot
+                else snapshot,
+                recording=RecordingActionConfig(**recording)
+                if isinstance(recording, dict)
+                else recording,
             )
 
 

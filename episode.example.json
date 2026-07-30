@@ -4,6 +4,11 @@
   "api_port": 8989,
   "episode_timeout": 30,
   "log_level": "INFO",
+  "actions": {
+    "recording": {
+      "segment_seconds": 600
+    }
+  },
   "connectors": [
     {
       "type": "alarm_server",

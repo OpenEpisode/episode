@@ -109,6 +109,11 @@ unavailable.
 The manifest and journal are derived metadata. They may evolve; original
 artifact bytes are never annotated or rendered with overlays.
 
+Recordings remain active for the Episode lifecycle and are stored as sequential,
+immutable segments. A shared `recording_session_id` and ordered `segment_index`
+identify chunks from one continuous recording action without relying on filename
+interpretation.
+
 ## Canonical event identity
 
 The first implementation derives a key from:
