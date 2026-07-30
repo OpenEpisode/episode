@@ -14,8 +14,8 @@ flowchart LR
     Receipt --> Canonical[Canonical event or evidence]
     Canonical --> Engine[Episode engine]
     Engine --> Bundle[Episode bundle]
-    Engine --> Policy[Action policy]
-    Policy --> Action[Recording and future actions]
+    Engine --> Targets[Action target resolver]
+    Targets --> Action[Recording and future actions]
     Action --> Bundle
 ```
 
@@ -137,8 +137,11 @@ Signed manifests and external timestamping are possible future extensions.
 New connectors should produce Raw Artifacts and Ingestion Receipts, then an
 optional normalized Event or Evidence message.
 
-New actions should consume canonical domain messages or policy decisions. They
-must not subscribe directly to vendor-specific connector payloads.
+New actions should consume canonical domain messages or target-resolution
+decisions. They must not subscribe directly to vendor-specific connector
+payloads. Recording targets are currently resolved from the Event source and
+Area; this boundary can accept future target strategies without changing
+connectors or recording execution.
 
 New AI, OCR, LPR, or recognition integrations should create versioned processing
 runs and append annotations. Reprocessing must never replace prior results or
@@ -146,9 +149,13 @@ modify source evidence.
 
 ## Known alpha constraints
 
-- Correlation currently uses area and time proximity.
-- Recording is enabled by device capability; ONVIF snapshot capture is explicit and disabled by default.
-- Event-trigger policy is still implicit in engine wiring and is the next boundary to extract.
+- Correlation is restricted to time-proximate Events within the same Area.
+- `on_event` video devices record their own active Events; `on_episode` video
+  devices record active Episodes in their Area, including Episodes opened by
+  non-video sources.
+- Recording lifetime follows Episode lifetime; ONVIF snapshot capture is
+  explicit and disabled by default.
+- Broader event-to-action policy is not implemented.
 - Authentication and safe Internet exposure are not implemented.
 - Annotation and processing-run persistence are planned, not yet public APIs.
 

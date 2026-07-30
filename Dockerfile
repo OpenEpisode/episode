@@ -10,7 +10,13 @@ RUN uv sync --locked --no-dev
 
 FROM python:3.12-slim
 
-ARG EPISODE_VERSION=0.1.0-alpha.2
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r episode \
+    && useradd -r -g episode -d /var/episode -s /bin/false episode
+
+ARG EPISODE_VERSION=0.1.0-alpha.3
 ARG EPISODE_REVISION=unknown
 
 LABEL org.opencontainers.image.title="Episode" \
@@ -21,12 +27,6 @@ LABEL org.opencontainers.image.title="Episode" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${EPISODE_VERSION}" \
       org.opencontainers.image.revision="${EPISODE_REVISION}"
-
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r episode \
-    && useradd -r -g episode -d /var/episode -s /bin/false episode
 
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src

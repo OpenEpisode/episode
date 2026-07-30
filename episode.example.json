@@ -4,9 +4,6 @@
   "api_port": 8989,
   "episode_timeout": 30,
   "log_level": "INFO",
-  "recording": {
-    "post_seconds": 30
-  },
   "connectors": [
     {
       "type": "alarm_server",
@@ -102,7 +99,10 @@
         "video": {
           "protocol": "rtsp",
           "port": 554,
-          "path": "/Streaming/Channels/101"
+          "path": "/Streaming/Channels/101",
+          "settings": {
+            "recording_mode": "on_episode"
+          }
         },
         "isapi": {
           "protocol": "http",

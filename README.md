@@ -87,6 +87,18 @@ container. Episode reads its application settings from the read-only
 version, review the release notes, and run `docker compose --env-file .env pull`
 followed by `docker compose --env-file .env up -d`.
 
+### Area recording
+
+Each video device can use one recording mode in its `video.settings`:
+
+- `on_event` (default) records when that video device emits an active Event.
+- `on_episode` records whenever any active Event opens or updates an Episode in
+  the device's Area, including Events from doorbells and non-video sensors.
+
+All participating cameras record until the Episode closes after
+`episode_timeout` seconds without active Event activity. Inactive observations
+and duplicate connector deliveries do not start recordings.
+
 ### Network access
 
 The UI/API binds to `127.0.0.1:8989` by default. FTP listens on port `2121` so

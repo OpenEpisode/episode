@@ -33,14 +33,7 @@ class Application:
         self._repo = Repository(config)
         self._media = MediaRegistry()
         self._engine = EpisodeEngine(self._repo, self._bus, config.episode_timeout)
-        self._recorder = RecordingEngine(
-            self._repo,
-            self._bus,
-            config.data_dir,
-            pre_seconds=config.recording.pre_seconds,
-            post_seconds=config.recording.post_seconds,
-            media=self._media,
-        )
+        self._recorder = RecordingEngine(self._repo, self._bus, config.data_dir, media=self._media)
         self._snapshotter = SnapshotEngine(self._bus, self._media, config)
         self._connectors = []
         self._fastapi_app = create_api(self._repo, config.data_dir, config.snapshot_window)

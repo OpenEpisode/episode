@@ -288,7 +288,7 @@ async def test_concurrent_manifest_refresh_cannot_overwrite_newer_state(
 
 
 @pytest.mark.asyncio
-async def test_cross_area_events_merge_into_same_episode(engine, repo, bus):
+async def test_cross_area_events_create_separate_episodes(engine, repo, bus):
     ts = datetime.now(tz=timezone.utc)
 
     await bus.publish(
@@ -324,8 +324,9 @@ async def test_cross_area_events_merge_into_same_episode(engine, repo, bus):
     )
 
     episodes = await repo.list_episodes()
-    assert len(episodes) == 1
-    assert episodes[0].event_count == 2
+    assert len(episodes) == 2
+    assert {episode.primary_area_id for episode in episodes} == {"area-1", "area-2"}
+    assert all(episode.event_count == 1 for episode in episodes)
 
 
 @pytest.mark.asyncio
@@ -437,3 +438,43 @@ async def test_timeline_is_chronological(engine, repo, bus):
     assert len(events) == 3
     for i in range(len(events) - 1):
         assert events[i].timestamp >= events[i + 1].timestamp
+
+
+@pytest.mark.asyncio
+async def test_orphan_evidence_does_not_cross_area_boundary(engine, repo, bus):
+    timestamp = datetime.now(tz=timezone.utc)
+    await bus.publish(
+        Message(
+            type="event.received",
+            data={
+                "event": {
+                    "device_id": "device-1",
+                    "area_id": "area-1",
+                    "timestamp": timestamp,
+                    "event_type": "motion_detection",
+                    "event_state": EventState.ACTIVE.value,
+                    "source": "test",
+                }
+            },
+        )
+    )
+
+    await bus.publish(
+        Message(
+            type="evidence.received",
+            data={
+                "evidence": {
+                    "device_id": "device-3",
+                    "area_id": "area-2",
+                    "timestamp": timestamp,
+                    "evidence_type": "snapshot",
+                    "file_path": "/tmp/area-2.jpg",
+                    "mime_type": "image/jpeg",
+                }
+            },
+        )
+    )
+
+    evidence = await repo.list_evidence()
+    assert len(evidence) == 1
+    assert evidence[0].episode_id is None

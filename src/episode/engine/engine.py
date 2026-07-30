@@ -150,6 +150,9 @@ class EpisodeEngine:
             await self._match_orphan_evidence(evidence)
 
     async def _correlate(self, event: Event):
+        if not event.area_id:
+            logger.warning("Stored event %s without an Episode: no Area", event.id)
+            return
         activity_time = datetime.now(tz=timezone.utc)
         logger.debug(
             "Correlating event %s (area=%s, state=%s, timeout=%s, now=%s, event_ts=%s)",
@@ -167,14 +170,6 @@ class EpisodeEngine:
             self._timeout,
             episode.id if episode else None,
         )
-
-        if not episode:
-            episode = await self._repo.find_any_open_episode(self._timeout)
-            logger.debug(
-                "find_any_open_episode(%s) -> %s",
-                self._timeout,
-                episode.id if episode else None,
-            )
 
         if event.event_state == EventState.INACTIVE:
             if not episode:
@@ -220,9 +215,8 @@ class EpisodeEngine:
                 )
             event.episode_id = episode.id
             logger.debug(
-                "Added event %s to %s episode %s",
+                "Added event %s to existing episode %s",
                 event.id,
-                "existing" if episode.primary_area_id == event.area_id else "cross-area",
                 episode.id,
             )
         else:
@@ -252,8 +246,6 @@ class EpisodeEngine:
             return
         if evidence.area_id:
             episode = await self._repo.find_open_episode_for_area(evidence.area_id, self._timeout)
-            if not episode:
-                episode = await self._repo.find_any_open_episode(self._timeout)
             if episode:
                 evidence.episode_id = episode.id
                 await self._repo.add_evidence_to_episode(evidence.id, episode.id)

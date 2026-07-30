@@ -924,28 +924,6 @@ class Repository:
         )
         return episode
 
-    async def find_any_open_episode(self, timeout: int) -> Episode | None:
-        cutoff = _utc_iso(datetime.now(tz=timezone.utc) - timedelta(seconds=timeout))
-        rows = await self._conn.execute_fetchall(
-            """SELECT * FROM episodes
-               WHERE state IN ('active', 'quiescent')
-               AND julianday(COALESCE(last_activity_at, last_event_time, start_time))
-                   >= julianday(?)
-               ORDER BY julianday(
-                   COALESCE(last_activity_at, last_event_time, start_time)
-               ) DESC
-               LIMIT 1""",
-            (cutoff,),
-        )
-        episode = self._row_to_episode(rows[0]) if rows else None
-        logger.debug(
-            "Most recent open episode: %s (cutoff=%s, activity=%s)",
-            episode.id if episode else None,
-            cutoff,
-            episode.last_activity_at if episode else None,
-        )
-        return episode
-
     async def add_event_to_episode(
         self, event_id: str, episode_id: str, *, _defer_manifest: bool = False
     ):
