@@ -213,6 +213,8 @@ main {
   flex-shrink: 0;
 }
 .status-indicator.online { background: var(--success); box-shadow: 0 0 6px var(--success); }
+.status-indicator.warning { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+.status-indicator.idle { background: var(--text-muted); }
 .status-indicator.offline { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
 .status-grid .card {
   display: flex;

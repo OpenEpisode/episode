@@ -35,6 +35,7 @@ class ActionsConfig:
 @dataclass
 class EpisodeConfig:
     data_dir: str = "/var/episode/data"
+    plugins_dir: str = "/opt/episode/plugins"
     orphans_dir: str = ""
     db_path: str = ""
     evidence_dir: str = ""

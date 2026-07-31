@@ -1,8 +1,9 @@
 # Hikvision setup
 
 This guide covers optional Hikvision enhancements: ISAPI events, Alarm Server
-deliveries, and FTP snapshots. Configure the primary camera path with the
-[ONVIF guide](ONVIF_SETUP.md) first. Menu names vary by firmware.
+deliveries, FTP snapshots, and the user-supplied HCNetSDK runtime. Configure the
+primary camera path with the [ONVIF guide](ONVIF_SETUP.md) first. Menu names vary
+by firmware.
 
 ## Before you begin
 
@@ -97,6 +98,76 @@ ONVIF media support. Hikvision's common main-stream path is
 Keep the camera's ONVIF service enabled and use **Digest & WS-Username Token**
 authentication. See the [ONVIF setup guide](ONVIF_SETUP.md) for the primary
 configuration and profile selection.
+
+## Hikvision HCNetSDK
+
+Episode can discover and validate an optional Hikvision HCNetSDK installation.
+The SDK remains user-supplied: Episode does not download, redistribute, or add
+vendor binaries to its container image.
+
+This alpha validates that HCNetSDK is complete, compatible, loadable, and able
+to initialize. It does not yet log in to devices or receive SDK events. Those
+runtime features will build on this isolated foundation.
+
+### Install the SDK files
+
+1. Download the Linux 64-bit HCNetSDK package for your host architecture from
+   Hikvision's official developer resources and accept its terms.
+2. Extract the archive outside the Episode repository.
+3. Copy the complete contents of the SDK package's `lib/` directory:
+
+```bash
+mkdir -p plugins/hikvision-sdk
+cp -a /path/to/EN-HCNetSDK*/lib/. plugins/hikvision-sdk/
+docker compose --env-file .env up -d
+```
+
+Copy the whole `lib/` directory contents, including `HCNetSDKCom/`. Copying only
+`libhcnetsdk.so` is not enough. The resulting layout starts like this:
+
+```text
+plugins/
+└── hikvision-sdk/
+    ├── libhcnetsdk.so
+    ├── libHCCore.so
+    ├── libhpr.so
+    └── HCNetSDKCom/
+        └── libHCAlarm.so
+```
+
+The SDK architecture must match the container host: use an x86-64 SDK on
+`amd64`, or an AArch64 SDK on `arm64`. Episode checks the ELF architecture
+before any native library is loaded.
+
+### Verify the SDK
+
+Open Episode's **System** page and find **Native plugins**. A working install
+shows `Hikvision HCNetSDK`, state `Ready`, its SDK version, and architecture.
+The same compact state is available from:
+
+```bash
+curl http://localhost:8989/api/v1/plugins
+```
+
+Normal discovery and validation messages use Episode's main container log.
+HCNetSDK's own diagnostic file logging is disabled during validation, and no
+files are written into the read-only `plugins/` mount.
+
+The reported states are:
+
+- `not_installed`: the optional SDK directory is absent; Episode runs normally.
+- `incomplete`: required runtime files or `HCNetSDKCom/` are missing.
+- `incompatible`: the SDK is not a supported 64-bit ELF library or its CPU
+  architecture does not match the host.
+- `validating`: the isolated validation process is running.
+- `ready`: HCNetSDK loaded, initialized, reported its version, and cleaned up.
+- `failed`: loading or initialization failed, the validator crashed, or it
+  exceeded its timeout.
+
+Validation runs in a disposable child process. A broken library, native crash,
+or hang changes only the reported plugin state and does not prevent Episode from
+starting. For `incomplete` or `failed`, confirm the archive architecture and
+recopy all runtime files before restarting Episode.
 
 ## Verify the flow
 

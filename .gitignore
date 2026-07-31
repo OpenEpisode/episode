@@ -1,6 +1,10 @@
 # Local data
 /data/
 
+# User-supplied native SDKs (vendor binaries must never be committed)
+/plugins/*
+!/plugins/README.md
+
 # Local configuration and environment
 /episode.json
 /.env

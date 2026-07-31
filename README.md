@@ -55,7 +55,7 @@ repository or download a release source archive, then prepare the local files:
 ```bash
 cp episode.example.json episode.json
 cp .env.example .env
-mkdir -p data
+mkdir -p data plugins
 ```
 
 Edit `episode.json` with your camera IP addresses, credentials, areas, and
@@ -122,6 +122,11 @@ Only do this on a trusted network. There is no API authentication in the alpha.
 
 Start with the [ONVIF setup guide](docs/ONVIF_SETUP.md). Hikvision users can also
 enable the [vendor-specific enhancements](docs/HIKVISION_SETUP.md).
+
+Optional native integrations use the generic read-only `./plugins` mount.
+HCNetSDK setup is covered alongside the other
+[Hikvision enhancements](docs/HIKVISION_SETUP.md#hikvision-hcnetsdk); the SDK is
+supplied by the user and never included in Episode's image.
 
 ### Troubleshooting
 

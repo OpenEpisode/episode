@@ -882,10 +882,25 @@ function connectorHealthy(c) {
   return c.healthy === undefined ? c.running : c.healthy;
 }
 
+function pluginIndicatorState(plugin) {
+  if (plugin.state === "ready") return "online";
+  if (plugin.state === "validating") return "warning";
+  if (plugin.state === "not_installed") return "idle";
+  return "offline";
+}
+
+function pluginSummary(plugin) {
+  if (plugin.state === "not_installed") return "Optional · not installed";
+  const details = [titleCase(plugin.state)];
+  if (plugin.version) details.push("SDK " + plugin.version);
+  if (plugin.architecture) details.push(plugin.architecture);
+  return details.join(" · ");
+}
+
 async function systemStatus() {
   showLoading();
   try {
-    const st = await api("/status");
+    const [st, plugins] = await Promise.all([api("/status"), api("/plugins")]);
     showContent(`
       <div class="page-header"><h2>System Status</h2></div>
 
@@ -939,6 +954,24 @@ async function systemStatus() {
             </div>
           `).join("")}
           ${st.connectors.length === 0 ? '<div class="empty">No connectors configured</div>' : ""}
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Native plugins (${plugins.length})</h3>
+        <div class="status-grid">
+          ${plugins.map(plugin => `
+            <div class="card">
+              <div class="status-indicator ${pluginIndicatorState(plugin)}"></div>
+              <div class="meta">
+                <strong>${plugin.name}</strong><br>
+                <span class="badge ${plugin.state === "ready" ? "badge-active" : "badge-inactive"}">${plugin.kind}</span>
+                ${pluginSummary(plugin)}
+                ${plugin.error ? "<br>" + plugin.error : ""}
+              </div>
+            </div>
+          `).join("")}
+          ${plugins.length === 0 ? '<div class="empty">No native plugins recognized</div>' : ""}
         </div>
       </div>
     `);
