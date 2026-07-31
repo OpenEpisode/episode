@@ -20,7 +20,7 @@ from episode.domain.models import Area, Device
 from episode.engine.bus import EventBus
 from episode.engine.engine import EpisodeEngine
 from episode.media import MediaRegistry
-from episode.plugins import NativePluginManager
+from episode.plugins import PluginContext, PluginManager, builtin_plugin_registry
 from episode.plugins.api import register_plugins_api
 from episode.recording.engine import RecordingEngine
 from episode.storage.repository import Repository
@@ -43,7 +43,14 @@ class Application:
             media=self._media,
         )
         self._snapshotter = SnapshotEngine(self._bus, self._media, config)
-        self._plugins = NativePluginManager(config.plugins_dir)
+        configured_capabilities = {
+            capability for device in config.devices for capability in device.get("capabilities", [])
+        }
+        registry = builtin_plugin_registry()
+        self._plugins = PluginManager(
+            registry.for_capabilities(configured_capabilities),
+            PluginContext(Path(config.plugins_dir), tuple(config.devices)),
+        )
         self._connectors = []
         self._fastapi_app = create_api(self._repo, config.data_dir, config.snapshot_window)
         register_plugins_api(self._fastapi_app, self._plugins)
@@ -61,7 +68,7 @@ class Application:
         logger.info("Initializing storage...")
         await self._repo.initialize()
 
-        logger.info("Discovering native plugins...")
+        logger.info("Starting configured plugins...")
         await self._plugins.start()
 
         logger.info("Loading configured areas and devices...")

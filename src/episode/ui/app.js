@@ -890,7 +890,7 @@ function pluginIndicatorState(plugin) {
 }
 
 function pluginSummary(plugin) {
-  if (plugin.state === "not_installed") return "Optional · not installed";
+  if (plugin.state === "not_installed") return "Configured · not installed";
   const details = [titleCase(plugin.state)];
   if (plugin.version) details.push("SDK " + plugin.version);
   if (plugin.architecture) details.push(plugin.architecture);
@@ -958,7 +958,7 @@ async function systemStatus() {
       </div>
 
       <div class="section">
-        <h3>Native plugins (${plugins.length})</h3>
+        <h3>Configured plugins (${plugins.length})</h3>
         <div class="status-grid">
           ${plugins.map(plugin => `
             <div class="card">
@@ -971,7 +971,7 @@ async function systemStatus() {
               </div>
             </div>
           `).join("")}
-          ${plugins.length === 0 ? '<div class="empty">No native plugins recognized</div>' : ""}
+          ${plugins.length === 0 ? '<div class="empty">No plugins configured</div>' : ""}
         </div>
       </div>
     `);

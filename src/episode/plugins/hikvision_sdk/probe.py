@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from episode.plugins.manager import PROBE_RESULT_PREFIX
+from episode.plugins.probe import PROBE_RESULT_PREFIX
 
 
 def _emit(payload: dict) -> None:

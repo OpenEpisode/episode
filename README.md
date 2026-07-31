@@ -127,6 +127,8 @@ Optional native integrations use the generic read-only `./plugins` mount.
 HCNetSDK setup is covered alongside the other
 [Hikvision enhancements](docs/HIKVISION_SETUP.md#hikvision-hcnetsdk); the SDK is
 supplied by the user and never included in Episode's image.
+Installed runtime files remain inactive until a device explicitly declares the
+matching plugin capability.
 
 ### Troubleshooting
 

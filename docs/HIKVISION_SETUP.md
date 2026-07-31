@@ -109,6 +109,23 @@ This alpha validates that HCNetSDK is complete, compatible, loadable, and able
 to initialize. It does not yet log in to devices or receive SDK events. Those
 runtime features will build on this isolated foundation.
 
+### Activate the plugin
+
+Episode activates plugins from explicit device capabilities. Add
+`hikvision_sdk` only to devices that should eventually connect through the SDK:
+
+```json
+{
+  "id": "front-doorbell",
+  "capabilities": ["onvif", "video", "hikvision_sdk"]
+}
+```
+
+Installing SDK files alone does not import or validate the plugin. If no
+configured device declares `hikvision_sdk`, the module remains unloaded and is
+omitted from `/api/v1/plugins`. This keeps optional integrations lazy as the
+plugin catalog grows.
+
 ### Install the SDK files
 
 1. Download the Linux 64-bit HCNetSDK package for your host architecture from
@@ -141,7 +158,7 @@ before any native library is loaded.
 
 ### Verify the SDK
 
-Open Episode's **System** page and find **Native plugins**. A working install
+Open Episode's **System** page and find **Configured plugins**. A working install
 shows `Hikvision HCNetSDK`, state `Ready`, its SDK version, and architecture.
 The same compact state is available from:
 
@@ -155,7 +172,8 @@ files are written into the read-only `plugins/` mount.
 
 The reported states are:
 
-- `not_installed`: the optional SDK directory is absent; Episode runs normally.
+- `not_installed`: the plugin is configured but its SDK directory is absent;
+  Episode runs normally.
 - `incomplete`: required runtime files or `HCNetSDKCom/` are missing.
 - `incompatible`: the SDK is not a supported 64-bit ELF library or its CPU
   architecture does not match the host.
