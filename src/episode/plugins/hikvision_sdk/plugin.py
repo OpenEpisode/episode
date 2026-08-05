@@ -1,14 +1,27 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import platform
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable, Sequence
 
-from episode.plugins.models import PluginContext, PluginState, PluginStatus
+from episode.plugins.hikvision_sdk.runtime import SDKDeviceConfig, SDKDeviceWorker
+from episode.plugins.models import (
+    PluginContext,
+    PluginInstanceState,
+    PluginInstanceStatus,
+    PluginState,
+    PluginStatus,
+    RawPluginDeliverySink,
+)
 from episode.plugins.probe import SubprocessProbeRunner
+
+logger = logging.getLogger(__name__)
 
 PLUGIN_ID = "hikvision-sdk"
 PLUGIN_NAME = "Hikvision HCNetSDK"
@@ -24,6 +37,7 @@ _REQUIRED_SDK_FILES = (
 _REQUIRED_SDK_DIRECTORIES = ("HCNetSDKCom",)
 
 ProbeCommand = Callable[[Path], Sequence[str]]
+WorkerFactory = Callable[[Path, SDKDeviceConfig, RawPluginDeliverySink], SDKDeviceWorker]
 
 
 def normalize_architecture(machine: str) -> str | None:
@@ -125,6 +139,70 @@ def _default_probe_command(plugin_path: Path) -> Sequence[str]:
     ]
 
 
+def _default_worker_factory(
+    plugin_path: Path,
+    config: SDKDeviceConfig,
+    sink: RawPluginDeliverySink,
+) -> SDKDeviceWorker:
+    return SDKDeviceWorker(plugin_path, config, sink)
+
+
+def _configured_sdk_devices(
+    devices: tuple[Mapping[str, object], ...],
+) -> list[Mapping[str, object]]:
+    selected = []
+    for device in devices:
+        capabilities = device.get("capabilities", [])
+        if isinstance(capabilities, (list, tuple, set)) and "hikvision_sdk" in capabilities:
+            selected.append(device)
+    return selected
+
+
+def _device_config(device: Mapping[str, object]) -> tuple[SDKDeviceConfig | None, str | None]:
+    device_id = device.get("id")
+    name = device.get("name")
+    area_id = device.get("area_id")
+    address = device.get("ip_address")
+    username = device.get("username")
+    password = device.get("password")
+    configs = device.get("configs", {})
+    sdk_config = configs.get("hikvision_sdk", {}) if isinstance(configs, Mapping) else {}
+    settings = sdk_config.get("settings", {}) if isinstance(sdk_config, Mapping) else {}
+    port = sdk_config.get("port") if isinstance(sdk_config, Mapping) else None
+    if port is None and isinstance(settings, Mapping):
+        port = settings.get("port")
+    if port is None:
+        port = 8000
+
+    display_id = device_id if isinstance(device_id, str) and device_id else "unknown-device"
+    required = {
+        "id": device_id,
+        "name": name,
+        "area_id": area_id,
+        "ip_address": address,
+        "username": username,
+        "password": password,
+    }
+    missing = [key for key, value in required.items() if not isinstance(value, str) or not value]
+    if missing:
+        return None, f"Missing SDK device configuration: {', '.join(missing)}."
+    if not isinstance(port, int) or not 1 <= port <= 65535:
+        return None, "The SDK port must be between 1 and 65535."
+
+    return (
+        SDKDeviceConfig(
+            id=display_id,
+            name=name,
+            area_id=area_id,
+            address=address,
+            port=port,
+            username=username,
+            password=password,
+        ),
+        None,
+    )
+
+
 class HikvisionSDKPlugin:
     def __init__(
         self,
@@ -132,12 +210,18 @@ class HikvisionSDKPlugin:
         *,
         runner: SubprocessProbeRunner | None = None,
         probe_command: ProbeCommand | None = None,
+        worker_factory: WorkerFactory | None = None,
         host_machine: str | None = None,
     ):
         self._path = context.plugins_dir / PLUGIN_ID
+        self._configured_devices = _configured_sdk_devices(context.configured_devices)
+        self._delivery_sink = context.raw_delivery_sink
         self._runner = runner or SubprocessProbeRunner()
         self._probe_command = probe_command or _default_probe_command
+        self._worker_factory = worker_factory or _default_worker_factory
         self._host_machine = host_machine
+        self._workers: list[SDKDeviceWorker] = []
+        self._invalid_instances: list[PluginInstanceStatus] = []
         self._status = PluginStatus(
             id=PLUGIN_ID,
             name=PLUGIN_NAME,
@@ -146,7 +230,38 @@ class HikvisionSDKPlugin:
         )
 
     def status(self) -> PluginStatus:
-        return self._status
+        instances = (
+            *self._invalid_instances,
+            *(worker.status() for worker in self._workers),
+        )
+        if not instances or self._status.state != PluginState.READY:
+            return PluginStatus(
+                **{
+                    **self._status.public(),
+                    "instances": tuple(instances),
+                }
+            )
+
+        running = sum(instance.state == PluginInstanceState.RUNNING for instance in instances)
+        if running == len(instances):
+            state = PluginState.READY
+            error = None
+        elif running:
+            state = PluginState.DEGRADED
+            error = f"{len(instances) - running} SDK device worker(s) unavailable."
+        else:
+            state = PluginState.FAILED
+            error = "No configured SDK device workers are available."
+        return PluginStatus(
+            id=self._status.id,
+            name=self._status.name,
+            kind=self._status.kind,
+            state=state,
+            version=self._status.version,
+            architecture=self._status.architecture,
+            error=error,
+            instances=tuple(instances),
+        )
 
     async def start(self) -> None:
         self._status = inspect_sdk(self._path, self._host_machine)
@@ -162,26 +277,73 @@ class HikvisionSDKPlugin:
             redact_paths=[self._path],
         )
         version = result.payload.get("version") if result.payload else None
-        if result.succeeded and isinstance(version, str) and _VERSION_PATTERN.fullmatch(version):
+        if not (
+            result.succeeded and isinstance(version, str) and _VERSION_PATTERN.fullmatch(version)
+        ):
+            error = result.error or "HCNetSDK validation returned an invalid version."
             self._status = PluginStatus(
                 id=PLUGIN_ID,
                 name=PLUGIN_NAME,
                 kind=PLUGIN_KIND,
-                state=PluginState.READY,
-                version=version,
+                state=PluginState.FAILED,
                 architecture=self._status.architecture,
+                error=error,
             )
             return
 
-        error = result.error or "HCNetSDK validation returned an invalid version."
         self._status = PluginStatus(
             id=PLUGIN_ID,
             name=PLUGIN_NAME,
             kind=PLUGIN_KIND,
-            state=PluginState.FAILED,
+            state=PluginState.READY,
+            version=version,
             architecture=self._status.architecture,
-            error=error,
         )
+        if not self._configured_devices:
+            return
+        if self._delivery_sink is None:
+            self._invalid_instances = [
+                PluginInstanceStatus(
+                    id=str(device.get("id") or "unknown-device"),
+                    name=str(device.get("name") or device.get("id") or "Unknown device"),
+                    state=PluginInstanceState.FAILED,
+                    error="Raw plugin delivery storage is unavailable.",
+                )
+                for device in self._configured_devices
+            ]
+            return
+
+        for device in self._configured_devices:
+            config, error = _device_config(device)
+            if config is None:
+                device_id = str(device.get("id") or "unknown-device")
+                self._invalid_instances.append(
+                    PluginInstanceStatus(
+                        id=device_id,
+                        name=str(device.get("name") or device_id),
+                        state=PluginInstanceState.FAILED,
+                        error=error,
+                    )
+                )
+                continue
+            self._workers.append(self._worker_factory(self._path, config, self._delivery_sink))
+
+        results = await asyncio.gather(
+            *(worker.start() for worker in self._workers),
+            return_exceptions=True,
+        )
+        for worker, result in zip(self._workers, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.error(
+                    "HCNetSDK worker for device %s failed during startup",
+                    worker.status().id,
+                    exc_info=result,
+                )
 
     async def stop(self) -> None:
+        await asyncio.gather(
+            *(worker.stop() for worker in reversed(self._workers)),
+            return_exceptions=True,
+        )
+        self._workers.clear()
         await self._runner.stop()

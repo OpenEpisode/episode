@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 import os
 import shutil
 import subprocess
@@ -24,6 +25,7 @@ from episode.api.schemas import (
     IngestionReceiptResponse,
 )
 from episode.domain.models import EpisodeState
+from episode.media.timelapse import is_timelapse_eligible
 
 
 def _public_event(event, receipt_sources: list[str] | None = None) -> EventResponse:
@@ -184,7 +186,7 @@ def create_api(repo, data_dir: str = "", snapshot_window: int = 1) -> FastAPI:
         snapshots = [
             e
             for e in evidence
-            if e.evidence_type == "snapshot" and e.file_path and os.path.exists(e.file_path)
+            if is_timelapse_eligible(e) and e.file_path and os.path.exists(e.file_path)
         ]
         if device_id:
             snapshots = [e for e in snapshots if e.device_id == device_id]
@@ -352,9 +354,10 @@ def create_api(repo, data_dir: str = "", snapshot_window: int = 1) -> FastAPI:
             raise HTTPException(404, "Event not found")
         if not event.raw_payload_path or not os.path.exists(event.raw_payload_path):
             raise HTTPException(404, "Payload not found")
+        media_type = mimetypes.guess_type(event.raw_payload_path)[0] or "application/octet-stream"
         return FileResponse(
             event.raw_payload_path,
-            media_type="application/xml",
+            media_type=media_type,
             filename=os.path.basename(event.raw_payload_path),
         )
 

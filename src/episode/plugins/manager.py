@@ -31,6 +31,10 @@ class PluginManager:
         }
 
     def statuses(self) -> list[dict]:
+        for registration, plugin in self._plugins:
+            status = plugin.status()
+            self._validate_status(registration, status)
+            self._statuses[registration.id] = status
         return [self._statuses[registration.id].public() for registration in self._registrations]
 
     async def start(self) -> None:

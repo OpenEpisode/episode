@@ -24,6 +24,7 @@ from episode.domain.models import (
     RawArtifact,
     make_event_dedup_key,
 )
+from episode.media.timelapse import is_timelapse_eligible
 from episode.storage.bundles import append_journal, relative_bundle_path, write_manifest
 from episode.storage.database import SCHEMA_SQL
 from episode.storage.files import async_move_to_episode, describe_artifact, move_to_episode
@@ -226,7 +227,7 @@ class Repository:
             snapshots = [
                 e
                 for e in evidence
-                if e.evidence_type == "snapshot" and e.file_path and os.path.exists(e.file_path)
+                if is_timelapse_eligible(e) and e.file_path and os.path.exists(e.file_path)
             ]
             snapshots.sort(key=lambda e: e.timestamp)
             if not snapshots:

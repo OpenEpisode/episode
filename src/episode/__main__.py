@@ -22,6 +22,7 @@ from episode.engine.engine import EpisodeEngine
 from episode.media import MediaRegistry
 from episode.plugins import PluginContext, PluginManager, builtin_plugin_registry
 from episode.plugins.api import register_plugins_api
+from episode.plugins.deliveries import RawPluginDeliveryStore
 from episode.recording.engine import RecordingEngine
 from episode.storage.repository import Repository
 
@@ -33,6 +34,11 @@ class Application:
         self._config = config
         self._bus = EventBus()
         self._repo = Repository(config)
+        self._raw_plugin_deliveries = RawPluginDeliveryStore(
+            config.data_dir,
+            self._repo,
+            self._bus,
+        )
         self._media = MediaRegistry()
         self._engine = EpisodeEngine(self._repo, self._bus, config.episode_timeout)
         self._recorder = RecordingEngine(
@@ -49,7 +55,11 @@ class Application:
         registry = builtin_plugin_registry()
         self._plugins = PluginManager(
             registry.for_capabilities(configured_capabilities),
-            PluginContext(Path(config.plugins_dir), tuple(config.devices)),
+            PluginContext(
+                Path(config.plugins_dir),
+                tuple(config.devices),
+                self._raw_plugin_deliveries,
+            ),
         )
         self._connectors = []
         self._fastapi_app = create_api(self._repo, config.data_dir, config.snapshot_window)
@@ -67,9 +77,6 @@ class Application:
 
         logger.info("Initializing storage...")
         await self._repo.initialize()
-
-        logger.info("Starting configured plugins...")
-        await self._plugins.start()
 
         logger.info("Loading configured areas and devices...")
         configured_area_ids = set()
@@ -101,6 +108,9 @@ class Application:
             await self._snapshotter.start()
         else:
             logger.info("Snapshot action disabled by policy")
+
+        logger.info("Starting configured plugins...")
+        await self._plugins.start()
 
         logger.info("Starting connectors...")
 

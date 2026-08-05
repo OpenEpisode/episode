@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 _FILENAME_PATTERNS = [
     re.compile(
+        r"(?P<ts>\d{14})(?P<ms>\d{3})?_(?P<video_intercom_event>[^_]+)_(?P<ip>(?:\d{1,3}\.){3}\d{1,3})\.jpg$"
+    ),
+    re.compile(
         r"(?P<ip>[0-9.]+)_(?P<channel>[A-Za-z0-9]+)_(?P<ts>\d{14})(?P<ms>\d{3})?_(?P<event>.+)\.jpg"
     ),
     re.compile(r"_(?P<ts>\d{14})(?P<ms>\d{3})?_(?P<event>.+)\.jpg"),
@@ -125,6 +128,7 @@ class FTPConnector(Connector):
             device_id = ""
             area_id = ""
             status = ReceiptStatus.UNMATCHED
+            device = None
             ip = metadata.get("ip_address", "")
             if ip and self._repo:
                 device = await self._repo.find_device_by_ip(ip)
@@ -154,6 +158,10 @@ class FTPConnector(Connector):
                 await self._bus.publish(Message(type="receipt.received", data=delivery))
                 return
 
+            if device and "doorbell" in device.capabilities:
+                metadata["evidence_role"] = "event_attachment"
+                metadata["timelapse_eligible"] = False
+
             metadata["origin"] = "ftp"
             evidence_data = {
                 "device_id": device_id,
@@ -178,7 +186,8 @@ class FTPConnector(Connector):
         except Exception:
             logger.exception("%s: failed to ingest %s", self.name, filepath)
 
-    def _parse_filename(self, filename: str) -> dict:
+    @staticmethod
+    def _parse_filename(filename: str) -> dict:
         for pattern in _FILENAME_PATTERNS:
             m = pattern.match(filename)
             if m:
@@ -199,7 +208,10 @@ class FTPConnector(Connector):
                         )
                     except ValueError:
                         pass
-                if groups.get("event"):
-                    result["event_type"] = groups["event"].lower()
+                event_type = groups.get("event") or groups.get("video_intercom_event")
+                if event_type:
+                    result["event_type"] = event_type.lower()
+                if groups.get("video_intercom_event"):
+                    result["filename_profile"] = "video_intercom"
                 return result
         return {}

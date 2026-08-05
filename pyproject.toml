@@ -1,6 +1,6 @@
 [project]
 name = "episode"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 description = "A local-first, event-driven incident capture platform"
 readme = "README.md"
 license = "MIT"

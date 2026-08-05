@@ -348,6 +348,48 @@ pre.payload-xml {
   word-break: break-all;
   font-family: monospace;
 }
+.payload-interpretation {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin: 0.75rem 0;
+}
+.payload-interpretation-title {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.payload-fields {
+  display: grid;
+  grid-template-columns: minmax(9rem, 0.35fr) minmax(0, 1fr);
+  margin: 0;
+  font-size: 0.85rem;
+}
+.payload-fields dt,
+.payload-fields dd {
+  margin: 0;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--border);
+}
+.payload-fields dt {
+  color: var(--text-muted);
+  padding-right: 1rem;
+}
+.payload-fields dd {
+  color: var(--text-primary);
+  font-family: monospace;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+pre.payload-binary {
+  white-space: pre;
+  word-break: normal;
+}
+@media (max-width: 560px) {
+  .payload-fields { grid-template-columns: 1fr; }
+  .payload-fields dt { padding-bottom: 0; }
+  .payload-fields dd { border-top: 0; padding-top: 0.15rem; }
+}
 #recent-episodes-sidebar { margin-top: auto; padding-top: 1rem; border-top: 1px solid var(--border); }
 #recent-episodes-sidebar .label { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.04em; }
 #recent-episodes-sidebar a {

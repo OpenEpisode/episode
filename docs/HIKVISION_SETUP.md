@@ -105,21 +105,60 @@ Episode can discover and validate an optional Hikvision HCNetSDK installation.
 The SDK remains user-supplied: Episode does not download, redistribute, or add
 vendor binaries to its container image.
 
-This alpha validates that HCNetSDK is complete, compatible, loadable, and able
-to initialize. It does not yet log in to devices or receive SDK events. Those
-runtime features will build on this isolated foundation.
+Episode validates HCNetSDK, then starts one isolated worker process for each
+device that explicitly enables the capability. Each worker logs in on the SDK
+service port and subscribes to alarm callbacks. A native crash affects that
+device worker, not the Episode server or other devices.
+
+Every callback buffer is preserved as an immutable raw delivery. Episode also
+interprets narrowly validated video-intercom callbacks emitted by supported
+Hikvision devices:
+
+- `COMM_ALARM_VIDEO_INTERCOM` (`0x1133`) subtype `17` creates an active
+  canonical `doorbell` Event;
+- subtype `18` creates the matching inactive doorbell observation;
+- `COMM_UPLOAD_VIDEO_INTERCOM_EVENT` (`0x1132`) unlock records create
+  `door_access` Events with the reported method, lock and embedded-picture
+  fingerprint. HCNetSDK does not report the unlock outcome, so Episode does
+  not claim that the door successfully opened;
+- unknown commands and subtypes remain raw-only and never create guessed Events.
+
+Doorbell JPEGs delivered separately through FTP are preserved as Episode
+evidence but marked as event attachments, so they are not used as timelapse
+frames.
+
+An active doorbell Event enters the normal Area-scoped action flow. A doorbell
+configured with `recording_mode: on_event` records its own stream, while video
+devices in the same Area configured with `recording_mode: on_episode` join the
+same Episode.
 
 ### Activate the plugin
 
-Episode activates plugins from explicit device capabilities. Add
-`hikvision_sdk` only to devices that should eventually connect through the SDK:
+Episode activates plugins from explicit device capabilities. Add `hikvision_sdk`
+only to devices that should connect through the SDK:
 
 ```json
 {
   "id": "front-doorbell",
-  "capabilities": ["onvif", "video", "hikvision_sdk"]
+  "name": "Front Doorbell",
+  "device_type": "hikvision",
+  "area_id": "front-door",
+  "capabilities": ["doorbell", "onvif", "video", "hikvision_sdk"],
+  "ip_address": "192.168.1.120",
+  "username": "admin",
+  "password": "replace-me",
+  "configs": {
+    "hikvision_sdk": {
+      "port": 8000
+    }
+  }
 }
 ```
+
+The SDK port defaults to `8000` when omitted. The device ID, name, area, IP
+address, username, and password are required. Credentials are sent to the
+worker over standard input; they are not included in process arguments, plugin
+status responses, or routine log messages.
 
 Installing SDK files alone does not import or validate the plugin. If no
 configured device declares `hikvision_sdk`, the module remains unloaded and is
@@ -159,16 +198,17 @@ before any native library is loaded.
 ### Verify the SDK
 
 Open Episode's **System** page and find **Configured plugins**. A working install
-shows `Hikvision HCNetSDK`, state `Ready`, its SDK version, and architecture.
-The same compact state is available from:
+shows `Hikvision HCNetSDK`, its SDK version and architecture, plus one health
+entry per configured device. It includes connection state, preserved
+notification count, and last notification time. The same state is available from:
 
 ```bash
 curl http://localhost:8989/api/v1/plugins
 ```
 
-Normal discovery and validation messages use Episode's main container log.
-HCNetSDK's own diagnostic file logging is disabled during validation, and no
-files are written into the read-only `plugins/` mount.
+Normal plugin and worker lifecycle messages use Episode's main container log.
+HCNetSDK's own diagnostic file logging is not enabled, and no files are written
+into the read-only `plugins/` mount.
 
 The reported states are:
 
@@ -178,14 +218,22 @@ The reported states are:
 - `incompatible`: the SDK is not a supported 64-bit ELF library or its CPU
   architecture does not match the host.
 - `validating`: the isolated validation process is running.
-- `ready`: HCNetSDK loaded, initialized, reported its version, and cleaned up.
-- `failed`: loading or initialization failed, the validator crashed, or it
-  exceeded its timeout.
+- `ready`: validation succeeded and every configured device worker is connected.
+- `degraded`: at least one device worker is connected and at least one is not.
+- `failed`: validation failed, or no configured device worker is available.
 
-Validation runs in a disposable child process. A broken library, native crash,
-or hang changes only the reported plugin state and does not prevent Episode from
-starting. For `incomplete` or `failed`, confirm the archive architecture and
-recopy all runtime files before restarting Episode.
+Validation runs in a disposable child process, and each configured SDK device
+runs in its own long-lived child process. A broken library or native crash
+changes plugin health but does not stop Episode. Failed login and subscription
+attempts are not automatically retried in a tight loop, avoiding accidental
+device lockouts; correct the configuration and restart Episode.
+
+Every successfully copied callback buffer is initially sealed below
+`data/orphans/plugin-deliveries/hikvision-sdk/<device-id>/` and registered as an
+accepted ingestion receipt. When an explicitly supported callback creates an
+Event, Episode links the receipt and moves the sealed artifact into that
+Episode's `events/` directory. Uninterpreted callbacks remain in the orphan
+location for future inspection and reprocessing.
 
 ## Verify the flow
 
