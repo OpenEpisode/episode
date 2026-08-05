@@ -167,18 +167,12 @@ def _interpret_unlock_record(
         "unlock_type": unlock_type,
         "unlock_method": _UNLOCK_METHODS.get(unlock_type, "unknown"),
         "unlock_outcome": "not_reported_by_device",
-        "control_source": _text_field(
-            payload, _CONTROL_SOURCE_OFFSET, _CONTROL_SOURCE_LENGTH
-        ),
+        "control_source": _text_field(payload, _CONTROL_SOURCE_OFFSET, _CONTROL_SOURCE_LENGTH),
         "lock_id": lock_id,
         "lock_name": _text_field(payload, _LOCK_NAME_OFFSET, _LOCK_NAME_LENGTH),
-        "employee_number": _text_field(
-            payload, _EMPLOYEE_NUMBER_OFFSET, _EMPLOYEE_NUMBER_LENGTH
-        ),
+        "employee_number": _text_field(payload, _EMPLOYEE_NUMBER_OFFSET, _EMPLOYEE_NUMBER_LENGTH),
         "mask_status": _MASK_STATUSES.get(payload[_MASK_STATUS_OFFSET], "unknown"),
-        "picture_transport": (
-            "binary" if payload[_PICTURE_TRANSPORT_OFFSET] == 0 else "url"
-        ),
+        "picture_transport": ("binary" if payload[_PICTURE_TRANSPORT_OFFSET] == 0 else "url"),
         "picture_byte_size": picture_length,
     }
     if picture:

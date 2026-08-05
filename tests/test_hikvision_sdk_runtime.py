@@ -160,9 +160,7 @@ def test_worker_queries_friendly_model_and_firmware_from_sdk():
         ):
             ctypes.cast(returned, ctypes.POINTER(ctypes.c_uint)).contents.value = 1
             if command == NET_DVR_GET_FIRMWARE_VERSION:
-                target = ctypes.cast(
-                    output, ctypes.POINTER(NET_DVR_FIRMWARE_VERSION_INFO)
-                ).contents
+                target = ctypes.cast(output, ctypes.POINTER(NET_DVR_FIRMWARE_VERSION_INFO)).contents
                 target.szFirmwareVersion = b"V3.6.0 build 250522"
                 return True
             if command == NET_DVR_GET_DEVICECFG_V50:

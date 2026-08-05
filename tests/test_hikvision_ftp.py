@@ -11,15 +11,11 @@ from episode.storage.repository import Repository
 
 
 def test_parses_video_intercom_ftp_filename():
-    parsed = FTPConnector._parse_filename(
-        "20260805154705_4_192.168.40.20.jpg"
-    )
+    parsed = FTPConnector._parse_filename("20260805154705_4_192.168.40.20.jpg")
 
     assert parsed == {
         "ip_address": "192.168.40.20",
-        "timestamp": datetime(
-            2026, 8, 5, 15, 47, 5, tzinfo=timezone(timedelta(hours=1))
-        ),
+        "timestamp": datetime(2026, 8, 5, 15, 47, 5, tzinfo=timezone(timedelta(hours=1))),
         "event_type": "4",
         "filename_profile": "video_intercom",
     }
