@@ -70,6 +70,16 @@ channel identity that can be matched to a configured device. Episode records
 each Alarm Server and ISAPI delivery separately and deduplicates matching
 observations into one canonical Event.
 
+The Alarm Server endpoint is a shared core HTTP transport. It stores the exact
+request body before the configured Hikvision handler reads it; multipart
+boundaries and any unrecognized parts remain in the immutable artifact. The
+handler records normalized fields such as target type and bounding box as Event
+metadata, so UI overlays never modify the source XML or image.
+
+The default maximum Alarm Server request is 16 MiB. It can be changed on the
+connector with `settings.max_payload_bytes`; oversized requests are rejected
+with HTTP 413 before plugin handling.
+
 ## FTP snapshots
 
 The example configuration enables an FTP server with:
@@ -167,8 +177,10 @@ plugin catalog grows.
 
 ### Install the SDK files
 
-1. Download the Linux 64-bit HCNetSDK package for your host architecture from
-   Hikvision's official developer resources and accept its terms.
+1. Open [Hikvision's official HiTools download page](https://www.hikvision.com/europe/support/tools/hitools/?type=IP)
+   and download the Linux 64-bit HCNetSDK package that matches your host
+   architecture. Hikvision requires you to accept its download and licensing
+   terms.
 2. Extract the archive outside the Episode repository.
 3. Copy the complete contents of the SDK package's `lib/` directory:
 

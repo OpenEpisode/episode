@@ -5,8 +5,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
-import tempfile
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
@@ -22,16 +20,17 @@ from episode.domain.models import (
     Evidence,
     IngestionReceipt,
     RawArtifact,
+    ReceiptStatus,
     make_event_dedup_key,
 )
-from episode.media.timelapse import is_timelapse_eligible
-from episode.storage.bundles import append_journal, relative_bundle_path, write_manifest
+from episode.storage.bundles import append_journal
 from episode.storage.database import SCHEMA_SQL
 from episode.storage.files import async_move_to_episode, describe_artifact, move_to_episode
 from episode.storage.migrations import (
     migrate_episode_activity_schema,
     migrate_legacy_identity_schema,
 )
+from episode.storage.projection import EpisodeBundleProjector
 from episode.storage.provenance import ProvenanceStore
 
 logger = logging.getLogger(__name__)
@@ -50,9 +49,11 @@ class Repository:
         self._data_dir = config.data_dir
         self._conn: aiosqlite.Connection | None = None
         self._provenance: ProvenanceStore | None = None
-        self._precache_task: asyncio.Task | None = None
+        self._delivery_conn: aiosqlite.Connection | None = None
+        self._delivery_provenance: ProvenanceStore | None = None
+        self._delivery_lock = asyncio.Lock()
         self._legacy_identity_schema = False
-        self._manifest_locks: dict[str, asyncio.Lock] = {}
+        self._bundles = EpisodeBundleProjector(self, self._data_dir)
 
     async def initialize(self):
         os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
@@ -69,17 +70,27 @@ class Repository:
         self._provenance = ProvenanceStore(self._conn)
         await self._provenance.migrate_schema()
         await self._conn.commit()
+        # Raw artifacts and their receipts use a dedicated connection so their
+        # transaction cannot be committed accidentally by another repository
+        # coroutine sharing the main connection.
+        self._delivery_conn = await aiosqlite.connect(self._db_path)
+        self._delivery_conn.row_factory = aiosqlite.Row
+        self._delivery_provenance = ProvenanceStore(self._delivery_conn)
+        await self._delivery_provenance.migrate_schema()
+
         await self._migrate_episode_layout()
         await self._backfill_artifacts()
         await self.rebuild_episode_manifests()
-        self._precache_task = asyncio.create_task(self._precache_timelapses())
 
     async def close(self):
-        if self._precache_task and not self._precache_task.done():
-            self._precache_task.cancel()
-            await asyncio.gather(self._precache_task, return_exceptions=True)
+        if self._delivery_conn:
+            await self._delivery_conn.close()
+            self._delivery_conn = None
+            self._delivery_provenance = None
         if self._conn:
             await self._conn.close()
+            self._conn = None
+            self._provenance = None
 
     async def _migrate_episode_layout(self):
         orphan_snaps = os.path.join(self._data_dir, "orphans", "snapshots")
@@ -217,65 +228,6 @@ class Repository:
                     except OSError:
                         pass
 
-    async def _precache_timelapses(self):
-        rows = await self._conn.execute_fetchall(
-            "SELECT id FROM episodes WHERE state = ?",
-            ("closed",),
-        )
-        for (eid,) in rows:
-            evidence = await self.list_evidence(episode_id=eid)
-            snapshots = [
-                e
-                for e in evidence
-                if is_timelapse_eligible(e) and e.file_path and os.path.exists(e.file_path)
-            ]
-            snapshots.sort(key=lambda e: e.timestamp)
-            if not snapshots:
-                continue
-            tl_dir = os.path.join(self._data_dir, "episodes", eid, "timelapses")
-            tl_path = os.path.join(tl_dir, "timelapse.mp4")
-            if os.path.exists(tl_path):
-                continue
-            os.makedirs(tl_dir, exist_ok=True)
-            with tempfile.TemporaryDirectory() as tmpdir:
-                seq = []
-                for i, ev in enumerate(snapshots):
-                    ext = os.path.splitext(ev.file_path)[1] or ".jpg"
-                    link = os.path.join(tmpdir, f"img{i:04d}{ext}")
-                    os.symlink(ev.file_path, link)
-                    seq.append(link)
-                concat_file = os.path.join(tmpdir, "files.txt")
-                with open(concat_file, "w") as f:
-                    for link in seq:
-                        f.write(f"file '{link}'\nduration 0.2\n")
-                output = os.path.join(tmpdir, "out.mp4")
-                proc = await asyncio.create_subprocess_exec(
-                    "ffmpeg",
-                    "-y",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    concat_file,
-                    "-vsync",
-                    "vfr",
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "ultrafast",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-movflags",
-                    "+faststart",
-                    output,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                await proc.wait()
-                if os.path.exists(output) and proc.returncode == 0:
-                    shutil.move(output, tl_path)
-
     # --- Provenance ---
 
     async def create_raw_artifact(self, artifact: RawArtifact) -> RawArtifact:
@@ -296,9 +248,21 @@ class Repository:
     async def persist_delivery(
         self, artifact: RawArtifact, receipt: IngestionReceipt
     ) -> tuple[RawArtifact, IngestionReceipt]:
-        stored_artifact = await self.create_raw_artifact(artifact)
-        receipt.artifact_id = stored_artifact.id
-        await self.create_ingestion_receipt(receipt)
+        if self._delivery_provenance is None or self._delivery_conn is None:
+            raise RuntimeError("Repository is not initialized")
+        async with self._delivery_lock:
+            try:
+                await self._delivery_conn.execute("BEGIN IMMEDIATE")
+                stored_artifact = await self._delivery_provenance.create_artifact(
+                    artifact,
+                    commit=False,
+                )
+                receipt.artifact_id = stored_artifact.id
+                await self._delivery_provenance.create_receipt(receipt, commit=False)
+                await self._delivery_conn.commit()
+            except Exception:
+                await self._delivery_conn.rollback()
+                raise
         return stored_artifact, receipt
 
     async def list_ingestion_receipts(
@@ -322,6 +286,27 @@ class Repository:
         if self._provenance is None:
             raise RuntimeError("Repository is not initialized")
         return await self._provenance.get_receipt(receipt_id)
+
+    async def update_ingestion_receipt(
+        self,
+        receipt_id: str,
+        *,
+        status: ReceiptStatus,
+        observed_at: datetime | None,
+        device_id: str,
+        area_id: str,
+        metadata: dict,
+    ) -> None:
+        if self._provenance is None:
+            raise RuntimeError("Repository is not initialized")
+        await self._provenance.update_receipt(
+            receipt_id,
+            status=status,
+            observed_at=observed_at,
+            device_id=device_id,
+            area_id=area_id,
+            metadata=metadata,
+        )
 
     async def link_ingestion_receipt(
         self,
@@ -785,6 +770,26 @@ class Repository:
         )
         return [self._row_to_evidence(r) for r in rows]
 
+    async def episode_covers(self, episode_ids: list[str]) -> dict[str, str]:
+        if not episode_ids:
+            return {}
+        placeholders = ",".join("?" for _item in episode_ids)
+        rows = await self._conn.execute_fetchall(
+            f"""SELECT e.episode_id, e.id AS evidence_id
+                FROM evidence e
+                INNER JOIN (
+                  SELECT episode_id, MIN(timestamp) AS min_ts
+                  FROM evidence
+                  WHERE episode_id IN ({placeholders}) AND mime_type LIKE 'image/%'
+                  GROUP BY episode_id
+                ) first_image
+                  ON e.episode_id = first_image.episode_id
+                 AND e.timestamp = first_image.min_ts
+                WHERE e.mime_type LIKE 'image/%'""",
+            episode_ids,
+        )
+        return {row["episode_id"]: row["evidence_id"] for row in rows}
+
     async def find_orphan_evidence(self, older_than: timedelta | None = None) -> list[Evidence]:
         rows = await self._conn.execute_fetchall(
             "SELECT * FROM evidence WHERE event_id IS NULL ORDER BY timestamp ASC"
@@ -929,6 +934,12 @@ class Repository:
         self, event_id: str, episode_id: str, *, _defer_manifest: bool = False
     ):
         event = await self.get_event(event_id)
+        if not event:
+            return
+        if event.episode_id == episode_id:
+            return
+        if event.episode_id:
+            raise ValueError(f"Event {event_id} already belongs to episode {event.episode_id}")
         raw_payload_path = event.raw_payload_path if event else None
         receipts = await self.list_ingestion_receipts(event_id=event_id)
 
@@ -954,10 +965,17 @@ class Repository:
                 self._data_dir, episode_id, raw_payload_path, "events"
             )
 
-        await self._conn.execute(
-            "UPDATE events SET episode_id = ?, raw_payload_path = ? WHERE id = ?",
+        cursor = await self._conn.execute(
+            """UPDATE events SET episode_id = ?, raw_payload_path = ?
+               WHERE id = ? AND episode_id IS NULL""",
             (episode_id, raw_payload_path, event_id),
         )
+        if cursor.rowcount != 1:
+            await self._conn.rollback()
+            current = await self.get_event(event_id)
+            if current and current.episode_id == episode_id:
+                return
+            raise RuntimeError(f"Event {event_id} could not be linked to episode {episode_id}")
         await self._conn.execute(
             "UPDATE episodes SET event_count = event_count + 1 WHERE id = ?",
             (episode_id,),
@@ -1111,154 +1129,10 @@ class Repository:
     # --- Portable Episode bundles ---
 
     async def rebuild_episode_manifests(self) -> None:
-        rows = await self._conn.execute_fetchall("SELECT id FROM episodes ORDER BY start_time")
-        for row in rows:
-            await self.refresh_episode_manifest(row["id"])
+        await self._bundles.rebuild()
 
     async def refresh_episode_manifest(self, episode_id: str) -> None:
-        lock = self._manifest_locks.setdefault(episode_id, asyncio.Lock())
-        async with lock:
-            await self._refresh_episode_manifest(episode_id)
-
-    async def _refresh_episode_manifest(self, episode_id: str) -> None:
-        episode = await self.get_episode(episode_id)
-        if not episode:
-            return
-
-        events = await self.list_events(episode_id=episode_id, limit=10000)
-        evidence = await self.list_evidence(episode_id=episode_id, limit=10000)
-        receipts = await self.list_ingestion_receipts(episode_id=episode_id, limit=10000)
-        events.sort(key=lambda item: item.timestamp)
-        evidence.sort(key=lambda item: item.timestamp)
-
-        area_ids = {episode.primary_area_id}
-        area_ids.update(event.area_id for event in events if event.area_id)
-        area_ids.update(item.area_id for item in evidence if item.area_id)
-        device_ids = {event.device_id for event in events if event.device_id}
-        device_ids.update(item.device_id for item in evidence if item.device_id)
-
-        areas = []
-        for area_id in sorted(area_ids):
-            area = await self.get_area(area_id)
-            if area:
-                areas.append(
-                    {
-                        "id": area.id,
-                        "name": area.name,
-                        "location": area.location,
-                    }
-                )
-
-        devices = []
-        for device_id in sorted(device_ids):
-            device = await self.get_device(device_id)
-            if device:
-                devices.append(
-                    {
-                        "id": device.id,
-                        "name": device.name,
-                        "device_type": device.device_type,
-                        "area_id": device.area_id,
-                        "ip_address": device.ip_address,
-                    }
-                )
-
-        artifacts_by_id: dict[str, RawArtifact] = {}
-        artifact_ids = {receipt.artifact_id for receipt in receipts if receipt.artifact_id}
-        artifact_ids.update(item.artifact_id for item in evidence if item.artifact_id)
-        for artifact_id in sorted(artifact_ids):
-            artifact = await self.get_raw_artifact(artifact_id)
-            if artifact:
-                artifacts_by_id[artifact.id] = artifact
-
-        receipt_ids_by_event: dict[str, list[str]] = {}
-        receipt_ids_by_evidence: dict[str, list[str]] = {}
-        for receipt in receipts:
-            if receipt.event_id:
-                receipt_ids_by_event.setdefault(receipt.event_id, []).append(receipt.id)
-            if receipt.evidence_id:
-                receipt_ids_by_evidence.setdefault(receipt.evidence_id, []).append(receipt.id)
-
-        manifest = {
-            "format": "episode.bundle",
-            "episode": {
-                "id": episode.id,
-                "state": episode.state.value,
-                "primary_area_id": episode.primary_area_id,
-                "start_time": _utc_iso(episode.start_time),
-                "last_event_time": _utc_iso(episode.last_event_time),
-                "last_activity_at": _utc_iso(episode.last_activity_at),
-                "end_time": _utc_iso(episode.end_time),
-                "summary": episode.summary,
-            },
-            "areas": areas,
-            "devices": devices,
-            "events": [
-                {
-                    "id": event.id,
-                    "timestamp": _utc_iso(event.timestamp),
-                    "type": event.event_type,
-                    "state": event.event_state.value,
-                    "device_id": event.device_id,
-                    "area_id": event.area_id,
-                    "dedup_key": event.dedup_key,
-                    "receipt_ids": receipt_ids_by_event.get(event.id, []),
-                    "metadata": event.metadata,
-                }
-                for event in events
-            ],
-            "evidence": [
-                {
-                    "id": item.id,
-                    "timestamp": _utc_iso(item.timestamp),
-                    "type": item.evidence_type,
-                    "device_id": item.device_id,
-                    "area_id": item.area_id,
-                    "event_id": item.event_id,
-                    "artifact_id": item.artifact_id,
-                    "file": relative_bundle_path(self._data_dir, episode_id, item.file_path),
-                    "mime_type": item.mime_type,
-                    "original_filename": item.original_filename,
-                    "byte_size": item.byte_size,
-                    "sha256": item.sha256,
-                    "receipt_ids": receipt_ids_by_evidence.get(item.id, []),
-                    "metadata": item.metadata,
-                }
-                for item in evidence
-            ],
-            "receipts": [
-                {
-                    "id": receipt.id,
-                    "source": receipt.source,
-                    "received_at": _utc_iso(receipt.received_at),
-                    "observed_at": _utc_iso(receipt.observed_at),
-                    "status": receipt.status.value,
-                    "device_id": receipt.device_id,
-                    "area_id": receipt.area_id,
-                    "artifact_id": receipt.artifact_id,
-                    "event_id": receipt.event_id,
-                    "evidence_id": receipt.evidence_id,
-                    "external_id": receipt.external_id,
-                    "metadata": receipt.metadata,
-                }
-                for receipt in receipts
-            ],
-            "artifacts": [
-                {
-                    "id": artifact.id,
-                    "type": artifact.artifact_type,
-                    "file": relative_bundle_path(self._data_dir, episode_id, artifact.file_path),
-                    "mime_type": artifact.mime_type,
-                    "original_filename": artifact.original_filename,
-                    "byte_size": artifact.byte_size,
-                    "sha256": artifact.sha256,
-                    "sealed": artifact.sealed,
-                    "metadata": artifact.metadata,
-                }
-                for artifact in artifacts_by_id.values()
-            ],
-        }
-        await asyncio.to_thread(write_manifest, self._data_dir, episode_id, manifest)
+        await self._bundles.refresh(episode_id)
 
     # --- Row deserialization ---
 

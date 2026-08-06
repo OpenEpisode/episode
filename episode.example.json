@@ -7,6 +7,9 @@
   "actions": {
     "recording": {
       "segment_seconds": 600
+    },
+    "snapshot": {
+      "enabled": false
     }
   },
   "connectors": [
@@ -129,10 +132,5 @@
         }
       }
     }
-  ],
-  "actions": {
-    "snapshot": {
-      "enabled": false
-    }
-  }
+  ]
 }

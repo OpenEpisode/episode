@@ -54,6 +54,7 @@ class PluginStatus:
     architecture: str | None = None
     error: str | None = None
     instances: tuple[PluginInstanceStatus, ...] = ()
+    metrics: Mapping[str, object] = field(default_factory=dict)
 
     def public(self) -> dict:
         return asdict(self)
@@ -77,7 +78,6 @@ class RawPluginDelivery:
     received_at: datetime
     payload: bytes
     metadata: Mapping[str, object]
-    event: PluginEvent | None = None
 
 
 RawPluginDeliverySink = Callable[[RawPluginDelivery], Awaitable[None]]
@@ -88,6 +88,7 @@ class PluginContext:
     plugins_dir: Path
     configured_devices: tuple[Mapping[str, object], ...] = ()
     raw_delivery_sink: RawPluginDeliverySink | None = None
+    ingress_router: object | None = None
 
 
 class ManagedPlugin(Protocol):
@@ -108,6 +109,7 @@ class PluginRegistration:
     kind: str
     activation_capability: str
     factory: PluginFactory
+    activation_connector_type: str = ""
 
     def validating_status(self) -> PluginStatus:
         return PluginStatus(

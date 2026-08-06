@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class CanonicalEventResult:
+    event: Event
+    created: bool
+
+
 class EpisodeEngine:
     def __init__(self, repo: Repository, bus: EventBus, timeout: int = 30):
         self._repo = repo
@@ -32,16 +39,31 @@ class EpisodeEngine:
         self._running = False
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._lifecycle_lock = asyncio.Lock()
+        self._timeout_task: asyncio.Task | None = None
 
     async def start(self):
+        if self._running:
+            return
         self._running = True
         self._bus.subscribe("receipt.received", self._on_receipt_received)
         self._bus.subscribe("event.received", self._on_event_received)
         self._bus.subscribe("evidence.received", self._on_evidence_received)
-        asyncio.create_task(self._timeout_loop())
+        self._timeout_task = asyncio.create_task(
+            self._timeout_loop(),
+            name="episode-timeout-loop",
+        )
 
     async def stop(self):
+        if not self._running:
+            return
         self._running = False
+        self._bus.unsubscribe("receipt.received", self._on_receipt_received)
+        self._bus.unsubscribe("event.received", self._on_event_received)
+        self._bus.unsubscribe("evidence.received", self._on_evidence_received)
+        if self._timeout_task:
+            self._timeout_task.cancel()
+            await asyncio.gather(self._timeout_task, return_exceptions=True)
+            self._timeout_task = None
 
     async def _persist_delivery(self, msg: Message) -> IngestionReceipt | None:
         artifact_data = msg.data.get("artifact")
@@ -64,8 +86,14 @@ class EpisodeEngine:
             )
 
     async def _on_event_received(self, msg: Message):
+        """Compatibility adapter for connectors not yet using IngestionService."""
         receipt = await self._persist_delivery(msg)
         candidate = Event(**msg.data["event"])
+        await self.ingest_event(candidate, receipt=receipt)
+
+    async def ingest_event(
+        self, candidate: Event, *, receipt: IngestionReceipt | None = None
+    ) -> CanonicalEventResult:
         logger.debug(
             "Event received: id=%s, area=%s, device=%s, type=%s, state=%s, ts=%s",
             candidate.id,
@@ -119,12 +147,9 @@ class EpisodeEngine:
             for ev in orphan:
                 await self._match_orphan_evidence(ev)
 
-        msg.data["event"] = {
-            **msg.data["event"],
-            "id": event.id,
-            "episode_id": event.episode_id,
-        }
-        msg.data["canonical_event_created"] = created
+        result = CanonicalEventResult(event=event, created=created)
+        await self._bus.publish(Message(type="event.canonicalized", data={"result": result}))
+        return result
 
     async def _on_evidence_received(self, msg: Message):
         receipt = await self._persist_delivery(msg)

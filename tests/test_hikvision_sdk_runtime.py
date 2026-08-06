@@ -14,7 +14,10 @@ from episode.config import EpisodeConfig
 from episode.domain.models import Area, Device
 from episode.engine.bus import EventBus
 from episode.engine.engine import EpisodeEngine
+from episode.ingestion.router import IngressHandlerRegistration, IngressRouter
+from episode.ingestion.service import IngestionService
 from episode.plugins.deliveries import RawPluginDeliveryStore
+from episode.plugins.hikvision_sdk.plugin import HikvisionSDKPlugin
 from episode.plugins.hikvision_sdk.runtime import SDKDeviceConfig, SDKDeviceWorker
 from episode.plugins.hikvision_sdk.worker import (
     NET_DVR_ALARMER,
@@ -30,7 +33,7 @@ from episode.plugins.hikvision_sdk.worker import (
     _format_firmware_version,
     _get_device_info,
 )
-from episode.plugins.models import PluginEvent, PluginInstanceState, RawPluginDelivery
+from episode.plugins.models import PluginInstanceState, RawPluginDelivery
 from episode.storage.repository import Repository
 
 
@@ -107,9 +110,6 @@ async def test_worker_preserves_raw_notification_and_reports_health(tmp_path):
         "command": 0x1133,
         "sdk_buffer_length": len(payload),
     }
-    assert deliveries[0].event is not None
-    assert deliveries[0].event.event_type == "doorbell"
-    assert deliveries[0].event.event_state == "active"
     status = worker.status()
     assert status.state == PluginInstanceState.RUNNING
     assert status.messages_received == 1
@@ -239,7 +239,10 @@ async def test_raw_plugin_delivery_store_seals_bytes_and_records_receipt(tmp_pat
     config = EpisodeConfig(data_dir=str(tmp_path / "data"))
     repository = Repository(config)
     await repository.initialize()
-    store = RawPluginDeliveryStore(config.data_dir, repository)
+    bus = EventBus()
+    engine = EpisodeEngine(repository, bus, timeout=30)
+    router = IngressRouter()
+    store = RawPluginDeliveryStore(IngestionService(config.data_dir, repository, engine, router))
     received_at = datetime.now(tz=timezone.utc)
 
     await store(
@@ -287,9 +290,17 @@ async def test_interpreted_plugin_delivery_uses_canonical_episode_pipeline(tmp_p
     bus = EventBus()
     engine = EpisodeEngine(repository, bus, timeout=30)
     await engine.start()
-    store = RawPluginDeliveryStore(config.data_dir, repository, bus)
+    router = IngressRouter()
+    router.register(
+        IngressHandlerRegistration(
+            id="hikvision-sdk-events",
+            matcher=HikvisionSDKPlugin._matches_ingress,
+            handler=HikvisionSDKPlugin._interpret_ingress,
+        )
+    )
+    store = RawPluginDeliveryStore(IngestionService(config.data_dir, repository, engine, router))
     received_at = datetime.now(tz=timezone.utc)
-    raw = b"sealed ring callback"
+    raw = _ring_payload()
 
     await store(
         RawPluginDelivery(
@@ -299,14 +310,6 @@ async def test_interpreted_plugin_delivery_uses_canonical_episode_pipeline(tmp_p
             received_at=received_at,
             payload=raw,
             metadata={"command": 0x1133},
-            event=PluginEvent(
-                timestamp=received_at,
-                event_type="doorbell",
-                event_state="active",
-                source="hikvision:sdk",
-                dedup_key="stable-ring-identity",
-                metadata={"phase": "ringing"},
-            ),
         )
     )
 

@@ -10,6 +10,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable, Sequence
 
+from episode.domain.models import ReceiptStatus
+from episode.ingestion.models import (
+    EventObservation,
+    IngressHandlerResult,
+    StoredIngressEnvelope,
+)
+from episode.ingestion.router import IngressHandlerRegistration, IngressRouter
+from episode.plugins.hikvision_sdk.events import interpret_event
 from episode.plugins.hikvision_sdk.runtime import SDKDeviceConfig, SDKDeviceWorker
 from episode.plugins.models import (
     PluginContext,
@@ -216,6 +224,10 @@ class HikvisionSDKPlugin:
         self._path = context.plugins_dir / PLUGIN_ID
         self._configured_devices = _configured_sdk_devices(context.configured_devices)
         self._delivery_sink = context.raw_delivery_sink
+        self._ingress_router = (
+            context.ingress_router if isinstance(context.ingress_router, IngressRouter) else None
+        )
+        self._handler_registered = False
         self._runner = runner or SubprocessProbeRunner()
         self._probe_command = probe_command or _default_probe_command
         self._worker_factory = worker_factory or _default_worker_factory
@@ -229,7 +241,52 @@ class HikvisionSDKPlugin:
             state=PluginState.VALIDATING,
         )
 
+    @staticmethod
+    def _matches_ingress(envelope: StoredIngressEnvelope) -> bool:
+        return envelope.transport == "plugin" and envelope.metadata.get("plugin_id") == PLUGIN_ID
+
+    @staticmethod
+    async def _interpret_ingress(envelope: StoredIngressEnvelope) -> IngressHandlerResult:
+        command = envelope.metadata.get("command")
+        if not isinstance(command, int):
+            return IngressHandlerResult(
+                claimed=True,
+                status=ReceiptStatus.REJECTED,
+                metadata={"reason": "missing_sdk_command"},
+            )
+
+        event = interpret_event(
+            command,
+            envelope.payload,
+            envelope.device_id,
+            envelope.received_at,
+        )
+        if event is None:
+            return IngressHandlerResult(
+                claimed=True,
+                metadata={"interpreted": False, "sdk_command": command},
+            )
+        return IngressHandlerResult(
+            claimed=True,
+            event=EventObservation(
+                timestamp=event.timestamp,
+                event_type=event.event_type,
+                event_state=event.event_state,
+                source=event.source,
+                device_id=envelope.device_id,
+                area_id=envelope.area_id,
+                dedup_key=event.dedup_key,
+                metadata=event.metadata,
+            ),
+            metadata={"interpreted": True, "sdk_command": command},
+        )
+
     def status(self) -> PluginStatus:
+        metrics = (
+            self._ingress_router.status("hikvision-sdk-events")
+            if self._ingress_router is not None
+            else None
+        )
         instances = (
             *self._invalid_instances,
             *(worker.status() for worker in self._workers),
@@ -239,6 +296,7 @@ class HikvisionSDKPlugin:
                 **{
                     **self._status.public(),
                     "instances": tuple(instances),
+                    "metrics": metrics or {},
                 }
             )
 
@@ -261,6 +319,7 @@ class HikvisionSDKPlugin:
             architecture=self._status.architecture,
             error=error,
             instances=tuple(instances),
+            metrics=metrics or {},
         )
 
     async def start(self) -> None:
@@ -299,6 +358,15 @@ class HikvisionSDKPlugin:
             version=version,
             architecture=self._status.architecture,
         )
+        if self._ingress_router is not None:
+            self._ingress_router.register(
+                IngressHandlerRegistration(
+                    id="hikvision-sdk-events",
+                    matcher=self._matches_ingress,
+                    handler=self._interpret_ingress,
+                )
+            )
+            self._handler_registered = True
         if not self._configured_devices:
             return
         if self._delivery_sink is None:
@@ -346,4 +414,7 @@ class HikvisionSDKPlugin:
             return_exceptions=True,
         )
         self._workers.clear()
+        if self._handler_registered and self._ingress_router is not None:
+            self._ingress_router.unregister("hikvision-sdk-events")
+            self._handler_registered = False
         await self._runner.stop()

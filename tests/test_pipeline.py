@@ -14,7 +14,7 @@ from episode.config import EpisodeConfig
 from episode.domain.models import EpisodeState, Event, EventState
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
-from episode.storage import repository as repository_module
+from episode.storage import projection as projection_module
 from episode.storage.repository import Repository
 
 
@@ -237,7 +237,7 @@ async def test_concurrent_manifest_refresh_cannot_overwrite_newer_state(
     release_first_write = threading.Event()
     write_count = 0
     count_lock = threading.Lock()
-    original_write = repository_module.write_manifest
+    original_write = projection_module.write_manifest
 
     def delayed_first_write(*args, **kwargs):
         nonlocal write_count
@@ -249,7 +249,7 @@ async def test_concurrent_manifest_refresh_cannot_overwrite_newer_state(
             assert release_first_write.wait(timeout=5)
         return original_write(*args, **kwargs)
 
-    monkeypatch.setattr(repository_module, "write_manifest", delayed_first_write)
+    monkeypatch.setattr(projection_module, "write_manifest", delayed_first_write)
     stale_refresh = asyncio.create_task(repo.refresh_episode_manifest(episode.id))
     assert await asyncio.to_thread(first_write_started.wait, 2)
 

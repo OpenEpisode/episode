@@ -38,6 +38,7 @@ class ISAPIConnector(Connector):
         self._area_id = config.get("area_id", "")
         self._ignore_events: list[str] = config.get("ignore_events", [])
         self._client: httpx.AsyncClient | None = None
+        self._stream_task: asyncio.Task | None = None
         self._last_event_time: str | None = None
         self._stream_active = False
 
@@ -52,6 +53,8 @@ class ISAPIConnector(Connector):
         }
 
     async def start(self):
+        if self._running:
+            return
         self._running = True
         self._client = httpx.AsyncClient(auth=self._auth, timeout=None)
         logger.info(
@@ -60,12 +63,20 @@ class ISAPIConnector(Connector):
             self._safe_url(),
             self._ignore_events,
         )
-        asyncio.create_task(self._stream())
+        self._stream_task = asyncio.create_task(
+            self._stream(),
+            name=f"isapi-stream:{self._device_id}",
+        )
 
     async def stop(self):
         self._running = False
         if self._client:
             await self._client.aclose()
+            self._client = None
+        if self._stream_task:
+            self._stream_task.cancel()
+            await asyncio.gather(self._stream_task, return_exceptions=True)
+            self._stream_task = None
 
     def _safe_url(self) -> str:
         parsed = urlparse(self._url)

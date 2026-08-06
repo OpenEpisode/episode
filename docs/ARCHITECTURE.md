@@ -1,17 +1,20 @@
 # Architecture
 
-Episode is a local-first incident capture system. Connectors translate external
-protocols into a small vendor-neutral domain; they do not decide how incidents
-are correlated or which actions run.
+Episode is a local-first incident capture system. Core transports receive and
+preserve opaque deliveries; configured plugins can interpret them into a small
+vendor-neutral domain. Neither layer decides how incidents are correlated or
+which actions run.
 
 ## Processing flow
 
 ```mermaid
 flowchart LR
-    Device[Device or user] --> Connector[Connector]
-    Connector --> Artifact[Raw artifact]
-    Connector --> Receipt[Ingestion receipt]
-    Receipt --> Canonical[Canonical event or evidence]
+    Device[Device or user] --> Transport[Core transport or device connector]
+    Transport --> Ingress[Raw-first ingress]
+    Ingress --> Artifact[Sealed raw artifact]
+    Ingress --> Receipt[Ingestion receipt]
+    Ingress --> Router[Configured plugin handlers]
+    Router --> Canonical[Normalized observation]
     Canonical --> Engine[Episode engine]
     Engine --> Bundle[Episode bundle]
     Engine --> Targets[Action target resolver]
@@ -19,8 +22,15 @@ flowchart LR
     Action --> Bundle
 ```
 
-Raw bytes are preserved before parsing. A malformed or ignored delivery still
-creates a receipt and artifact record.
+Raw bytes and their receipt are committed before a handler receives an
+immutable ingress envelope. That envelope includes the receipt and artifact
+identities, bounded payload bytes, byte length, SHA-256, seal state, and
+transport metadata. A malformed, unknown, ignored, or failed delivery therefore
+still has a durable receipt and artifact record.
+
+Handler selection is explicit. Installed files do not activate plugins, handler
+execution has a timeout, failures are isolated, and conflicting claims are
+rejected instead of being resolved by registration order.
 
 ## Domain language
 
@@ -51,20 +61,28 @@ not to protocol connectors.
 
 ```text
 src/episode/
-├── connectors/       ONVIF and optional vendor protocol adapters
-├── media/            runtime camera media registry
+├── connectors/       shared transports and current device connectors
+├── ingestion/        raw-first preservation and bounded plugin dispatch
+├── plugins/          lazy integrations and vendor interpretation
+├── media/            camera media registry and timelapse service
 ├── actions/          vendor-neutral snapshot action
 ├── domain/           vendor-neutral models and identities
 ├── engine/           correlation and lifecycle orchestration
 ├── recording/        vendor-neutral recording action
-├── storage/          SQLite, immutable files, provenance, bundles
+├── storage/          SQLite, immutable files, provenance, bundle projection
 ├── api/              public HTTP representation
 └── ui/               static Episode-first web interface
 ```
 
-Dependencies point inward: connectors, storage, actions, API, and UI may depend
-on domain concepts. The domain must not depend on Hikvision, FastAPI, SQLite, or
-FFmpeg.
+Dependencies point inward: transports, plugins, storage, actions, API, and UI
+may depend on domain concepts. The domain must not depend on Hikvision, FastAPI,
+SQLite, or FFmpeg. Shared transports must not import vendor parsers.
+
+The first shared-ingress implementation is Alarm Server: the core HTTP
+transport preserves the complete request body, while the configured Hikvision
+handler extracts `EventNotificationAlert`, resolves its device identity, and
+emits a normalized observation. HCNetSDK callbacks follow the same raw-first
+route; native decoding remains isolated in the SDK plugin.
 
 ## Persistence model
 
@@ -139,8 +157,11 @@ Signed manifests and external timestamping are possible future extensions.
 
 ## Extension rules
 
-New connectors should produce Raw Artifacts and Ingestion Receipts, then an
-optional normalized Event or Evidence message.
+New shared transports should submit opaque deliveries to `IngestionService`.
+Vendor or protocol plugins register narrow matchers and return a normalized
+observation only after the durable boundary. Per-device connectors that have
+not migrated yet must still preserve Raw Artifacts and Ingestion Receipts before
+publishing an Event or Evidence compatibility message.
 
 New actions should consume canonical domain messages or target-resolution
 decisions. They must not subscribe directly to vendor-specific connector

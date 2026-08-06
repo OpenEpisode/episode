@@ -17,13 +17,27 @@ class PluginRegistry:
             raise ValueError(f"Plugin {registration.id!r} is already registered")
         self._registrations[registration.id] = registration
 
-    def for_capabilities(self, capabilities: Iterable[str]) -> list[PluginRegistration]:
+    def for_configuration(
+        self,
+        capabilities: Iterable[str],
+        connector_types: Iterable[str] = (),
+    ) -> list[PluginRegistration]:
         configured = set(capabilities)
+        configured_connectors = set(connector_types)
         return [
             registration
             for registration in self._registrations.values()
-            if registration.activation_capability in configured
+            if (
+                registration.activation_capability in configured
+                or (
+                    registration.activation_connector_type
+                    and registration.activation_connector_type in configured_connectors
+                )
+            )
         ]
+
+    def for_capabilities(self, capabilities: Iterable[str]) -> list[PluginRegistration]:
+        return self.for_configuration(capabilities)
 
 
 def module_plugin_factory(module_name: str) -> PluginFactory:
@@ -43,6 +57,14 @@ def builtin_plugin_registry() -> PluginRegistry:
                 kind="native-sdk",
                 activation_capability="hikvision_sdk",
                 factory=module_plugin_factory("episode.plugins.hikvision_sdk"),
-            )
+            ),
+            PluginRegistration(
+                id="hikvision-alarm-server",
+                name="Hikvision Alarm Server",
+                kind="ingress-handler",
+                activation_capability="",
+                activation_connector_type="alarm_server",
+                factory=module_plugin_factory("episode.plugins.hikvision_alarm"),
+            ),
         ]
     )

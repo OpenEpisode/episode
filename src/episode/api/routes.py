@@ -3,15 +3,10 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import os
-import shutil
-import subprocess
-import tempfile
-import xml.etree.ElementTree as ET
 from dataclasses import asdict
-from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
 
 from episode import __version__
 from episode.api.schemas import (
@@ -25,7 +20,11 @@ from episode.api.schemas import (
     IngestionReceiptResponse,
 )
 from episode.domain.models import EpisodeState
-from episode.media.timelapse import is_timelapse_eligible
+from episode.media.timelapse import (
+    TimelapseGenerationError,
+    TimelapseNotFoundError,
+    TimelapseService,
+)
 
 
 def _public_event(event, receipt_sources: list[str] | None = None) -> EventResponse:
@@ -52,33 +51,31 @@ def _public_evidence(evidence) -> EvidenceResponse:
     return EvidenceResponse.model_validate(data)
 
 
-def _merge_events(events):
-    """Group events by (device_id, event_type, event_state, truncated_timestamp)
-    and return merged dicts with a ``sources`` array instead of single ``source``."""
-    groups: dict[tuple, dict] = {}
-    for e in events:
-        ts_key = e.timestamp.replace(microsecond=0)
-        state_str = e.event_state.value if hasattr(e.event_state, "value") else e.event_state
-        key = (e.device_id, e.event_type, state_str, ts_key)
-        if key not in groups:
-            d = asdict(e)
-            d["sources"] = [d.pop("source")]
-            groups[key] = d
-        else:
-            src = e.source
-            if src not in groups[key]["sources"]:
-                groups[key]["sources"].append(src)
-    return list(groups.values())
+def _event_annotations(event) -> tuple[dict[str, float] | None, str | None]:
+    metadata = event.get("metadata", {}) if isinstance(event, dict) else event.metadata
+    if not isinstance(metadata, dict):
+        return None, None
+    bounding_box = metadata.get("bounding_box")
+    target_type = metadata.get("target_type")
+    return (
+        bounding_box if isinstance(bounding_box, dict) else None,
+        target_type if isinstance(target_type, str) else None,
+    )
 
 
-def create_api(repo, data_dir: str = "", snapshot_window: int = 1) -> FastAPI:
+def create_api(
+    repo,
+    data_dir: str = "",
+    snapshot_window: int = 1,
+    timelapses: TimelapseService | None = None,
+) -> FastAPI:
     app = FastAPI(
         title="Episode",
         description="Local-first, event-driven incident capture API",
         version=__version__,
     )
 
-    timelapse_dir = os.path.join(data_dir, "episodes") if data_dir else ""
+    timelapse_service = timelapses or TimelapseService(repo, data_dir)
 
     async def public_event_with_receipts(event) -> EventResponse:
         event_id = event.get("id") if isinstance(event, dict) else event.id
@@ -154,7 +151,7 @@ def create_api(repo, data_dir: str = "", snapshot_window: int = 1) -> FastAPI:
         events = await repo.list_events(
             episode_id=episode_id, limit=max(episode.event_count, 10000)
         )
-        return await public_events(_merge_events(events))
+        return await public_events(events)
 
     @app.get("/api/v1/episodes/{episode_id}/evidence", response_model=list[EvidenceResponse])
     async def episode_evidence(episode_id: str):
@@ -179,97 +176,19 @@ def create_api(repo, data_dir: str = "", snapshot_window: int = 1) -> FastAPI:
 
     @app.get("/api/v1/episodes/{episode_id}/timelapse")
     async def episode_timelapse(episode_id: str, device_id: str | None = None):
-        episode = await repo.get_episode(episode_id)
-        if not episode:
-            raise HTTPException(404, "Episode not found")
-        evidence = await repo.list_evidence(episode_id=episode_id)
-        snapshots = [
-            e
-            for e in evidence
-            if is_timelapse_eligible(e) and e.file_path and os.path.exists(e.file_path)
-        ]
-        if device_id:
-            snapshots = [e for e in snapshots if e.device_id == device_id]
-        snapshots.sort(key=lambda e: e.timestamp)
-        if not snapshots:
-            raise HTTPException(404, "No snapshot evidence for this episode")
-
-        cache_path = ""
-        if timelapse_dir:
-            cache_sub = os.path.join(timelapse_dir, episode_id, "timelapses")
-            os.makedirs(cache_sub, exist_ok=True)
-            suffix = f"_{device_id}" if device_id else ""
-            cache_path = os.path.join(cache_sub, f"timelapse{suffix}.mp4")
-            # Reuse cached timelapse if snapshots haven't changed
-            if os.path.exists(cache_path):
-                latest_snap = max(s.timestamp for s in snapshots)
-                cache_mtime = datetime.fromtimestamp(os.path.getmtime(cache_path), tz=timezone.utc)
-                if cache_mtime > latest_snap:
-                    return FileResponse(
-                        cache_path,
-                        media_type="video/mp4",
-                        headers={
-                            "Content-Disposition": (
-                                f"inline; filename=timelapse_{episode_id[:8]}{suffix}.mp4"
-                            ),
-                        },
-                    )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            seq = []
-            for i, ev in enumerate(snapshots):
-                ext = os.path.splitext(ev.file_path)[1] or ".jpg"
-                link = os.path.join(tmpdir, f"img{i:04d}{ext}")
-                os.symlink(ev.file_path, link)
-                seq.append(link)
-
-            concat_file = os.path.join(tmpdir, "files.txt")
-            with open(concat_file, "w") as f:
-                for link in seq:
-                    f.write(f"file '{link}'\nduration 0.2\n")
-
-            output = os.path.join(tmpdir, "timelapse.mp4")
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg",
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                concat_file,
-                "-vsync",
-                "vfr",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
-                output,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            await proc.wait()
-
-            if not os.path.exists(output) or proc.returncode != 0:
-                raise HTTPException(500, "Failed to generate timelapse")
-
-            if cache_path:
-                shutil.copy2(output, cache_path)
-
-            suffix = f"_{device_id}" if device_id else ""
-            return Response(
-                content=open(output, "rb").read(),
-                media_type="video/mp4",
-                headers={
-                    "Content-Disposition": (
-                        f"inline; filename=timelapse_{episode_id[:8]}{suffix}.mp4"
-                    ),
-                },
-            )
+        try:
+            path = await timelapse_service.get_or_create(episode_id, device_id)
+        except TimelapseNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except TimelapseGenerationError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        return FileResponse(
+            path,
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f'inline; filename="{os.path.basename(path)}"',
+            },
+        )
 
     @app.get("/api/v1/events", response_model=list[EventResponse])
     async def list_events(
@@ -280,7 +199,7 @@ def create_api(repo, data_dir: str = "", snapshot_window: int = 1) -> FastAPI:
         offset: int = 0,
     ):
         events = await repo.list_events(episode_id, area_id, device_id, limit, offset)
-        return await public_events(_merge_events(events))
+        return await public_events(events)
 
     @app.get("/api/v1/events/{event_id}", response_model=EventResponse)
     async def get_event(event_id: str):
@@ -320,26 +239,7 @@ def create_api(repo, data_dir: str = "", snapshot_window: int = 1) -> FastAPI:
         if snapshot_window and abs((closest.timestamp - evt_ts).total_seconds()) > snapshot_window:
             raise HTTPException(404, "Closest snapshot exceeds snapshot window")
 
-        bbox = None
-        target_type = None
-        if event.raw_payload_path and os.path.exists(event.raw_payload_path):
-            try:
-                ns = {"ns": "http://www.hikvision.com/ver20/XMLSchema"}
-                tree = ET.parse(event.raw_payload_path)
-                root = tree.getroot()
-                rect = root.find(".//ns:targetRect", ns)
-                if rect is not None:
-                    bbox = {
-                        "x": float(rect.findtext("ns:X", "0", ns)),
-                        "y": float(rect.findtext("ns:Y", "0", ns)),
-                        "width": float(rect.findtext("ns:width", "0", ns)),
-                        "height": float(rect.findtext("ns:height", "0", ns)),
-                    }
-                tt = root.findtext("ns:targetType", "", ns)
-                if tt:
-                    target_type = tt.strip()
-            except Exception:
-                pass
+        bbox, target_type = _event_annotations(event)
 
         return {
             "snapshot": _public_evidence(closest),
@@ -412,19 +312,7 @@ def create_api(repo, data_dir: str = "", snapshot_window: int = 1) -> FastAPI:
         ep_ids = [x.strip() for x in ids.split(",") if x.strip()]
         if not ep_ids:
             return {}
-        rows = await repo._conn.execute_fetchall(
-            """SELECT e.episode_id, e.id AS evidence_id
-               FROM evidence e
-               INNER JOIN (
-                 SELECT episode_id, MIN(timestamp) AS min_ts
-                 FROM evidence
-                 WHERE episode_id IN ({}) AND mime_type LIKE 'image/%'
-                 GROUP BY episode_id
-               ) f ON e.episode_id = f.episode_id AND e.timestamp = f.min_ts
-               WHERE e.mime_type LIKE 'image/%'""".format(",".join("?" * len(ep_ids))),
-            ep_ids,
-        )
-        return {row[0]: row[1] for row in rows}
+        return await repo.episode_covers(ep_ids)
 
     @app.get("/api/v1/evidence/{evidence_id}", response_model=EvidenceResponse)
     async def get_evidence(evidence_id: str):
@@ -441,43 +329,22 @@ def create_api(repo, data_dir: str = "", snapshot_window: int = 1) -> FastAPI:
         if not ev.episode_id:
             raise HTTPException(404, "Evidence not linked to an episode")
 
-        events = _merge_events(
-            await repo.list_events(
-                episode_id=ev.episode_id,
-                device_id=ev.device_id,
-            )
+        events = await repo.list_events(
+            episode_id=ev.episode_id,
+            device_id=ev.device_id,
         )
-        events = [e for e in events if e["timestamp"] <= ev.timestamp]
+        events = [event for event in events if event.timestamp <= ev.timestamp]
         if not events:
             raise HTTPException(404, "No events found for this evidence")
 
-        closest = min(events, key=lambda e: abs(e["timestamp"] - ev.timestamp))
+        closest = min(events, key=lambda event: abs(event.timestamp - ev.timestamp))
         if (
             snapshot_window
-            and abs((closest["timestamp"] - ev.timestamp).total_seconds()) > snapshot_window
+            and abs((closest.timestamp - ev.timestamp).total_seconds()) > snapshot_window
         ):
             raise HTTPException(404, "Closest event exceeds snapshot window")
 
-        bbox = None
-        target_type = None
-        if closest.get("raw_payload_path") and os.path.exists(closest["raw_payload_path"]):
-            try:
-                ns = {"ns": "http://www.hikvision.com/ver20/XMLSchema"}
-                tree = ET.parse(closest["raw_payload_path"])
-                root = tree.getroot()
-                rect = root.find(".//ns:targetRect", ns)
-                if rect is not None:
-                    bbox = {
-                        "x": float(rect.findtext("ns:X", "0", ns)),
-                        "y": float(rect.findtext("ns:Y", "0", ns)),
-                        "width": float(rect.findtext("ns:width", "0", ns)),
-                        "height": float(rect.findtext("ns:height", "0", ns)),
-                    }
-                tt = root.findtext("ns:targetType", "", ns)
-                if tt:
-                    target_type = tt.strip()
-            except Exception:
-                pass
+        bbox, target_type = _event_annotations(closest)
 
         return {
             "event": await public_event_with_receipts(closest),

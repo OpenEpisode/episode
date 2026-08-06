@@ -12,14 +12,17 @@ from episode import __version__
 from episode.actions.snapshot import SnapshotEngine
 from episode.api.routes import create_api
 from episode.config import EpisodeConfig, load_config
-from episode.connectors.hikvision.alarm_server import AlarmServerConnector
 from episode.connectors.hikvision.ftp import FTPConnector
 from episode.connectors.hikvision.isapi import ISAPIConnector
+from episode.connectors.http_ingress import HTTPIngressConnector
 from episode.connectors.onvif import ONVIFConnector
 from episode.domain.models import Area, Device
 from episode.engine.bus import EventBus
 from episode.engine.engine import EpisodeEngine
+from episode.ingestion.router import IngressRouter
+from episode.ingestion.service import IngestionService
 from episode.media import MediaRegistry
+from episode.media.timelapse import TimelapseService
 from episode.plugins import PluginContext, PluginManager, builtin_plugin_registry
 from episode.plugins.api import register_plugins_api
 from episode.plugins.deliveries import RawPluginDeliveryStore
@@ -34,13 +37,17 @@ class Application:
         self._config = config
         self._bus = EventBus()
         self._repo = Repository(config)
-        self._raw_plugin_deliveries = RawPluginDeliveryStore(
+        self._engine = EpisodeEngine(self._repo, self._bus, config.episode_timeout)
+        self._ingress_router = IngressRouter()
+        self._ingestion = IngestionService(
             config.data_dir,
             self._repo,
-            self._bus,
+            self._engine,
+            self._ingress_router,
         )
+        self._raw_plugin_deliveries = RawPluginDeliveryStore(self._ingestion)
         self._media = MediaRegistry()
-        self._engine = EpisodeEngine(self._repo, self._bus, config.episode_timeout)
+        self._timelapses = TimelapseService(self._repo, config.data_dir)
         self._recorder = RecordingEngine(
             self._repo,
             self._bus,
@@ -52,17 +59,29 @@ class Application:
         configured_capabilities = {
             capability for device in config.devices for capability in device.get("capabilities", [])
         }
+        configured_connector_types = {
+            connector.type for connector in config.connectors if connector.enabled
+        }
         registry = builtin_plugin_registry()
         self._plugins = PluginManager(
-            registry.for_capabilities(configured_capabilities),
+            registry.for_configuration(
+                configured_capabilities,
+                configured_connector_types,
+            ),
             PluginContext(
                 Path(config.plugins_dir),
                 tuple(config.devices),
                 self._raw_plugin_deliveries,
+                self._ingress_router,
             ),
         )
         self._connectors = []
-        self._fastapi_app = create_api(self._repo, config.data_dir, config.snapshot_window)
+        self._fastapi_app = create_api(
+            self._repo,
+            config.data_dir,
+            config.snapshot_window,
+            self._timelapses,
+        )
         register_plugins_api(self._fastapi_app, self._plugins)
 
     async def start(self):
@@ -100,6 +119,9 @@ class Application:
         logger.info("Starting Episode Engine...")
         await self._engine.start()
 
+        logger.info("Starting media services...")
+        await self._timelapses.start()
+
         logger.info("Starting Recording Engine...")
         await self._recorder.start()
 
@@ -120,7 +142,7 @@ class Application:
                 continue
             conn = self._build_connector(conn_cfg)
             if conn:
-                if isinstance(conn, AlarmServerConnector):
+                if isinstance(conn, HTTPIngressConnector):
                     conn.mount(self._fastapi_app)
                 self._connectors.append(conn)
                 await conn.start()
@@ -171,6 +193,7 @@ class Application:
         await self._plugins.stop()
         for conn in self._connectors:
             await conn.stop()
+        await self._timelapses.stop()
         await self._snapshotter.stop()
         await self._recorder.stop()
         await self._engine.stop()
@@ -194,12 +217,12 @@ class Application:
     def _build_connector(self, cfg):
         t = cfg.type
         if t == "alarm_server":
-            return AlarmServerConnector(
+            return HTTPIngressConnector(
                 cfg.settings.get("name", t),
-                self._bus,
+                self._ingestion,
                 cfg.settings,
-                self._config,
-                repo=self._repo,
+                self._config.api_port,
+                connector_type=t,
             )
         if t == "ftp":
             return FTPConnector(

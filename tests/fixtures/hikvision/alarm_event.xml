@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EventNotificationAlert xmlns="http://www.hikvision.com/ver20/XMLSchema">
+  <ipAddress>192.0.2.10</ipAddress>
+  <dateTime>2026-08-06T12:34:56+00:00</dateTime>
+  <eventType>VMD</eventType>
+  <eventState>active</eventState>
+  <channelName>Front gate</channelName>
+  <DetectionRegionList>
+    <DetectionRegionEntry>
+      <targetType>human</targetType>
+      <targetRect>
+        <X>0.125</X>
+        <Y>0.25</Y>
+        <width>0.5</width>
+        <height>0.625</height>
+      </targetRect>
+    </DetectionRegionEntry>
+  </DetectionRegionList>
+</EventNotificationAlert>

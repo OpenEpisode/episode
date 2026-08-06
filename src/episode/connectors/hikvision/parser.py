@@ -74,6 +74,37 @@ class HikvisionEvent:
         return self._root.findtext(".//hk:ipAddress", "", _HK_NS)
 
     @property
+    def target_type(self) -> str | None:
+        value = self._root.findtext(".//hk:targetType", "", _HK_NS).strip()
+        return value or None
+
+    @property
+    def bounding_box(self) -> dict[str, float] | None:
+        rect = self._root.find(".//hk:targetRect", _HK_NS)
+        if rect is None:
+            return None
+        try:
+            return {
+                "x": float(rect.findtext("hk:X", "0", _HK_NS)),
+                "y": float(rect.findtext("hk:Y", "0", _HK_NS)),
+                "width": float(rect.findtext("hk:width", "0", _HK_NS)),
+                "height": float(rect.findtext("hk:height", "0", _HK_NS)),
+            }
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def metadata(self) -> dict[str, object]:
+        metadata: dict[str, object] = {"vendor": "hikvision"}
+        if self.channel_name:
+            metadata["channel_name"] = self.channel_name
+        if self.target_type:
+            metadata["target_type"] = self.target_type
+        if self.bounding_box:
+            metadata["bounding_box"] = self.bounding_box
+        return metadata
+
+    @property
     def raw_xml(self) -> str:
         return ET.tostring(self._root, encoding="unicode")
 
@@ -92,6 +123,7 @@ class HikvisionEvent:
             "event_state": self.event_state.value,
             "source": source,
             "raw_payload_path": payload_path,
+            "metadata": self.metadata,
         }
 
 

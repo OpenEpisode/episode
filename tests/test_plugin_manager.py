@@ -93,6 +93,14 @@ def test_builtin_plugin_module_is_not_imported_during_registration(monkeypatch):
     assert imported == []
 
 
+def test_shared_connector_activates_only_its_registered_handler_plugin():
+    registry = builtin_plugin_registry()
+
+    selected = registry.for_configuration(set(), {"alarm_server"})
+
+    assert [registration.id for registration in selected] == ["hikvision-alarm-server"]
+
+
 def test_application_ignores_installed_plugin_without_device_capability(tmp_path):
     sdk_dir = tmp_path / "plugins" / "hikvision-sdk"
     sdk_dir.mkdir(parents=True)

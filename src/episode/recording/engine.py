@@ -11,8 +11,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from episode.domain.models import Device, EpisodeState, Event, Evidence
+from episode.domain.models import Device, EpisodeState, Evidence
 from episode.engine.bus import EventBus, Message
+from episode.engine.engine import CanonicalEventResult
 from episode.recording.targets import AreaRecordingTargetResolver, RecordingTargetResolver
 
 if TYPE_CHECKING:
@@ -63,11 +64,13 @@ class RecordingEngine:
 
     async def start(self):
         self._running = True
-        self._bus.subscribe("event.received", self._on_event)
+        self._bus.subscribe("event.canonicalized", self._on_event)
         self._bus.subscribe("episode.updated", self._on_episode_updated)
 
     async def stop(self):
         self._running = False
+        self._bus.unsubscribe("event.canonicalized", self._on_event)
+        self._bus.unsubscribe("episode.updated", self._on_episode_updated)
         for rec in list(self._recordings.values()):
             await self._stop_recording(rec)
         if self._active_tasks:
@@ -78,9 +81,10 @@ class RecordingEngine:
                 await asyncio.gather(*pending, return_exceptions=True)
 
     async def _on_event(self, msg: Message):
-        if msg.data.get("canonical_event_created") is False:
+        result = msg.data.get("result")
+        if not isinstance(result, CanonicalEventResult) or not result.created:
             return
-        event = Event(**msg.data["event"])
+        event = result.event
         if event.event_state.value != "active":
             return
         episode_id = event.episode_id or ""

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import os
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -42,10 +43,22 @@ def save_bytes(
 ) -> str:
     ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     dest = ensure_dir(os.path.join(evidence_root, subdir))
-    filename = f"{prefix}_{ts}{extension}"
-    path = available_destination(os.path.join(dest, filename))
-    with open(path, "xb") as file:
-        file.write(data)
+    filename = f"{prefix}_{ts}_{str(uuid4())[:8]}{extension}"
+    path = os.path.join(dest, filename)
+    descriptor, temporary_path = tempfile.mkstemp(
+        dir=dest,
+        prefix=".episode-write-",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as file:
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
     seal_file(path)
     return path
 

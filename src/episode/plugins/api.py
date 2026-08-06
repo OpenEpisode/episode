@@ -35,6 +35,7 @@ class PluginResponse(BaseModel):
     architecture: str | None = None
     error: str | None = None
     instances: list[PluginInstanceResponse] = Field(default_factory=list)
+    metrics: dict[str, object] = Field(default_factory=dict)
 
 
 def register_plugins_api(app: FastAPI, manager: PluginManager) -> None:

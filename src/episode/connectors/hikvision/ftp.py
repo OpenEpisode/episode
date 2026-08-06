@@ -68,6 +68,8 @@ class FTPConnector(Connector):
         )
         self._server: FTPServer | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._server_future: asyncio.Future | None = None
+        self._ingest_tasks: set[asyncio.Task] = set()
 
     def status(self) -> dict:
         return {
@@ -80,6 +82,8 @@ class FTPConnector(Connector):
         }
 
     async def start(self):
+        if self._running:
+            return
         self._running = True
         self._loop = asyncio.get_running_loop()
         os.makedirs(self._upload_dir, exist_ok=True)
@@ -101,15 +105,35 @@ class FTPConnector(Connector):
         self._server = FTPServer((self._host, self._port), handler)
         logger.info("%s: FTP listening on %s:%s", self.name, self._host, self._port)
 
-        self._loop.run_in_executor(None, self._server.serve_forever)
+        self._server_future = self._loop.run_in_executor(None, self._server.serve_forever)
 
     async def stop(self):
         self._running = False
         if self._server:
             self._server.close_all()
+            self._server = None
+        if self._server_future:
+            try:
+                await asyncio.wait_for(self._server_future, timeout=5)
+            except TimeoutError:
+                self._server_future.cancel()
+            self._server_future = None
+        if self._ingest_tasks:
+            await asyncio.gather(*self._ingest_tasks, return_exceptions=True)
 
     def _on_file_received(self, filepath: str):
-        self._loop.call_soon_threadsafe(asyncio.ensure_future, self._ingest_snapshot(filepath))
+        if self._loop and self._running:
+            self._loop.call_soon_threadsafe(self._schedule_ingest, filepath)
+
+    def _schedule_ingest(self, filepath: str) -> None:
+        if not self._running:
+            return
+        task = asyncio.create_task(
+            self._ingest_snapshot(filepath),
+            name=f"ftp-ingest:{os.path.basename(filepath)}",
+        )
+        self._ingest_tasks.add(task)
+        task.add_done_callback(self._ingest_tasks.discard)
 
     async def _ingest_snapshot(self, filepath: str):
         try:

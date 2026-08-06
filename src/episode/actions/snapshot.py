@@ -7,8 +7,9 @@ from datetime import datetime, timezone
 from time import monotonic
 from typing import TYPE_CHECKING
 
-from episode.domain.models import Evidence, IngestionReceipt
+from episode.domain.models import Event, Evidence, IngestionReceipt
 from episode.engine.bus import EventBus, Message
+from episode.engine.engine import CanonicalEventResult
 from episode.media.registry import MediaRegistry
 from episode.storage.files import describe_artifact, save_bytes
 
@@ -35,24 +36,25 @@ class SnapshotEngine:
 
     async def start(self) -> None:
         self._running = True
-        self._bus.subscribe("event.received", self._on_event)
+        self._bus.subscribe("event.canonicalized", self._on_event)
 
     async def stop(self) -> None:
         self._running = False
-        self._bus.unsubscribe("event.received", self._on_event)
+        self._bus.unsubscribe("event.canonicalized", self._on_event)
         for task in self._tasks:
             task.cancel()
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def _on_event(self, message: Message) -> None:
-        event = message.data.get("event", {})
-        if message.data.get("canonical_event_created") is False:
+        result = message.data.get("result")
+        if not isinstance(result, CanonicalEventResult) or not result.created:
             return
-        if event.get("event_state", "active") != "active":
+        event = result.event
+        if event.event_state.value != "active":
             return
-        device_id = event.get("device_id", "")
-        if not event.get("episode_id") or not self._media.get(device_id):
+        device_id = event.device_id
+        if not event.episode_id or not self._media.get(device_id):
             return
         if device_id in self._capturing or monotonic() < self._retry_after.get(device_id, 0):
             self._suppressed += 1
@@ -62,8 +64,8 @@ class SnapshotEngine:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _capture(self, event: dict) -> None:
-        device_id = event["device_id"]
+    async def _capture(self, event: Event) -> None:
+        device_id = event.device_id
         try:
             data, content_type = await self._media.fetch_snapshot(device_id)
             extension = ".png" if content_type == "image/png" else ".jpg"
@@ -84,7 +86,7 @@ class SnapshotEngine:
             )
             evidence = Evidence(
                 device_id=device_id,
-                area_id=event.get("area_id", ""),
+                area_id=event.area_id,
                 timestamp=datetime.now(timezone.utc),
                 evidence_type="snapshot",
                 file_path=path,
@@ -92,9 +94,9 @@ class SnapshotEngine:
                 artifact_id=artifact.id,
                 byte_size=artifact.byte_size,
                 sha256=artifact.sha256,
-                event_id=event.get("id"),
-                episode_id=event.get("episode_id"),
-                metadata={"origin": "onvif:snapshot", "requested_for": event.get("id")},
+                event_id=event.id,
+                episode_id=event.episode_id,
+                metadata={"origin": "onvif:snapshot", "requested_for": event.id},
             )
             receipt = IngestionReceipt(
                 source="onvif:snapshot",

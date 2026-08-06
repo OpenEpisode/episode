@@ -189,6 +189,7 @@ artwork, light and dark organization avatars, and GitHub social previews.
 ## Documentation
 
 - [Architecture and domain model](docs/ARCHITECTURE.md)
+- [Roadmap](docs/NEXT_STEPS.md)
 - [ONVIF camera setup](docs/ONVIF_SETUP.md)
 - [Hikvision setup and troubleshooting](docs/HIKVISION_SETUP.md)
 - [Contributing](docs/CONTRIBUTING.md)

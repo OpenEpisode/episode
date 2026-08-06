@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from episode.plugins.hikvision_sdk.events import interpret_event
 from episode.plugins.hikvision_sdk.worker import (
     MAX_NOTIFICATION_BYTES,
     WORKER_MESSAGE_PREFIX,
@@ -276,12 +275,6 @@ class SDKDeviceWorker:
                 pass
 
         try:
-            event = interpret_event(
-                command,
-                payload,
-                self._config.id,
-                received_at,
-            )
             await self._delivery_sink(
                 RawPluginDelivery(
                     plugin_id="hikvision-sdk",
@@ -293,7 +286,6 @@ class SDKDeviceWorker:
                         "command": command,
                         "sdk_buffer_length": declared_length,
                     },
-                    event=event,
                 )
             )
         except Exception:
