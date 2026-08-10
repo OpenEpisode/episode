@@ -37,7 +37,7 @@ rejected instead of being resolved by registration order.
 | Concept | Responsibility | Mutability |
 | --- | --- | --- |
 | Area | Physical coverage and correlation boundary | Configuration evolves |
-| Device | Camera, doorbell, alarm panel, or other physical source | Discovery metadata evolves |
+| Device | Physical source role: camera, doorbell, alarm panel, sensor, or other | Discovery metadata evolves |
 | Raw Artifact | Exact bytes received or generated | Content is sealed and checksummed |
 | Ingestion Receipt | One delivery through one connector | Associations may be added |
 | Event | Canonical observation deduplicated across receipts | Core observation is stable |
@@ -89,8 +89,21 @@ route; native decoding remains isolated in the SDK plugin.
 SQLite is the operational index. It makes filtering and correlation efficient,
 but it is not the only way to understand an incident.
 
-The additive tables are:
+Area and Device inventory is persistent configuration stored in SQLite.
+`episode.json` remains responsible for system-wide services and action
+defaults. On an existing installation, legacy `areas` and `devices` arrays are
+imported once; subsequent restarts never overwrite UI-managed inventory.
+Disabling inventory preserves historical relationships, and referenced records
+cannot be deleted. Device type expresses physical role, never vendor. Vendor
+identity is discovered when possible, while optional vendor integrations remain
+separate capabilities and configurations.
 
+The additive tables include:
+
+- `areas` and `devices`: authoritative inventory, capability configuration,
+  credentials, and active state.
+- `app_settings`: schema-independent application markers such as one-time
+  inventory bootstrap state.
 - `raw_artifacts`: location, media type, byte length, SHA-256, and seal state.
 - `ingestion_receipts`: source, timing, parse status, and links to artifacts,
   Events, Evidence, and Episodes.
@@ -126,6 +139,13 @@ unavailable.
 
 The manifest and journal are derived metadata. They may evolve; original
 artifact bytes are never annotated or rendered with overlays.
+
+The Episode review timeline is also a derived projection. Vendor bounding boxes
+remain Event metadata and are rendered as a separate overlay. For review only,
+consecutive target snapshots can extend a short-lived detection track and later
+annotated Events can update its region. A gap or explicit inactive Event closes
+the track. This inference is not written back to Events, Evidence, manifests, or
+raw artifacts.
 
 Recordings remain active for the Episode lifecycle and are stored as sequential,
 immutable segments. A shared `recording_session_id` and ordered `segment_index`
@@ -172,6 +192,30 @@ connectors or recording execution.
 New AI, OCR, LPR, or recognition integrations should create versioned processing
 runs and append annotations. Reprocessing must never replace prior results or
 modify source evidence.
+
+## Operational API projection
+
+The API owns the stable operational representation consumed by the UI. It
+projects internal connector and plugin state into vendor-neutral Services,
+Integrations, Device identity, Device capabilities, and capture policy.
+Connector dictionaries and plugin lifecycle objects are diagnostics inputs;
+they are not UI contracts.
+
+`/health` remains a minimal liveness response. `/api/v1/status` is the compact,
+frequently-polled summary and deliberately excludes connector discovery data.
+`/api/v1/diagnostics` provides richer normalized detail for the System view.
+Device collection responses are compact; Device detail adds safe network,
+policy, media-profile, and integration information without exposing credentials
+or internal configuration structures.
+
+Growing top-level collections have validated limits and offsets. Area and
+Device mutation routes enforce referential safety, duplicate-address checks,
+write-only credentials, and active-Area constraints. Integration support,
+configured selection, and runtime health are separate states: safe validation
+probes provide evidence without activating connectors, and transient failures
+are never presented as proof of unsupported hardware. Device changes are durable
+immediately but set a visible restart-required state because connector lifecycle
+reconfiguration is intentionally deferred to process startup in alpha.6.
 
 ## Known alpha constraints
 

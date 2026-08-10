@@ -28,6 +28,7 @@ from episode.storage.database import SCHEMA_SQL
 from episode.storage.files import async_move_to_episode, describe_artifact, move_to_episode
 from episode.storage.migrations import (
     migrate_episode_activity_schema,
+    migrate_inventory_schema,
     migrate_legacy_identity_schema,
 )
 from episode.storage.projection import EpisodeBundleProjector
@@ -64,6 +65,7 @@ class Repository:
         self._conn.row_factory = aiosqlite.Row
         await migrate_legacy_identity_schema(self._conn)
         await self._conn.executescript(SCHEMA_SQL)
+        await migrate_inventory_schema(self._conn)
         await migrate_episode_activity_schema(self._conn)
         event_columns = await self._conn.execute_fetchall("PRAGMA table_info(events)")
         self._legacy_identity_schema = "sensor_id" in {row["name"] for row in event_columns}
@@ -445,13 +447,20 @@ class Repository:
 
     async def upsert_area(self, area: Area) -> Area:
         await self._conn.execute(
-            """INSERT INTO areas (id, name, location, metadata)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO areas (id, name, location, metadata, enabled)
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name,
                    location=excluded.location,
-                   metadata=excluded.metadata""",
-            (area.id, area.name, area.location, json.dumps(area.metadata)),
+                   metadata=excluded.metadata,
+                   enabled=excluded.enabled""",
+            (
+                area.id,
+                area.name,
+                area.location,
+                json.dumps(area.metadata),
+                int(area.enabled),
+            ),
         )
         await self._conn.commit()
         return area
@@ -462,9 +471,12 @@ class Repository:
             return None
         return self._row_to_area(row[0])
 
-    async def list_areas(self) -> list[Area]:
-        rows = await self._conn.execute_fetchall("SELECT * FROM areas ORDER BY name")
-        return [self._row_to_area(r) for r in rows]
+    async def list_areas(self, *, include_disabled: bool = False) -> list[Area]:
+        query = "SELECT * FROM areas"
+        if not include_disabled:
+            query += " WHERE enabled = 1"
+        rows = await self._conn.execute_fetchall(query + " ORDER BY name")
+        return [self._row_to_area(row) for row in rows]
 
     async def delete_area(self, area_id: str):
         await self._conn.execute("DELETE FROM areas WHERE id = ?", (area_id,))
@@ -477,9 +489,9 @@ class Repository:
             """INSERT INTO devices (
                 id, name, device_type, area_id,
                 capabilities, ip_address, username, password,
-                configs, metadata
+                configs, metadata, enabled
             )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name,
                    device_type=excluded.device_type,
@@ -489,7 +501,8 @@ class Repository:
                    username=excluded.username,
                    password=excluded.password,
                    configs=excluded.configs,
-                   metadata=excluded.metadata""",
+                   metadata=excluded.metadata,
+                   enabled=excluded.enabled""",
             (
                 device.id,
                 device.name,
@@ -501,16 +514,17 @@ class Repository:
                 device.password,
                 json.dumps(
                     {
-                        k: {
-                            "protocol": v.protocol,
-                            "port": v.port,
-                            "path": v.path,
-                            "settings": v.settings,
+                        key: {
+                            "protocol": value.protocol,
+                            "port": value.port,
+                            "path": value.path,
+                            "settings": value.settings,
                         }
-                        for k, v in device.configs.items()
+                        for key, value in device.configs.items()
                     }
                 ),
                 json.dumps(device.metadata),
+                int(device.enabled),
             ),
         )
         await self._conn.commit()
@@ -529,18 +543,69 @@ class Repository:
         )
         return self._row_to_device(rows[0]) if rows else None
 
-    async def list_devices(self, area_id: str | None = None) -> list[Device]:
+    async def list_devices(
+        self,
+        area_id: str | None = None,
+        *,
+        include_disabled: bool = False,
+    ) -> list[Device]:
+        clauses = []
+        params = []
         if area_id:
-            rows = await self._conn.execute_fetchall(
-                "SELECT * FROM devices WHERE area_id = ? ORDER BY name", (area_id,)
-            )
-        else:
-            rows = await self._conn.execute_fetchall("SELECT * FROM devices ORDER BY name")
-        return [self._row_to_device(r) for r in rows]
+            clauses.append("area_id = ?")
+            params.append(area_id)
+        if not include_disabled:
+            clauses.append("enabled = 1")
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        rows = await self._conn.execute_fetchall(
+            f"SELECT * FROM devices{where} ORDER BY name",
+            params,
+        )
+        return [self._row_to_device(row) for row in rows]
 
     async def delete_device(self, device_id: str):
         await self._conn.execute("DELETE FROM devices WHERE id = ?", (device_id,))
         await self._conn.commit()
+
+    async def get_setting(self, key: str) -> str | None:
+        rows = await self._conn.execute_fetchall(
+            "SELECT value FROM app_settings WHERE key = ?", (key,)
+        )
+        return rows[0]["value"] if rows else None
+
+    async def set_setting(self, key: str, value: str) -> None:
+        await self._conn.execute(
+            """INSERT INTO app_settings (key, value) VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (key, value),
+        )
+        await self._conn.commit()
+
+    async def area_usage(self, area_id: str) -> dict[str, int]:
+        row = (
+            await self._conn.execute_fetchall(
+                """SELECT
+                    (SELECT COUNT(*) FROM devices WHERE area_id = ?) AS devices,
+                    (SELECT COUNT(*) FROM episodes WHERE primary_area_id = ?) AS episodes,
+                    (SELECT COUNT(*) FROM events WHERE area_id = ?) AS events,
+                    (SELECT COUNT(*) FROM evidence WHERE area_id = ?) AS evidence,
+                    (SELECT COUNT(*) FROM ingestion_receipts WHERE area_id = ?) AS receipts""",
+                (area_id, area_id, area_id, area_id, area_id),
+            )
+        )[0]
+        return {key: int(row[key]) for key in row.keys()}
+
+    async def device_usage(self, device_id: str) -> dict[str, int]:
+        row = (
+            await self._conn.execute_fetchall(
+                """SELECT
+                    (SELECT COUNT(*) FROM events WHERE device_id = ?) AS events,
+                    (SELECT COUNT(*) FROM evidence WHERE device_id = ?) AS evidence,
+                    (SELECT COUNT(*) FROM ingestion_receipts WHERE device_id = ?) AS receipts""",
+                (device_id, device_id, device_id),
+            )
+        )[0]
+        return {key: int(row[key]) for key in row.keys()}
 
     # --- Events ---
 
@@ -647,7 +712,7 @@ class Repository:
             params.append(device_id)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = await self._conn.execute_fetchall(
-            f"SELECT * FROM events{where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM events{where} ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?",
             params + [limit, offset],
         )
         return [self._row_to_event(r) for r in rows]
@@ -765,7 +830,7 @@ class Repository:
             params.append(device_id)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = await self._conn.execute_fetchall(
-            f"SELECT * FROM evidence{where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM evidence{where} ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?",
             params + [limit, offset],
         )
         return [self._row_to_evidence(r) for r in rows]
@@ -901,7 +966,7 @@ class Repository:
             params.append(state.value)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = await self._conn.execute_fetchall(
-            f"SELECT * FROM episodes{where} ORDER BY start_time DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM episodes{where} ORDER BY start_time DESC, id DESC LIMIT ? OFFSET ?",
             params + [limit, offset],
         )
         return [self._row_to_episode(r) for r in rows]
@@ -1143,6 +1208,7 @@ class Repository:
             name=row["name"],
             location=row["location"],
             metadata=json.loads(row["metadata"]),
+            enabled=bool(row["enabled"]),
         )
 
     @staticmethod
@@ -1158,6 +1224,7 @@ class Repository:
             password=row["password"],
             configs=json.loads(row["configs"]) if row["configs"] else {},
             metadata=json.loads(row["metadata"]),
+            enabled=bool(row["enabled"]),
         )
 
     @staticmethod

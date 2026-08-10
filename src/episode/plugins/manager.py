@@ -21,11 +21,23 @@ class PluginManager:
         registrations: Iterable[PluginRegistration],
         context: PluginContext,
     ):
-        self._registrations = list(registrations)
+        self._registrations: list[PluginRegistration] = []
         self._context = context
         self._plugins: list[tuple[PluginRegistration, ManagedPlugin]] = []
         self._started = False
-        self._statuses: dict[str, PluginStatus] = {
+        self._statuses: dict[str, PluginStatus] = {}
+        self.configure(registrations, context)
+
+    def configure(
+        self,
+        registrations: Iterable[PluginRegistration],
+        context: PluginContext,
+    ) -> None:
+        if self._started or self._plugins:
+            raise RuntimeError("Cannot reconfigure plugins while they are running")
+        self._registrations = list(registrations)
+        self._context = context
+        self._statuses = {
             registration.id: registration.validating_status()
             for registration in self._registrations
         }

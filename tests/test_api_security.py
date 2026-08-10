@@ -15,10 +15,16 @@ from episode.storage.repository import Repository
 
 
 def test_package_and_application_versions_match():
-    with (Path(__file__).parents[1] / "pyproject.toml").open("rb") as project_file:
+    root = Path(__file__).parents[1]
+    with (root / "pyproject.toml").open("rb") as project_file:
         project = tomllib.load(project_file)
 
     assert project["project"]["version"] == __version__
+    assert f"ARG EPISODE_VERSION={__version__}" in (root / "Dockerfile").read_text()
+    assert (
+        f"EPISODE_IMAGE=ghcr.io/openepisode/episode:{__version__}"
+        in (root / ".env.example").read_text()
+    )
 
 
 @pytest.mark.asyncio

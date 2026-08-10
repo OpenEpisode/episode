@@ -69,6 +69,7 @@ class Area:
     name: str = ""
     location: str = ""
     metadata: dict = field(default_factory=dict)
+    enabled: bool = True
 
 
 @dataclass
@@ -83,6 +84,7 @@ class Device:
     password: str = ""
     configs: dict[str, CapabilityConfig] = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
+    enabled: bool = True
 
     def __post_init__(self):
         if self.configs and isinstance(next(iter(self.configs.values()), None), dict):

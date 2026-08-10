@@ -36,6 +36,8 @@ self-hosters who want local, portable evidence.
 - Records every connector delivery and deduplicates matching observations.
 - Correlates observations from multiple cameras into Episodes.
 - Starts and stops configured recordings around Episode activity.
+- Reviews each Episode through a chronological Event timeline linked to its recordings and snapshots.
+- Optionally projects vendor detection regions over snapshots and recordings without modifying evidence.
 - Presents Episodes, Activity, Evidence, Devices, and system status in a web UI.
 
 Episode does not currently provide authentication. Do not expose it directly to
@@ -58,21 +60,33 @@ cp .env.example .env
 mkdir -p data plugins
 ```
 
-Edit `episode.json` with your camera IP addresses, credentials, areas, and
-connector settings. Replace the example FTP password before allowing camera
-access. Then start Episode:
+Replace the example FTP password in `episode.json` before allowing camera
+access. Areas and Devices are configured in the web interface; the file now
+contains only system-wide settings such as shared transports and action
+defaults. Then start Episode:
 
 ```bash
 docker compose --env-file .env pull
 docker compose --env-file .env up -d
 ```
 
-Open <http://localhost:8989> and inspect service health with:
+Open <http://localhost:8989>, then:
+
+1. Open **Devices → Manage Areas** and create a physical correlation boundary.
+2. Add a Device, choose its physical role, enter its address and credentials,
+   then use **Validate and discover**. Episode reports protocol support
+   independently from what is configured or currently running.
+3. Select its capture behavior and integrations. Manufacturer, model, firmware,
+   and media profiles discovered at runtime are shown read-only.
+4. Restart Episode once after Device changes so the selected connections start:
 
 ```bash
-docker compose --env-file .env ps
-docker compose --env-file .env logs -f episode
+docker compose --env-file .env restart episode
 ```
+
+The UI shows a restart notice until this is done. Inspect service health with
+`docker compose --env-file .env ps` and follow logs with
+`docker compose --env-file .env logs -f episode`.
 
 Stop it without deleting captured data:
 
@@ -82,14 +96,17 @@ docker compose --env-file .env down
 
 The image version is pinned in `.env`. The commands pass that file explicitly to
 Compose for `${...}` interpolation; it is not injected into the Episode
-container. Episode reads its application settings from the read-only
-`episode.json` mount. To upgrade, change `EPISODE_IMAGE` to a new published
-version, review the release notes, and run `docker compose --env-file .env pull`
-followed by `docker compose --env-file .env up -d`.
+container. Episode reads shared service settings from the read-only
+`episode.json` mount and stores Area and Device inventory in SQLite. Existing
+Area and Device entries in older configuration files are imported once, then
+the UI-managed inventory becomes authoritative. To upgrade, change
+`EPISODE_IMAGE` to a new published version, review the release notes, and run
+`docker compose --env-file .env pull` followed by
+`docker compose --env-file .env up -d`.
 
 ### Area recording
 
-Each video device can use one recording mode in its `video.settings`:
+Each video Device has a **Recording behavior** selected in the UI:
 
 - `on_event` (default) records when that video device emits an active Event.
 - `on_episode` records whenever any active Event opens or updates an Episode in
@@ -151,8 +168,8 @@ event payloads, snapshots, recordings, an atomic `manifest.json`, and an
 append-only `journal.ndjson`. The folder remains understandable if the SQLite
 index is unavailable. Keep this directory backed up or synchronized separately.
 
-Local `episode.json`, `.env`, and runtime data are ignored by Git and must never
-be committed.
+Local `episode.json`, `.env`, and runtime data—including the SQLite-managed
+inventory—are ignored by Git and must never be committed.
 
 ## Design principles
 

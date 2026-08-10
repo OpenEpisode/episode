@@ -1,32 +1,12 @@
-const API = "/api/v1";
+import { API, api, apiBlob } from "./api.js?v=2";
+import { notify } from "./dialogs.js?v=1";
+import { $, $$, escHtml } from "./dom.js";
+import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js?v=4";
+import { fmt, fmtDuration, fmtShort, plural, titleCase, trunc } from "./format.js?v=3";
+import { confirmAreaDelete, confirmDeviceDelete, openAreaEditor, openDeviceEditor } from "./inventory.js?v=3";
+
 const LS_THEME = "episode-theme";
-
-const $ = (s, p = document) => p.querySelector(s);
-const $$ = (s, p = document) => [...p.querySelectorAll(s)];
-
-/* ─── Helpers ─── */
-
-async function api(path) {
-  const r = await fetch(API + path);
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-  return escapeApiData(await r.json());
-}
-
-function escapeApiData(value) {
-  if (typeof value === "string") return escHtml(value);
-  if (Array.isArray(value)) return value.map(escapeApiData);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, escapeApiData(item)])
-    );
-  }
-  return value;
-}
-async function apiBlob(path) {
-  const r = await fetch(API + path);
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-  return r.blob();
-}
+const PAGE_SIZES = Object.freeze({ episodes: 48, activity: 100, evidence: 60 });
 
 function showLoading() {
   $("#view-loading").classList.remove("hidden");
@@ -56,39 +36,10 @@ function sourceBadges(sources) {
   if (!Array.isArray(sources)) return sources || "";
   return sources.map(s => `<span class="label">${s}</span>`).join(" ");
 }
-function fmt(d) {
-  if (!d) return "-";
-  const dt = new Date(d);
-  const pad = n => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
-}
-function fmtShort(d) {
-  if (!d) return "-";
-  const dt = new Date(d);
-  const pad = n => String(n).padStart(2, "0");
-  const ms = dt.getMilliseconds();
-  let s = `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
-  if (ms) s += `.${String(ms).padStart(3, "0")}`;
-  return s;
-}
-function plural(n, s) { return `${n} ${s}${n === 1 ? "" : "s"}`; }
-function trunc(s, n = 40) { return s && s.length > n ? s.slice(0, n) + "\u2026" : s; }
 function toggleCollapse(el) {
   const body = el.nextElementSibling;
   el.classList.toggle("collapsed");
   body.classList.toggle("collapsed");
-}
-function fmtDuration(start, end) {
-  if (!start || !end) return "";
-  const s = new Date(end) - new Date(start);
-  if (s < 0) return "-";
-  const totalSec = Math.floor(s / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const sec = totalSec % 60;
-  const pad = n => String(n).padStart(2, "0");
-  if (h > 0) return `${h}:${pad(m)}:${pad(sec)}`;
-  return `${m}:${pad(sec)}`;
 }
 
 function payloadFieldLabel(key) {
@@ -152,11 +103,17 @@ function toggleTheme() {
 }
 const saved = localStorage.getItem(LS_THEME) || "dark";
 applyTheme(saved);
+window.toggleTheme = toggleTheme;
+window.toggleCollapse = toggleCollapse;
 
 /* ─── Router ─── */
 
 function navigate() {
-  const hash = location.hash.slice(1) || "episodes";
+  const rawHash = location.hash.slice(1) || "episodes";
+  const [hash, query = ""] = rawHash.split("?", 2);
+  const params = new URLSearchParams(query);
+  const requestedPage = Number.parseInt(params.get("page") || "1", 10);
+  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
   const segs = hash.split("/");
   const view = segs[0];
   const args = segs.slice(1);
@@ -175,24 +132,46 @@ function navigate() {
 
   const routes = {
     episodes, activity: events, evidence, devices, areas,
-    episode, event, device, system: systemStatus,
+    episode, event, device: deviceView, system: systemStatus,
   };
-  if (view === "evidence" && args.length && args[0].includes("-")) {
+  if (view === "evidence" && args.length && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(args[0])) {
     return evidenceDetail(args[0]);
   }
   if (view === "episode" && args.length > 1) {
     return episode(args[0]);
   }
+  if (view === "episodes") return episodes(page);
+  if (view === "activity") return events(args[0], page);
+  if (view === "evidence") return evidence(args[0], page);
   (routes[view] || episodes)(...args);
 }
 window.addEventListener("hashchange", navigate);
 
 /* ─── Views ─── */
 
-async function episodes() {
+function pageControls(base, page, itemCount, hasNext) {
+  if (page === 1 && !hasNext) return "";
+  const separator = base.includes("?") ? "&" : "?";
+  const href = target => `${base}${separator}page=${target}`;
+  return `<div class="pagination" aria-label="Page navigation">
+    ${page > 1
+      ? `<a class="button button-ghost" href="${href(page - 1)}">\u2190 Newer</a>`
+      : '<span class="button button-ghost pagination-disabled">\u2190 Newer</span>'}
+    <span class="pagination-summary">Page ${page} \u00b7 ${plural(itemCount, "item")}</span>
+    ${hasNext
+      ? `<a class="button button-ghost" href="${href(page + 1)}">Older \u2192</a>`
+      : '<span class="button button-ghost pagination-disabled">Older \u2192</span>'}
+  </div>`;
+}
+
+async function episodes(page = 1) {
   showLoading();
   try {
-    const list = await api("/episodes?limit=200");
+    const pageSize = PAGE_SIZES.episodes;
+    const offset = (page - 1) * pageSize;
+    const result = await api(`/episodes?limit=${pageSize + 1}&offset=${offset}`);
+    const hasNext = result.length > pageSize;
+    const list = result.slice(0, pageSize);
     const epIds = list.map(e => e.id).join(",");
     const covers = epIds ? await api("/covers?ids=" + encodeURIComponent(epIds)) : {};
 
@@ -219,8 +198,9 @@ async function episodes() {
           </a>
         `).join("")}
       </div>`}
+      ${pageControls("#episodes", page, list.length, hasNext)}
     `);
-    updateRecentEpisodes(list);
+    updateRecentEpisodes(page === 1 ? list : null);
   } catch (e) { showError(e.message); }
 }
 
@@ -232,17 +212,22 @@ async function episode(id) {
       api("/episodes/" + id + "/events"),
       api("/episodes/" + id + "/evidence"),
     ]);
-      const dur = fmtDuration(ep.start_time, ep.end_time || ep.last_event_time);
-      const isClosed = ep.state === "closed";
-      const timelapseDevices = isClosed ? [...new Set(evidence.filter(e => e.evidence_type === "snapshot" && e.metadata?.timelapse_eligible !== false).map(e => e.device_id).filter(Boolean))] : [];
-      const allEv = [...evidence].sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
-      _carouselItems = allEv;
-      const recordings = evidence.filter(e => e.evidence_type === "recording");
-      const snapshots = evidence.filter(e => e.evidence_type === "snapshot");
+    const dur = fmtDuration(ep.start_time, ep.end_time || ep.last_event_time);
+    const timelapseDevices = ep.state === "closed"
+      ? [...new Set(evidence
+        .filter(item => item.evidence_type === "snapshot"
+          && item.metadata?.timelapse_eligible !== false)
+        .map(item => item.device_id)
+        .filter(Boolean))]
+      : [];
+    const workspace = renderEpisodeWorkspace(ep, events, evidence, timelapseDevices);
+    const chronologicalEvents = [...events]
+      .sort((left, right) => new Date(left.timestamp) - new Date(right.timestamp));
 
-      showContent(`
+    showContent(`
       <div class="breadcrumbs"><a href="#episodes">Episodes</a> <span class="sep">›</span> <span>${trunc(ep.primary_area_id || ep.id, 40)}</span></div>
-      <div class="detail-header">
+      <div class="detail-header episode-detail-header">
+        <div class="eyebrow">Episode</div>
         <h2>${trunc(ep.primary_area_id || "?", 40)} ${stateBadge(ep.state)} ${dur ? `<span class="badge badge-duration">${dur}</span>` : ""}</h2>
         <div class="subtitle">
           ${ep.id} &middot; ${plural(ep.event_count, "event")}, ${plural(ep.evidence_count, "evidence")}
@@ -250,62 +235,56 @@ async function episode(id) {
         </div>
       </div>
 
-      ${timelapseDevices.map(s => `
-      <div class="section">
-        <h3>Timelapse — ${trunc(s, 30)}</h3>
-        <video src="${API}/episodes/${ep.id}/timelapse?device_id=${encodeURIComponent(s)}" controls autoplay muted style="max-width:480px;width:100%;border-radius:var(--radius);background:#000"></video>
-      </div>`).join("")}
+      ${workspace.html}
 
-      ${recordings.length ? `
-      <div class="section">
-        <h3>Recordings (${recordings.length})</h3>
-        <div class="evidence-grid">${recordings.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp)).map(ev => renderEvidenceItem(ev, allEv.indexOf(ev))).join("")}</div>
-      </div>` : ""}
-
-      ${snapshots.length ? `
-      <div class="section">
+      <div class="section episode-secondary">
         <div class="collapse-header collapsed" onclick="toggleCollapse(this)">
-          <h3>Snapshots (${snapshots.length})</h3>
+          <h3>All evidence (${evidence.length})</h3>
         </div>
         <div class="collapse-body collapsed">
-          <div class="section-sub">
-            <div class="evidence-grid">${snapshots.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp)).map(ev => renderEvidenceItem(ev, allEv.indexOf(ev))).join("")}</div>
-          </div>
+          ${renderEpisodeEvidence(evidence)}
         </div>
-      </div>` : ""}
+      </div>
 
-      <div class="section">
+      <div class="section episode-secondary">
         <div class="collapse-header collapsed" onclick="toggleCollapse(this)">
-          <h3>Activity (${ep.event_count})</h3>
+          <h3>Raw activity (${events.length})</h3>
         </div>
         <div class="collapse-body collapsed">
-        ${events.length === 0 ? '<div class="empty">No activity</div>' : `
-        <table>
-          <thead><tr><th>Type</th><th>Device</th><th>State</th><th>Time</th><th>Source</th></tr></thead>
-          <tbody>
-            ${events.map(e => `
-              <tr class="clickable" onclick="location='#event/${e.id}'">
-                <td>${eventBadge(e.event_type)}</td>
-                <td>${trunc(e.device_id, 20)}</td>
-                <td>${stateBadge(e.event_state)}</td>
-                <td>${fmtShort(e.timestamp)}</td>
-                <td>${sourceBadges(e.sources)}</td>
+          ${events.length === 0 ? '<div class="empty">No activity</div>' : `
+          <div class="table-wrap"><table>
+            <thead><tr><th>Type</th><th>Device</th><th>State</th><th>Time</th><th>Source</th></tr></thead>
+            <tbody>
+              ${chronologicalEvents.map(event => `
+              <tr class="clickable" onclick="location='#event/${event.id}'">
+                <td>${eventBadge(event.event_type)}</td>
+                <td>${trunc(event.device_id, 20)}</td>
+                <td>${stateBadge(event.event_state)}</td>
+                <td>${fmtShort(event.timestamp)}</td>
+                <td>${sourceBadges(event.sources)}</td>
               </tr>
-            `).join("")}
-          </tbody>
-        </table>`}
+              `).join("")}
+            </tbody>
+          </table></div>`}
         </div>
       </div>
     `);
+    activateEpisodeWorkspace(workspace.model, ep);
   } catch (e) { showError(e.message); }
 }
 
-async function events(device_id) {
+async function events(device_id, page = 1) {
   showLoading();
   try {
     const devices = await api("/devices");
-    const params = device_id ? `?device_id=${device_id}` : "";
-    const list = await api("/events" + params);
+    const pageSize = PAGE_SIZES.activity;
+    const offset = (page - 1) * pageSize;
+    const query = new URLSearchParams({ limit: pageSize + 1, offset });
+    if (device_id) query.set("device_id", device_id);
+    const result = await api(`/events?${query}`);
+    const hasNext = result.length > pageSize;
+    const list = result.slice(0, pageSize);
+    const base = `#activity${device_id ? `/${encodeURIComponent(device_id)}` : ""}`;
     showContent(`
       <div class="page-header">
         <h2>Activity</h2>
@@ -333,6 +312,7 @@ async function events(device_id) {
           `).join("")}
         </tbody>
       </table>`}
+      ${pageControls(base, page, list.length, hasNext)}
     `);
   } catch (e) { showError(e.message); }
 }
@@ -437,23 +417,22 @@ window.loadPayload = async (eventId, btn) => {
     el.innerHTML = `<div class="meta" style="color:var(--danger)">Failed to load: ${e.message}</div>`;
   }
 };
-function escHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
 
-async function evidence(device_id) {
+async function evidence(device_id, page = 1) {
   showLoading();
   try {
-    const params = device_id ? `?device_id=${device_id}` : "";
-    const list = await api("/evidence" + params);
+    const pageSize = PAGE_SIZES.evidence;
+    const offset = (page - 1) * pageSize;
+    const query = new URLSearchParams({ limit: pageSize + 1, offset });
+    if (device_id) query.set("device_id", device_id);
+    const result = await api(`/evidence?${query}`);
+    const hasNext = result.length > pageSize;
+    const list = result.slice(0, pageSize);
+    const base = `#evidence${device_id ? `/${encodeURIComponent(device_id)}` : ""}`;
     showContent(`
       <div class="page-header"><h2>Evidence</h2></div>
       ${list.length === 0 ? '<div class="empty">No evidence</div>' : (_carouselItems=list, renderEvidenceGrid(list))}
+      ${pageControls(base, page, list.length, hasNext)}
     `);
   } catch (e) { showError(e.message); }
 }
@@ -579,7 +558,7 @@ function renderEvidenceItem(ev, i) {
   const isImage = ev.mime_type?.startsWith("image/");
   const dur = ev.metadata?.duration_seconds;
   const label = ev.evidence_type === "recording" ? (ev.device_id || "recording") : ev.evidence_type;
-  return `<div class="evidence-item" tabindex="0" role="button" onclick="showCarousel(_carouselItems, ${i})" onkeydown="if(event.key==='Enter')showCarousel(_carouselItems, ${i})">
+  return `<div class="evidence-item" tabindex="0" role="button" onclick="showCarousel(null, ${i})" onkeydown="if(event.key==='Enter')showCarousel(null, ${i})">
     ${isVideo ? `<video src="${API}/evidence/${ev.id}/file" preload="metadata"></video>` : ""}
     ${isImage ? `<img src="${API}/evidence/${ev.id}/file" loading="lazy">` : ""}
     ${!isVideo && !isImage ? `<div style="padding:2rem;text-align:center;color:var(--text-muted)">${ev.evidence_type}<br>${ev.mime_type}</div>` : ""}
@@ -608,7 +587,9 @@ let _carouselItems = [];
 let _carouselIdx = 0;
 
 window.showCarousel = function(items, idx) {
-  _carouselItems = items.filter(ev => ev.evidence_type !== "payload");
+  if (Array.isArray(items)) {
+    _carouselItems = items.filter(ev => ev.evidence_type !== "payload");
+  }
   _carouselIdx = idx;
   _renderCarousel();
   const el = $("#evidence-carousel");
@@ -720,201 +701,242 @@ function renderEvidenceGrid(list) {
 
 /* ─── Devices & Areas ─── */
 
-function titleCase(value) {
-  return String(value || "")
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, letter => letter.toUpperCase());
+let inventoryAreas = [];
+let inventoryDevices = [];
+
+function operationalIndicator(state) {
+  if (state === "healthy") return "online";
+  if (state === "degraded") return "warning";
+  if (state === "disabled" || state === "unknown") return "idle";
+  return "offline";
 }
 
-function pluginInstancesForDevice(plugins, deviceId) {
-  return (plugins || []).flatMap(plugin =>
-    (plugin.instances || [])
-      .filter(instance => instance.id === deviceId)
-      .map(instance => ({ ...instance, plugin_id: plugin.id, plugin_name: plugin.name }))
-  );
-}
-
-function deviceStatus(connectors, pluginInstances = []) {
-  const online = connectors.some(connectorHealthy) || pluginInstances.some(instance => instance.state === "running");
-  if (online) return { online: true, label: "Online" };
-  const configured = connectors.length > 0 || pluginInstances.length > 0;
-  return { online: false, label: configured ? "Degraded" : "Not connected" };
+function operationalBadge(state) {
+  return `<span class="badge badge-${state}">${titleCase(state)}</span>`;
 }
 
 function capabilityBadges(capabilities) {
   return (capabilities || [])
     .filter(capability => capability !== "events")
-    .map(capability => `<span class="badge badge-active">${titleCase(capability)}</span>`)
+    .map(capability => `<span class="badge badge-neutral">${titleCase(capability)}</span>`)
     .join(" ");
 }
+
+function integrationBadges(integrations) {
+  return (integrations || [])
+    .map(integration => `<span class="badge badge-${integration.state}">${titleCase(integration.type)}</span>`)
+    .join(" ");
+}
+
+function restartBanner(status) {
+  if (!status?.restart_required) return "";
+  return `<div class="notice notice-warning">
+    <div><strong>Restart required</strong><span>Device changes are saved. Restart Episode to apply integration connections.</span></div>
+    <code>docker compose restart episode</code>
+  </div>`;
+}
+
+function renderIntegrationRows(integrations, showDetails = false) {
+  if (!integrations.length) return '<div class="empty">No integrations configured</div>';
+  return `<div class="resource-list">
+    ${integrations.map(integration => {
+      const detailEntries = Object.entries(integration.details || {})
+        .filter(([, value]) => value !== null && value !== "" && (!Array.isArray(value) || value.length));
+      return `<div class="resource-row">
+        <span class="status-indicator ${operationalIndicator(integration.state)}"></span>
+        <div class="resource-main">
+          <strong>${integration.name}</strong>
+          <span>${integration.summary || titleCase(integration.type)}</span>
+          <div class="badge-cluster">${capabilityBadges(integration.capabilities)}</div>
+        </div>
+        ${operationalBadge(integration.state)}
+        ${showDetails && detailEntries.length ? `
+          <details class="diagnostic-details">
+            <summary>Technical details</summary>
+            <pre>${escHtml(JSON.stringify(integration.details, null, 2))}</pre>
+          </details>` : ""}
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
+window.addArea = () => openAreaEditor(null, areas);
+window.editArea = id => {
+  const area = inventoryAreas.find(candidate => candidate.id === id);
+  if (area) openAreaEditor(area, areas);
+};
+window.deleteArea = id => {
+  const area = inventoryAreas.find(candidate => candidate.id === id);
+  if (area) confirmAreaDelete(area, areas);
+};
+window.addDevice = () => {
+  const activeAreas = inventoryAreas.filter(area => area.enabled);
+  if (!activeAreas.length) {
+    notify("Create an active Area before adding a Device", "warning");
+    openAreaEditor(null, devices);
+    return;
+  }
+  openDeviceEditor(null, inventoryAreas, devices);
+};
+window.editDevice = async id => {
+  try {
+    const device = await api("/devices/" + encodeURIComponent(id));
+    inventoryDevices = [
+      ...inventoryDevices.filter(candidate => candidate.id !== id),
+      device,
+    ];
+    openDeviceEditor(
+      device,
+      inventoryAreas,
+      () => location.hash.startsWith("#device/") ? deviceView(id) : devices(),
+    );
+  } catch (error) {
+    notify(`Could not load Device configuration: ${error.message}`, "warning");
+  }
+};
+window.deleteDevice = id => {
+  const device = inventoryDevices.find(candidate => candidate.id === id);
+  if (device) confirmDeviceDelete(device, async () => {
+    location.hash = "devices";
+    await devices();
+  });
+};
 
 async function devices() {
   showLoading();
   try {
-    const [list, areaList, status, plugins] = await Promise.all([
-      api("/devices"),
-      api("/areas"),
+    const [list, areaList, status] = await Promise.all([
+      api("/devices?include_disabled=true"),
+      api("/areas?include_disabled=true"),
       api("/status"),
-      api("/plugins"),
     ]);
+    inventoryDevices = list;
+    inventoryAreas = areaList;
     const areaNames = Object.fromEntries(areaList.map(area => [area.id, area.name]));
-
     showContent(`
       <div class="page-header">
         <div>
+          <div class="eyebrow">Inventory</div>
           <h2>Devices</h2>
-          <div class="meta">Physical cameras and equipment, independent of how they connect.</div>
+          <div class="meta">Equipment, capture behavior, and source integrations.</div>
         </div>
-        <a href="#areas" class="btn-back">View areas</a>
+        <div class="page-actions">
+          <a href="#areas" class="button button-ghost">Manage Areas</a>
+          <button class="button button-primary" onclick="addDevice()">Add Device</button>
+        </div>
       </div>
-      ${list.length === 0 ? '<div class="empty">No devices configured</div>' : `
-      <div class="card-grid">
+      ${restartBanner(status)}
+      ${list.length === 0 ? `<div class="empty-state">
+        <div class="empty-icon">◎</div>
+        <h3>Add your first Device</h3>
+        <p>Connect a camera, doorbell, or another event source to an Area.</p>
+        <button class="button button-primary" onclick="addDevice()">Add Device</button>
+      </div>` : `
+      <div class="resource-list inventory-list">
         ${list.map(device => {
-          const connectors = status.connectors.filter(connector => connector.device_id === device.id);
-          const pluginInstances = pluginInstancesForDevice(plugins, device.id);
-          const sdkInstance = pluginInstances.find(instance => instance.plugin_id === "hikvision-sdk");
-          const sdkInfo = sdkInstance?.device_info || {};
-          const health = deviceStatus(connectors, pluginInstances);
-          const onvif = connectors.find(connector => connector.type === "onvif");
-          const manufacturer = onvif?.manufacturer || device.metadata?.onvif?.manufacturer || sdkInfo.manufacturer || "";
-          const model = onvif?.model || device.metadata?.onvif?.model || sdkInfo.model || "";
-          const integrations = [
-            ...(device.capabilities?.includes("onvif") ? [{ name: "ONVIF", online: onvif ? connectorHealthy(onvif) : false }] : []),
-            ...(device.capabilities?.includes("isapi") ? [{ name: "ISAPI", online: connectors.some(connector => connector.type === "isapi" && connectorHealthy(connector)) }] : []),
-            ...(device.capabilities?.includes("hikvision_sdk") ? [{ name: "HCNetSDK", online: sdkInstance?.state === "running" }] : []),
-          ];
-          return `
-            <a href="#device/${device.id}" class="card device-card">
-              <div class="device-card-header">
-                <span class="status-indicator ${health.online ? "online" : "offline"}"></span>
-                <div>
-                  <h3>${device.name || device.id}</h3>
-                  <div class="meta">${[manufacturer, model].filter(Boolean).join(" ") || titleCase(device.device_type) || "Network device"}</div>
-                </div>
-                <span class="badge ${health.online ? "badge-active" : "badge-inactive"}">${health.label}</span>
-              </div>
-              <div class="device-card-meta">
-                <span>${areaNames[device.area_id] || device.area_id || "No area"}</span>
-                <span>${device.ip_address || "No address"}</span>
-              </div>
-              <div class="device-card-section">
-                <span class="label">Integrations</span>
-                ${integrations.map(integration => `<span class="badge ${integration.online ? "badge-active" : "badge-inactive"}">${integration.name}</span>`).join(" ") || '<span class="meta">None</span>'}
-              </div>
-              <div class="device-card-section">${capabilityBadges(device.capabilities) || '<span class="meta">No capabilities discovered</span>'}</div>
-              ${onvif?.last_event ? `<div class="meta">Last ONVIF activity ${fmtShort(onvif.last_event)}</div>` : ""}
-            </a>`;
+          const identity = device.identity || {};
+          return `<div class="resource-row inventory-row ${device.enabled ? "" : "resource-disabled"}">
+            <span class="status-indicator ${operationalIndicator(device.state)}"></span>
+            <a href="#device/${device.id}" class="resource-main resource-primary-link">
+              <strong>${device.name || device.id}</strong>
+              <span>${titleCase(device.device_type)} · ${[identity.manufacturer, identity.model].filter(Boolean).join(" ") || "Manufacturer not detected"}</span>
+            </a>
+            <div class="resource-context">${areaNames[device.area_id] || device.area_id || "No Area"}</div>
+            <div class="resource-badges">${integrationBadges(device.integrations) || '<span class="meta">No integrations</span>'}</div>
+            <div class="resource-actions">
+              <button class="icon-button" onclick="editDevice('${device.id}')" aria-label="Edit ${device.name}">Edit</button>
+              <button class="icon-button danger-text" onclick="deleteDevice('${device.id}')" aria-label="Delete ${device.name}">Delete</button>
+            </div>
+          </div>`;
         }).join("")}
       </div>`}
     `);
   } catch (error) { showError(error.message); }
 }
 
-async function device(id) {
+async function deviceView(id) {
   showLoading();
   try {
-    const [item, areaList, status, plugins, activity, evidenceList] = await Promise.all([
+    const [item, areaList, activity, evidenceList, status] = await Promise.all([
       api("/devices/" + encodeURIComponent(id)),
-      api("/areas"),
-      api("/status"),
-      api("/plugins"),
+      api("/areas?include_disabled=true"),
       api("/events?device_id=" + encodeURIComponent(id) + "&limit=12"),
       api("/evidence?device_id=" + encodeURIComponent(id) + "&limit=24"),
+      api("/status"),
     ]);
+    inventoryAreas = areaList;
+    inventoryDevices = [item];
     const area = areaList.find(candidate => candidate.id === item.area_id);
-    const connectors = status.connectors.filter(connector => connector.device_id === item.id);
-    const pluginInstances = pluginInstancesForDevice(plugins, item.id);
-    const sdkInstance = pluginInstances.find(instance => instance.plugin_id === "hikvision-sdk");
-    const sdkInfo = sdkInstance?.device_info || {};
-    const health = deviceStatus(connectors, pluginInstances);
-    const onvif = connectors.find(connector => connector.type === "onvif");
-    const manufacturer = onvif?.manufacturer || item.metadata?.onvif?.manufacturer || sdkInfo.manufacturer || "";
-    const model = onvif?.model || item.metadata?.onvif?.model || sdkInfo.model || "";
-    const firmware = onvif?.firmware_version || item.metadata?.onvif?.firmware_version || sdkInfo.firmware_version || "";
+    const identity = item.identity || {};
     const origins = [...new Set(evidenceList.map(entry => entry.metadata?.origin).filter(Boolean))];
-    const eventSources = [...new Set(activity.flatMap(entry => entry.sources || []))];
-    const integrations = new Set();
-    if (item.capabilities?.includes("onvif")) integrations.add("ONVIF");
-    if (item.capabilities?.includes("isapi") || eventSources.includes("hikvision:isapi")) integrations.add("ISAPI");
-    if (item.capabilities?.includes("hikvision_sdk") || sdkInstance) integrations.add("HCNetSDK");
-    if (eventSources.includes("hikvision:alarm_server")) integrations.add("Alarm Server");
-    if (origins.includes("ftp")) integrations.add("FTP");
+    const onvif = item.integrations.find(integration => integration.type === "onvif");
+    const profiles = onvif?.details?.profiles || [];
+    const selectedProfile = onvif?.details?.selected_profile || "";
+    const topics = onvif?.details?.event_topics || [];
 
     showContent(`
       <div class="breadcrumbs"><a href="#devices">Devices</a> <span class="sep">›</span> <span>${item.name || item.id}</span></div>
       <div class="detail-header device-detail-header">
         <div>
           <div class="device-title">
-            <span class="status-indicator ${health.online ? "online" : "offline"}"></span>
+            <span class="status-indicator ${operationalIndicator(item.state)}"></span>
             <h2>${item.name || item.id}</h2>
-            <span class="badge ${health.online ? "badge-active" : "badge-inactive"}">${health.label}</span>
+            ${operationalBadge(item.state)}
           </div>
-          <div class="subtitle">${[manufacturer, model].filter(Boolean).join(" ") || titleCase(item.device_type) || "Network device"}</div>
+          <div class="subtitle">${titleCase(item.device_type)} · ${[identity.manufacturer, identity.model].filter(Boolean).join(" ") || "Manufacturer not detected"}</div>
+        </div>
+        <div class="page-actions">
+          <button class="button button-ghost" onclick="editDevice('${item.id}')">Edit Device</button>
+          <button class="button button-ghost danger-text" onclick="deleteDevice('${item.id}')">Delete</button>
         </div>
       </div>
+      ${restartBanner(status)}
 
-      <div class="status-grid section">
-        <div class="card"><div class="meta"><strong>Area</strong><br>${area?.name || item.area_id || "Not assigned"}</div></div>
-        <div class="card"><div class="meta"><strong>Network address</strong><br>${item.ip_address || "Not configured"}</div></div>
-        <div class="card"><div class="meta"><strong>Firmware</strong><br>${firmware || "Not reported"}</div></div>
+      <dl class="detail-facts section">
+        <div><dt>Type</dt><dd>${titleCase(item.device_type)}</dd></div>
+        <div><dt>Area</dt><dd>${area?.name || item.area_id || "Not assigned"}</dd></div>
+        <div><dt>Manufacturer</dt><dd>${identity.manufacturer || "Not detected"}</dd></div>
+        <div><dt>Model</dt><dd>${identity.model || "Not detected"}</dd></div>
+        <div><dt>Firmware</dt><dd>${identity.firmware_version || "Not reported"}</dd></div>
+        <div><dt>Network address</dt><dd>${item.ip_address || "Not configured"}</dd></div>
+        <div><dt>Recording behavior</dt><dd>${titleCase(item.capture_policy.recording)}</dd></div>
+        <div><dt>Automatic snapshots</dt><dd>${item.capture_policy.automatic_snapshots ? "Enabled" : "Disabled"}</dd></div>
+        <div><dt>ONVIF Events</dt><dd>${item.capture_policy.onvif_events === null ? "Unavailable" : item.capture_policy.onvif_events ? "Enabled" : "Disabled"}</dd></div>
+      </dl>
+
+      <div class="section">
+        <div class="section-heading"><div><h3>Capabilities</h3><span>What this Device can contribute</span></div></div>
+        <div class="compact-panel badge-cluster">${capabilityBadges(item.capabilities) || '<span class="meta">None reported</span>'}</div>
       </div>
 
       <div class="section">
-        <h3>Capabilities</h3>
-        <div class="card">
-          <div class="device-card-section">${capabilityBadges(item.capabilities) || '<span class="meta">No capabilities discovered</span>'}</div>
-        </div>
+        <div class="section-heading"><div><h3>Integrations</h3><span>${plural(item.integrations.length, "configured connection")}</span></div></div>
+        ${renderIntegrationRows(item.integrations)}
       </div>
 
+      ${profiles.length ? `
       <div class="section">
-        <h3>Integrations</h3>
-        <div class="status-grid">
-          ${[...integrations].map(name => {
-            const connector = connectors.find(candidate =>
-              name === "ONVIF" ? candidate.type === "onvif" :
-              name === "ISAPI" ? candidate.type === "isapi" : false
-            );
-            const pluginInstance = name === "HCNetSDK" ? sdkInstance : null;
-            const online = pluginInstance ? pluginInstance.state === "running" : connector ? connectorHealthy(connector) : true;
-            const detail = pluginInstance
-              ? (online ? `Connected · ${pluginInstance.messages_received} notifications` : pluginInstance.error || titleCase(pluginInstance.state))
-              : connector ? (online ? "Connected" : connector.last_error || "Unavailable") : "Observed in recent data";
-            return `<div class="card">
-              <span class="status-indicator ${online ? "online" : "offline"}"></span>
-              <div class="meta"><strong>${name}</strong><br>${detail}</div>
-            </div>`;
-          }).join("") || '<div class="empty">No integrations observed</div>'}
-        </div>
-      </div>
-
-      ${onvif ? `
-      <div class="section">
-        <h3>ONVIF media</h3>
-        <div class="status-grid">
-          ${(onvif.profiles || []).map(profile => `
-            <div class="card">
-              <div class="meta">
-                <strong>${profile.name || profile.token}</strong><br>
-                ${profile.width} × ${profile.height} &middot; ${profile.encoding || "Unknown codec"}<br>
-                Snapshot ${profile.snapshot ? "available" : "unavailable"}
+        <div class="section-heading"><div><h3>ONVIF media</h3><span>Runtime discovery · read-only</span></div></div>
+        <div class="resource-list">
+          ${profiles.map(profile => `
+            <div class="resource-row">
+              <div class="resource-main">
+                <strong>${profile.name || profile.token}</strong>
+                <span>${profile.width} × ${profile.height} · ${profile.encoding || "Unknown codec"} · Snapshot ${profile.snapshot ? "available" : "unavailable"}</span>
               </div>
-            </div>`).join("") || '<div class="empty">No media profiles reported</div>'}
+              <span class="badge ${profile.token === selectedProfile ? "badge-active" : "badge-neutral"}">${profile.token === selectedProfile ? "Selected" : "Discovered"} · read-only</span>
+            </div>`).join("")}
         </div>
       </div>` : ""}
 
       <div class="section">
-        <h3>Capture policy</h3>
-        <div class="status-grid">
-          <div class="card"><div class="meta"><strong>Recording</strong><br>${item.capabilities?.includes("video") ? "Available for Episode activity" : "Unavailable"}</div></div>
-          <div class="card"><div class="meta"><strong>Automatic ONVIF snapshots</strong><br>${status.snapshotter.enabled ? "Enabled" : "Disabled"}</div></div>
-          <div class="card"><div class="meta"><strong>ONVIF events</strong><br>${onvif ? (onvif.events_enabled ? "Enabled" : "Disabled by device policy") : "Unavailable"}</div></div>
-          <div class="card"><div class="meta"><strong>Observed evidence</strong><br>${origins.map(titleCase).join(", ") || "None yet"}</div></div>
-        </div>
+        <div class="section-heading"><div><h3>Observed evidence</h3><span>Sources seen for this Device</span></div></div>
+        <div class="compact-panel">${origins.map(titleCase).join(", ") || "None yet"}</div>
       </div>
 
       <div class="section">
-        <h3>Recent activity</h3>
-        ${activity.length ? `<table>
+        <div class="section-heading"><div><h3>Recent activity</h3><span>Latest normalized Events</span></div></div>
+        ${activity.length ? `<div class="table-wrap"><table>
           <thead><tr><th>Type</th><th>State</th><th>Source</th><th>Time</th></tr></thead>
           <tbody>${activity.map(entry => `<tr class="clickable" onclick="location='#event/${entry.id}'">
             <td>${eventBadge(entry.event_type)}</td>
@@ -922,16 +944,16 @@ async function device(id) {
             <td>${sourceBadges(entry.sources)}</td>
             <td>${fmtShort(entry.timestamp)}</td>
           </tr>`).join("")}</tbody>
-        </table>` : '<div class="empty">No activity recorded</div>'}
+        </table></div>` : '<div class="empty">No activity recorded</div>'}
       </div>
 
-      ${onvif ? `
+      ${topics.length ? `
       <div class="section">
         <h3 class="collapse-header collapsed" onclick="toggleCollapse(this)">Technical details</h3>
         <div class="collapse-body collapsed">
-          <div class="card">
+          <div class="compact-panel">
             <div class="meta"><strong>Device ID</strong><br>${item.id}</div>
-            <div class="meta" style="margin-top:0.75rem"><strong>ONVIF event topics</strong><br>${(onvif.event_topics || []).join("<br>") || "None reported"}</div>
+            <div class="meta" style="margin-top:0.75rem"><strong>ONVIF event topics</strong><br>${topics.join("<br>")}</div>
           </div>
         </div>
       </div>` : ""}
@@ -942,22 +964,45 @@ async function device(id) {
 async function areas() {
   showLoading();
   try {
-    const [list, deviceList] = await Promise.all([api("/areas"), api("/devices")]);
+    const [list, deviceList] = await Promise.all([
+      api("/areas?include_disabled=true"),
+      api("/devices?include_disabled=true"),
+    ]);
+    inventoryAreas = list;
+    inventoryDevices = deviceList;
     showContent(`
       <div class="page-header">
         <div>
+          <div class="eyebrow">Inventory</div>
           <h2>Areas</h2>
-          <div class="meta">Coverage and correlation boundaries shared by related devices.</div>
+          <div class="meta">Correlation boundaries that keep related activity together.</div>
+        </div>
+        <div class="page-actions">
+          <a href="#devices" class="button button-ghost">Back to Devices</a>
+          <button class="button button-primary" onclick="addArea()">Create Area</button>
         </div>
       </div>
-      ${list.length === 0 ? '<div class="empty">No areas configured</div>' : `
-      <div class="card-grid">
+      ${list.length === 0 ? `<div class="empty-state">
+        <div class="empty-icon">⌂</div>
+        <h3>Create your first Area</h3>
+        <p>Start with a meaningful physical boundary, such as Front entrance or Garage.</p>
+        <button class="button button-primary" onclick="addArea()">Create Area</button>
+      </div>` : `
+      <div class="resource-list inventory-list">
         ${list.map(area => {
           const members = deviceList.filter(device => device.area_id === area.id);
-          return `<div class="card">
-            <h3>${area.name}</h3>
-            <div class="meta">${area.location || "No location description"} &middot; ${plural(members.length, "device")}</div>
-            <div class="device-card-section">${members.map(device => `<a href="#device/${device.id}">${device.name || device.id}</a>`).join(" &middot; ") || '<span class="meta">No devices assigned</span>'}</div>
+          return `<div class="resource-row area-row ${area.enabled ? "" : "resource-disabled"}">
+            <span class="status-indicator ${area.enabled ? "online" : "idle"}"></span>
+            <div class="resource-main">
+              <strong>${area.name}</strong>
+              <span>${area.location || "No location description"}</span>
+            </div>
+            <div class="resource-context">${plural(members.length, "Device")}</div>
+            <div class="resource-links">${members.slice(0, 3).map(device => `<a href="#device/${device.id}">${device.name || device.id}</a>`).join("")}${members.length > 3 ? `<span>+${members.length - 3}</span>` : ""}</div>
+            <div class="resource-actions">
+              <button class="icon-button" onclick="editArea('${area.id}')">Edit</button>
+              <button class="icon-button danger-text" onclick="deleteArea('${area.id}')">Delete</button>
+            </div>
           </div>`;
         }).join("")}
       </div>`}
@@ -968,143 +1013,41 @@ async function areas() {
 /* ─── System Status ─── */
 
 
-function connectorHealthy(c) {
-  return c.healthy === undefined ? c.running : c.healthy;
-}
-
-function pluginIndicatorState(plugin) {
-  if (plugin.state === "ready") return "online";
-  if (plugin.state === "degraded") return "warning";
-  if (plugin.state === "validating") return "warning";
-  if (plugin.state === "not_installed") return "idle";
-  return "offline";
-}
-
-function pluginSummary(plugin) {
-  if (plugin.state === "not_installed") return "Configured · not installed";
-  const details = [titleCase(plugin.state)];
-  if (plugin.version) details.push("SDK " + plugin.version);
-  if (plugin.architecture) details.push(plugin.architecture);
-  return details.join(" · ");
-}
-
-function pluginInstances(plugin) {
-  const instances = plugin.instances || [];
-  if (!instances.length) return "";
-  return instances.map(instance => {
-    const details = [titleCase(instance.state)];
-    if (instance.device_info?.model) details.push(instance.device_info.model);
-    if (instance.device_info?.firmware_version) details.push(instance.device_info.firmware_version);
-    if (instance.messages_received) details.push(instance.messages_received + " notifications");
-    if (instance.last_message_at) details.push("last " + fmtShort(instance.last_message_at));
-    return `
-      <div class="meta" style="margin-top:0.5rem">
-        <strong>${escHtml(instance.name)}</strong> · ${details.join(" · ")}
-        ${instance.error ? "<br>" + escHtml(instance.error) : ""}
-      </div>`;
-  }).join("");
-}
-
 async function systemStatus() {
   showLoading();
   try {
-    const [st, plugins] = await Promise.all([api("/status"), api("/plugins")]);
+    const diagnostics = await api("/diagnostics");
+    const status = diagnostics.status;
+    const serviceRows = diagnostics.services.map(service => ({
+      ...service,
+      type: "service",
+      capabilities: [],
+      details: service.metrics,
+    }));
     showContent(`
-      <div class="page-header"><h2>System Status</h2></div>
-
-      <div class="section">
-        <h3>Server</h3>
-        <div class="status-grid">
-          <div class="card">
-            <div class="status-indicator ${st.server.running ? "online" : "offline"}"></div>
-            <div class="meta"><strong>Episode Server</strong><br>${st.server.running ? "Running" : "Stopped"} &middot; v${st.server.version}</div>
-          </div>
+      <div class="page-header">
+        <div>
+          <h2>System</h2>
+          <div class="meta">Runtime health and integration diagnostics.</div>
         </div>
+        ${operationalBadge(status.state)}
       </div>
-
+      ${restartBanner(status)}
+      <dl class="detail-facts section">
+        <div><dt>Version</dt><dd>v${status.version}</dd></div>
+        <div><dt>Active recordings</dt><dd>${status.active_recordings}</dd></div>
+        <div><dt>Integrations</dt><dd>${status.integrations.healthy}/${status.integrations.total} healthy</dd></div>
+      </dl>
       <div class="section">
-        <h3>Episode Engine</h3>
-        <div class="status-grid">
-          <div class="card">
-            <div class="status-indicator ${st.engine.running ? "online" : "offline"}"></div>
-            <div class="meta"><strong>Engine</strong><br>${st.engine.running ? "Running" : "Stopped"} &middot; ${st.engine.timeout}s timeout</div>
-          </div>
-        </div>
+        <h3>Core services</h3>
+        ${renderIntegrationRows(serviceRows, true)}
       </div>
-
       <div class="section">
-        <h3>Capture Actions</h3>
-        <div class="status-grid">
-          <div class="card">
-            <div class="status-indicator ${st.recorder.running ? "online" : "offline"}"></div>
-            <div class="meta"><strong>Recorder</strong><br>${st.recorder.running ? "Running" : "Stopped"} &middot; ${st.recorder.active_recordings} active recording${st.recorder.active_recordings === 1 ? "" : "s"}</div>
-          </div>
-          <div class="card">
-            <div class="status-indicator ${st.snapshotter.enabled && !st.snapshotter.running ? "offline" : "online"}"></div>
-            <div class="meta"><strong>ONVIF snapshots</strong><br>${st.snapshotter.enabled ? st.snapshotter.captured + " captured · " + st.snapshotter.failures + " failed" : "Disabled by policy"}</div>
-          </div>
-
-        </div>
-      </div>
-
-      <div class="section">
-        <h3>Connectors (${st.connectors.length})</h3>
-        <div class="status-grid">
-          ${st.connectors.map(c => `
-            <div class="card">
-              <div class="status-indicator ${connectorHealthy(c) ? "online" : "offline"}"></div>
-              <div class="meta">
-                <strong>${c.name}</strong><br>
-                <span class="badge ${connectorHealthy(c) ? "badge-active" : "badge-inactive"}">${c.type}</span>
-                ${connectorHealthy(c) ? "" : " (unavailable)"}
-                ${renderConnectorMeta(c)}
-              </div>
-            </div>
-          `).join("")}
-          ${st.connectors.length === 0 ? '<div class="empty">No connectors configured</div>' : ""}
-        </div>
-      </div>
-
-      <div class="section">
-        <h3>Configured plugins (${plugins.length})</h3>
-        <div class="status-grid">
-          ${plugins.map(plugin => `
-            <div class="card">
-              <div class="status-indicator ${pluginIndicatorState(plugin)}"></div>
-              <div class="meta">
-                <strong>${plugin.name}</strong><br>
-                <span class="badge ${plugin.state === "ready" ? "badge-active" : "badge-inactive"}">${plugin.kind}</span>
-                ${pluginSummary(plugin)}
-                ${plugin.error ? "<br>" + escHtml(plugin.error) : ""}
-                ${pluginInstances(plugin)}
-              </div>
-            </div>
-          `).join("")}
-          ${plugins.length === 0 ? '<div class="empty">No plugins configured</div>' : ""}
-        </div>
+        <h3>Integrations (${diagnostics.integrations.length})</h3>
+        ${renderIntegrationRows(diagnostics.integrations, true)}
       </div>
     `);
-  } catch (e) { showError(e.message); }
-}
-
-function renderConnectorMeta(c) {
-  const parts = [];
-  if (c.path) parts.push(c.path);
-  if (c.host && c.port) parts.push(c.host + ":" + c.port);
-  else if (c.port) parts.push("port " + c.port);
-  if (c.url) parts.push(c.url);
-  if (c.device_id) parts.push("device: " + trunc(c.device_id, 20));
-  if (c.stream_active !== undefined) parts.push(c.stream_active ? "streaming" : "disconnected");
-  if (c.connected !== undefined) parts.push(c.connected ? "connected" : "disconnected");
-  if (c.subscribed) parts.push("subscribed");
-  if (c.profiles?.length) parts.push(c.profiles.length + " media profile" + (c.profiles.length === 1 ? "" : "s"));
-  if (c.events_enabled === false) parts.push("ONVIF events disabled");
-  if (c.events_received !== undefined) parts.push(c.events_received + " ONVIF events");
-  if (c.events_suppressed) parts.push(c.events_suppressed + " repeats suppressed");
-  if (c.last_error) parts.push("error: " + c.last_error);
-  if (c.last_event) parts.push("last: " + fmtShort(c.last_event));
-  if (c.requests_handled !== undefined) parts.push(c.requests_handled + " requests");
-  return parts.length ? "<br>" + parts.join(" &middot; ") : "";
+  } catch (error) { showError(error.message); }
 }
 
 /* ─── Mobile sidebar ─── */
@@ -1118,12 +1061,18 @@ window.toggleSidebar = function() {
 
 /* ─── Sidebar ─── */
 
-async function updateRecentEpisodes(list) {
+async function updateRecentEpisodes(list = null) {
   const el = $("#recent-episodes-sidebar");
-  const recent = list.slice(0, 8);
-  el.innerHTML = `<div class="label">Recent episodes</div>
-    ${recent.map(e => `<a href="#episode/${e.id}">${stateBadge(e.state)} ${trunc(e.primary_area_id || "?", 22)}</a>`).join("")}
-  `;
+  try {
+    const recent = (list || await api("/episodes?limit=8")).slice(0, 8);
+    el.innerHTML = `<div class="label">Recent episodes</div>
+      ${recent.length
+        ? recent.map(e => `<a href="#episode/${e.id}">${stateBadge(e.state)} ${trunc(e.primary_area_id || "?", 22)}</a>`).join("")
+        : '<span class="sidebar-empty">No episodes yet</span>'}
+    `;
+  } catch {
+    el.innerHTML = '<div class="label">Recent episodes</div><span class="sidebar-empty">Unavailable</span>';
+  }
 }
 
 /* ─── Sidebar status mini-view ─── */
@@ -1131,19 +1080,18 @@ async function updateRecentEpisodes(list) {
 async function updateSidebarStatus() {
   const el = $("#sidebar-status");
   try {
-    const st = await api("/status");
-    $("#app-version").textContent = st.server.version ? `v${st.server.version}` : "";
-    const allOnline = st.connectors.every(connectorHealthy)
-      && st.engine.running && st.recorder.running
-      && (!st.snapshotter.enabled || st.snapshotter.running);
-    const anyOnline = st.connectors.some(connectorHealthy)
-      || st.engine.running || st.recorder.running || st.snapshotter.running;
-    const status = allOnline ? "online" : anyOnline ? "warning" : "offline";
-    const label = allOnline ? "All systems operational" : anyOnline ? "Partial outage" : "System offline";
+    const status = await api("/status");
+    $("#app-version").textContent = status.version ? `v${status.version}` : "";
+    const indicator = status.restart_required ? "warning" : operationalIndicator(status.state);
+    const label = status.restart_required ? "Restart required" : ({
+      healthy: "All systems operational",
+      degraded: "Attention needed",
+      unavailable: "System unavailable",
+    }[status.state] || "Status unknown");
     el.innerHTML = `<div class="sidebar-status">
-      <span class="dot ${status}" title="${label}"></span>
+      <span class="dot ${indicator}" title="${label}"></span>
       <span class="label">${label}</span>
-      <span class="label" style="margin-left:auto">${st.recorder.active_recordings ? plural(st.recorder.active_recordings, "rec") : ""}</span>
+      <span class="label" style="margin-left:auto">${status.active_recordings ? plural(status.active_recordings, "rec") : ""}</span>
     </div>`;
   } catch {
     el.innerHTML = `<div class="sidebar-status"><span class="dot offline"></span><span class="label">Offline</span></div>`;
@@ -1153,5 +1101,6 @@ async function updateSidebarStatus() {
 // Poll sidebar status every 10s
 setInterval(updateSidebarStatus, 10000);
 updateSidebarStatus();
+updateRecentEpisodes();
 
 navigate();

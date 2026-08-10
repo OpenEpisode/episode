@@ -11,16 +11,18 @@ from fastapi.staticfiles import StaticFiles
 from episode import __version__
 from episode.actions.snapshot import SnapshotEngine
 from episode.api.routes import create_api
+from episode.api.runtime import OperationalView
 from episode.config import EpisodeConfig, load_config
 from episode.connectors.hikvision.ftp import FTPConnector
 from episode.connectors.hikvision.isapi import ISAPIConnector
 from episode.connectors.http_ingress import HTTPIngressConnector
 from episode.connectors.onvif import ONVIFConnector
-from episode.domain.models import Area, Device
+from episode.domain.models import Device
 from episode.engine.bus import EventBus
 from episode.engine.engine import EpisodeEngine
 from episode.ingestion.router import IngressRouter
 from episode.ingestion.service import IngestionService
+from episode.inventory import DeviceValidationService, InventoryService
 from episode.media import MediaRegistry
 from episode.media.timelapse import TimelapseService
 from episode.plugins import PluginContext, PluginManager, builtin_plugin_registry
@@ -59,14 +61,14 @@ class Application:
         configured_capabilities = {
             capability for device in config.devices for capability in device.get("capabilities", [])
         }
-        configured_connector_types = {
+        self._configured_connector_types = {
             connector.type for connector in config.connectors if connector.enabled
         }
-        registry = builtin_plugin_registry()
+        self._plugin_registry = builtin_plugin_registry()
         self._plugins = PluginManager(
-            registry.for_configuration(
+            self._plugin_registry.for_configuration(
                 configured_capabilities,
-                configured_connector_types,
+                self._configured_connector_types,
             ),
             PluginContext(
                 Path(config.plugins_dir),
@@ -75,12 +77,31 @@ class Application:
                 self._ingress_router,
             ),
         )
+        self._inventory = InventoryService(self._repo)
         self._connectors = []
+        self._operations = OperationalView(
+            version=__version__,
+            engine_status=self._engine.status,
+            recorder_status=self._recorder.status,
+            snapshot_status=self._snapshotter.status,
+            connector_statuses=lambda: [connector.status() for connector in self._connectors],
+            plugin_statuses=self._plugins.statuses,
+            snapshots_enabled=config.actions.snapshot.enabled,
+            restart_required=lambda: self._inventory.restart_required,
+        )
+        self._validation = DeviceValidationService(
+            runtime_integrations=lambda device: self._operations.device_detail(device)[
+                "integrations"
+            ]
+        )
         self._fastapi_app = create_api(
             self._repo,
             config.data_dir,
             config.snapshot_window,
             self._timelapses,
+            operations=self._operations,
+            inventory=self._inventory,
+            validator=self._validation,
         )
         register_plugins_api(self._fastapi_app, self._plugins)
 
@@ -97,24 +118,32 @@ class Application:
         logger.info("Initializing storage...")
         await self._repo.initialize()
 
-        logger.info("Loading configured areas and devices...")
-        configured_area_ids = set()
-        for area_data in self._config.areas:
-            await self._repo.upsert_area(Area(**area_data))
-            configured_area_ids.add(area_data["id"])
-        for existing in await self._repo.list_areas():
-            if existing.id not in configured_area_ids:
-                await self._repo.delete_area(existing.id)
-                logger.info("Removed stale area %s (%s)", existing.id, existing.name)
+        logger.info("Loading persistent Area and Device inventory...")
+        imported = await self._inventory.bootstrap(
+            self._config.areas,
+            self._config.devices,
+        )
+        if imported:
+            logger.info("Imported legacy file inventory into persistent storage")
 
-        configured_device_ids = set()
-        for device_data in self._config.devices:
-            await self._repo.upsert_device(Device(**device_data))
-            configured_device_ids.add(device_data["id"])
-        for existing in await self._repo.list_devices():
-            if existing.id not in configured_device_ids:
-                await self._repo.delete_device(existing.id)
-                logger.info("Removed stale device %s (%s)", existing.id, existing.name)
+        configured_devices = await self._inventory.configured_devices()
+        configured_capabilities = {
+            capability
+            for device in configured_devices
+            for capability in device.get("capabilities", [])
+        }
+        self._plugins.configure(
+            self._plugin_registry.for_configuration(
+                configured_capabilities,
+                self._configured_connector_types,
+            ),
+            PluginContext(
+                Path(self._config.plugins_dir),
+                configured_devices,
+                self._raw_plugin_deliveries,
+                self._ingress_router,
+            ),
+        )
 
         logger.info("Starting Episode Engine...")
         await self._engine.start()
@@ -165,8 +194,7 @@ class Application:
                 self._connectors.append(conn)
                 await conn.start()
 
-        # Register status endpoint before static mount so routes take precedence
-        self._register_status_endpoint()
+        self._inventory.mark_runtime_current()
 
         # Mount static UI last so connector routes take precedence
         ui_dir = Path(__file__).resolve().parent / "ui"
@@ -198,21 +226,6 @@ class Application:
         await self._recorder.stop()
         await self._engine.stop()
         await self._repo.close()
-
-    def _register_status_endpoint(self):
-        @self._fastapi_app.get("/api/v1/status")
-        async def system_status():
-            connectors = [c.status() for c in self._connectors]
-            return {
-                "server": {"running": True, "version": __version__},
-                "engine": self._engine.status(),
-                "recorder": self._recorder.status(),
-                "snapshotter": {
-                    **self._snapshotter.status(),
-                    "enabled": self._config.actions.snapshot.enabled,
-                },
-                "connectors": connectors,
-            }
 
     def _build_connector(self, cfg):
         t = cfg.type

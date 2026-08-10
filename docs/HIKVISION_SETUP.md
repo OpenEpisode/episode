@@ -14,36 +14,36 @@ by firmware.
 - Do not expose Episode, FTP, RTSP, or camera administration directly to the
   Internet.
 
-Copy `episode.example.json` to `episode.json`. For each camera, define one device
-whose `ip_address` is the address from which Episode receives data. Keep device
-IDs stable after collecting evidence.
+Copy `episode.example.json` to `episode.json` and replace its FTP password.
+Areas, Devices, credentials, capture behavior, and Device integrations are
+managed in the web interface. Device type describes the physical role—Camera,
+Doorbell, Alarm panel, or Sensor—rather than the manufacturer. Hikvision appears
+through discovered identity and optional ISAPI or HCNetSDK enhancements. Episode
+uses the configured IP address to match incoming data; keep a Device's generated
+ID and address stable after collecting evidence.
 
 ## Start Episode
 
 ```bash
 cp episode.example.json episode.json
 cp .env.example .env
-mkdir -p data
+mkdir -p data plugins
 docker compose --env-file .env pull
 docker compose --env-file .env up -d
 ```
 
-Open <http://localhost:8989>. The System page should report the server, engine,
-recorder, and configured connectors.
+Open <http://localhost:8989>, create an Area, and add the camera from the
+**Devices** page. The System page reports core service and Integration health.
+Restart Episode after saving Device changes so its connections become active.
 
 ## ISAPI event stream
 
-For enhanced vendor event monitoring, keep `isapi` beside `onvif` in the device's `capabilities` and set
-the camera address and credentials in `episode.json`:
-
-```json
-{
-  "capabilities": ["onvif", "isapi"],
-  "ip_address": "192.168.1.100",
-  "username": "admin",
-  "password": "replace-me"
-}
-```
+For enhanced vendor Event monitoring, edit the Device and select **Validate
+and discover**. Episode safely requests Hikvision device information to verify
+ISAPI independently from ONVIF. Enable **ISAPI Event stream** when supported,
+then save and restart Episode. Credentials entered for the
+Device are shared with its enabled integrations and are never returned to the
+browser.
 
 Episode connects to `/ISAPI/Event/notification/alertStream` using the configured
 ISAPI protocol, port, and path. A connection or authentication failure appears
@@ -98,6 +98,13 @@ The source address and filename metadata help associate a snapshot with its
 device and nearby Event. The received bytes are preserved unchanged; bounding
 boxes and future annotations remain separate metadata.
 
+The Episode timeline shows every snapshot, including unmatched files. When an
+annotated target Event and consecutive `MD_WITH_TARGET` snapshots form a
+continuous sequence, the UI can carry the latest detection region through that
+sequence and update it when a newer Event arrives. A timing gap ends the derived
+track. This affects review overlays only and never changes evidence or stored
+Event relationships.
+
 ## Recording and ONVIF
 
 Episode normally discovers the RTSP URI and snapshot endpoint through ONVIF. A
@@ -138,42 +145,23 @@ evidence but marked as event attachments, so they are not used as timelapse
 frames.
 
 An active doorbell Event enters the normal Area-scoped action flow. A doorbell
-configured with `recording_mode: on_event` records its own stream, while video
-devices in the same Area configured with `recording_mode: on_episode` join the
-same Episode.
+using **Own Events only** records its own stream, while video Devices in the
+same Area using **Any Episode in this Area** join the same Episode.
 
 ### Activate the plugin
 
-Episode activates plugins from explicit device capabilities. Add `hikvision_sdk`
-only to devices that should connect through the SDK:
+Installing SDK files alone does not activate or load the integration. HCNetSDK
+is exposed for Doorbell Devices in the alpha because that is the path validated
+so far. Edit the Doorbell, enable **HCNetSDK**, set its login port (default
+`8000`) under manual connection overrides, and restart Episode. General Camera
+use remains a later validation task; the backend plugin contract does not assume
+that future limitation.
 
-```json
-{
-  "id": "front-doorbell",
-  "name": "Front Doorbell",
-  "device_type": "hikvision",
-  "area_id": "front-door",
-  "capabilities": ["doorbell", "onvif", "video", "hikvision_sdk"],
-  "ip_address": "192.168.1.120",
-  "username": "admin",
-  "password": "replace-me",
-  "configs": {
-    "hikvision_sdk": {
-      "port": 8000
-    }
-  }
-}
-```
-
-The SDK port defaults to `8000` when omitted. The device ID, name, area, IP
-address, username, and password are required. Credentials are sent to the
-worker over standard input; they are not included in process arguments, plugin
-status responses, or routine log messages.
-
-Installing SDK files alone does not import or validate the plugin. If no
-configured device declares `hikvision_sdk`, the module remains unloaded and is
-omitted from `/api/v1/plugins`. This keeps optional integrations lazy as the
-plugin catalog grows.
+The Device name, Area, IP address, username, and password are required.
+Credentials are sent to the isolated worker over standard input; they are not
+included in process arguments, Integration status responses, or routine logs.
+If no Device enables HCNetSDK, its Python module and native runtime remain
+unloaded. This keeps optional integrations lazy as the plugin catalog grows.
 
 ### Install the SDK files
 
@@ -209,7 +197,7 @@ before any native library is loaded.
 
 ### Verify the SDK
 
-Open Episode's **System** page and find **Configured plugins**. A working install
+Open Episode's **System** page and find **Integrations**. A working install
 shows `Hikvision HCNetSDK`, its SDK version and architecture, plus one health
 entry per configured device. It includes connection state, preserved
 notification count, and last notification time. The same state is available from:
@@ -249,7 +237,7 @@ location for future inspection and reprocessing.
 
 ## Verify the flow
 
-1. Open the Episode System page and confirm the connectors are running.
+1. Open the Episode System page and confirm the expected integrations are healthy.
 2. Trigger one configured camera event.
 3. Watch `docker compose --env-file .env logs -f episode` for a canonical Event
    and Episode.
@@ -280,6 +268,10 @@ Confirm that the camera's source IP matches the device `ip_address`, check NTP o
 all devices, and inspect the FTP filenames in the logs. Preserve the original
 files when reporting a reproducible parser problem, but never attach private
 evidence to a public issue.
+
+The review timeline deliberately leaves snapshots unmatched after a break in
+target observations. This prevents an old bounding box from being presented as
+current merely because another image arrived later.
 
 ### Recording does not start
 

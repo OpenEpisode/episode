@@ -2,7 +2,7 @@
 
 Thank you for your interest in Episode.
 
-Episode is currently in active MVP development.
+Episode is currently in active public-alpha development.
 
 The primary goal at this stage is to validate the Episode model rather than expand the feature set.
 
@@ -10,11 +10,11 @@ The primary goal at this stage is to validate the Episode model rather than expa
 
 When contributing, please keep the following principles in mind:
 
-* Events are immutable.
-* Evidence is immutable.
-* Episodes represent interpretation.
-* Connectors translate protocols.
-* The Core Domain remains vendor-independent.
+- Raw artifacts and evidence bytes are immutable.
+- Canonical Event observations remain stable while associations may evolve.
+- Episodes and review timelines represent interpretation.
+- Connectors and plugins translate protocols without owning correlation policy.
+- The core domain remains vendor-independent.
 
 Architectural consistency is preferred over rapid feature growth.
 
@@ -28,11 +28,11 @@ If not, it is probably better suited for a future release.
 
 ## Code Style
 
-* Keep modules focused.
-* Prefer composition over inheritance.
-* Avoid vendor-specific logic outside Connectors.
-* Preserve raw evidence whenever possible.
-* Write code that is easy to understand and test.
+- Keep modules focused.
+- Prefer composition over inheritance.
+- Keep vendor interpretation inside connectors or plugins.
+- Preserve raw deliveries before interpretation.
+- Write code that is easy to understand and test.
 
 ## Development setup
 
@@ -49,6 +49,7 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pytest -q
 uv build
+node --test tests/ui/*.test.mjs
 ```
 
 Build and run the current source with the developer override:

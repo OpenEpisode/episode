@@ -4,7 +4,6 @@ import asyncio
 import logging
 from dataclasses import asdict
 from time import monotonic
-from urllib.parse import urlsplit
 
 import httpx
 
@@ -136,18 +135,18 @@ class ONVIFConnector(Connector):
         recording_mode = (
             existing.settings.get("recording_mode", "on_event") if existing else "on_event"
         )
-        parsed = urlsplit(profile.stream_uri)
-        if parsed.scheme and parsed.hostname:
-            path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        if existing and existing.settings.get("origin") != "onvif":
+            settings = dict(existing.settings)
+            settings["recording_mode"] = recording_mode
             self._configured_device.configs["video"] = CapabilityConfig(
-                protocol=parsed.scheme,
-                port=parsed.port,
-                path=path,
-                settings={
-                    "recording_mode": recording_mode,
-                    "origin": "onvif",
-                    "profile_token": profile.token,
-                },
+                protocol=existing.protocol,
+                port=existing.port,
+                path=existing.path,
+                settings=settings,
+            )
+        else:
+            self._configured_device.configs["video"] = CapabilityConfig(
+                settings={"recording_mode": recording_mode}
             )
         self._configured_device.metadata["onvif"] = {
             "manufacturer": self._onvif_device.manufacturer,
@@ -352,6 +351,9 @@ class ONVIFConnector(Connector):
             "model": self._onvif_device.model if self._onvif_device else "",
             "firmware_version": (self._onvif_device.firmware_version if self._onvif_device else ""),
             "profiles": profiles,
+            "selected_profile": (
+                self._configured_device.metadata.get("onvif", {}).get("profile_token", "")
+            ),
             "event_topics": self._onvif_device.event_topics if self._onvif_device else [],
             "events_received": self._received,
             "events_suppressed": self._suppressed,

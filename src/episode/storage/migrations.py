@@ -103,3 +103,34 @@ async def migrate_episode_activity_schema(connection: aiosqlite.Connection) -> N
            WHERE last_activity_at IS NULL"""
     )
     await connection.commit()
+
+
+async def migrate_inventory_schema(connection: aiosqlite.Connection) -> None:
+    """Add persistent inventory state without rewriting existing identities."""
+    tables = await _tables(connection)
+    for table in ("areas", "devices"):
+        if table not in tables:
+            continue
+        columns = await _columns(connection, table)
+        if "enabled" not in columns:
+            await connection.execute(
+                f"ALTER TABLE {table} ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"
+            )
+    if "devices" in tables:
+        await connection.execute(
+            """UPDATE devices
+               SET device_type = CASE
+                   WHEN lower(capabilities) LIKE '%"doorbell"%' THEN 'doorbell'
+                   ELSE 'camera'
+               END
+               WHERE lower(device_type) IN (
+                   'hikvision', 'dahua', 'reolink', 'tplink', 'tp-link'
+               )"""
+        )
+    await connection.execute(
+        """CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )"""
+    )
+    await connection.commit()

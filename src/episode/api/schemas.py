@@ -16,16 +16,8 @@ class AreaResponse(ApiModel):
     id: str
     name: str
     location: str
-
-
-class DeviceResponse(ApiModel):
-    id: str
-    name: str
-    device_type: str
-    area_id: str
-    capabilities: list[str]
-    ip_address: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+    device_count: int = 0
 
 
 class EpisodeResponse(ApiModel):

@@ -21,7 +21,14 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run pytest -q
       - run: uv build
-      - run: node --check src/episode/ui/app.js
+      - name: Check browser modules
+        run: |
+          for file in src/episode/ui/*.js; do
+            cp "$file" "${RUNNER_TEMP}/$(basename "${file%.js}").mjs"
+            node --check "${RUNNER_TEMP}/$(basename "${file%.js}").mjs"
+          done
+      - name: Test browser modules
+        run: node --test tests/ui/*.test.mjs
       - run: docker compose --env-file .env.example config -q
       - run: docker compose --env-file .env.example -f compose.yaml -f compose.dev.yaml config -q
 

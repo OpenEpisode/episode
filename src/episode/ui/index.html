@@ -8,25 +8,8 @@
 <meta http-equiv="Expires" content="0">
 <title>Episode</title>
 <link rel="icon" href="logo.svg" type="image/svg+xml">
-<link rel="stylesheet" href="style.css?v=8">
-<style>
-@media (max-width: 1024px) {
-  body { display: block; min-height: 100dvh; overflow-y: auto; }
-  main { overflow-y: visible; height: auto; padding: 1rem; padding-top: 0; }
-  #mobile-header { display: flex; align-items: center; padding: 0.5rem 0.75rem; background: var(--surface); border-bottom: 1px solid var(--border); margin-bottom: 0.75rem; }
-  #sidebar-toggle { background: none; border: none; color: var(--text-primary); font-size: 1.3rem; padding: 0.25rem; cursor: pointer; line-height: 1; }
-  #mobile-title { font-weight: 600; font-size: 0.95rem; flex: 1; text-align: center; color: var(--text-muted); margin-right: 1.8rem; }
-  aside { position: fixed !important; top: 0; left: 0; bottom: 0; z-index: 1000; transform: translateX(-100%); transition: transform 0.2s ease; width: 260px; border-right: 1px solid var(--border); box-shadow: var(--shadow); }
-  aside.open { transform: translateX(0); }
-  #sidebar-overlay { display: block; }
-  #sidebar-overlay.hidden { display: none; }
-  .card-grid { grid-template-columns: 1fr; }
-  .evidence-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
-  table { font-size: 0.8rem; }
-  th, td { padding: 0.4rem 0.5rem; }
-  .page-header h2 { font-size: 1.1rem; }
-}
-</style>
+<link rel="stylesheet" href="style.css?v=16">
+
 </head>
 <body>
 <aside id="sidebar">
@@ -69,6 +52,6 @@
   <div id="carousel-info" class="carousel-info"></div>
 </div>
 
-<script src="app.js?v=7"></script>
+<script type="module" src="app.js?v=19"></script>
 </body>
 </html>
