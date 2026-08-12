@@ -100,6 +100,10 @@ def test_shared_connector_activates_only_its_registered_handler_plugin():
 
     assert [registration.id for registration in selected] == ["hikvision-alarm-server"]
 
+    selected = registry.for_configuration(set(), {"ftp"})
+
+    assert [registration.id for registration in selected] == ["hikvision-ftp"]
+
 
 def test_application_ignores_installed_plugin_without_device_capability(tmp_path):
     sdk_dir = tmp_path / "plugins" / "hikvision-sdk"

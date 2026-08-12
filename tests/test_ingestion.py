@@ -15,6 +15,7 @@ from episode.engine.bus import EventBus
 from episode.engine.engine import EpisodeEngine
 from episode.ingestion.models import (
     EventObservation,
+    FileIngressDelivery,
     IngressDelivery,
     IngressHandlerResult,
     StoredIngressEnvelope,
@@ -107,6 +108,40 @@ async def test_delivery_artifact_and_receipt_roll_back_together(tmp_path, monkey
         rows = await repository._conn.execute_fetchall("SELECT id FROM raw_artifacts")
         assert rows == []
         assert await repository.list_ingestion_receipts() == []
+    finally:
+        await engine.stop()
+        await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_file_is_preserved_when_plugin_handler_fails(tmp_path):
+    _config, repository, engine, router, ingestion = await _pipeline(tmp_path)
+
+    async def fail(_envelope):
+        raise RuntimeError("broken file interpreter")
+
+    router.register(IngressHandlerRegistration("broken-file", fail, lambda _item: True))
+    upload = tmp_path / "unrecognized-camera-file.jpg"
+    upload.write_bytes(b"raw file survives plugin failure")
+    try:
+        outcome = await ingestion.accept_file(
+            FileIngressDelivery(
+                source="ftp:upload",
+                transport="ftp",
+                received_at=datetime.now(tz=timezone.utc),
+                file_path=upload,
+                media_type="image/jpeg",
+                original_filename=upload.name,
+                metadata={"connector_type": "ftp"},
+            )
+        )
+
+        artifact = await repository.get_raw_artifact(outcome.receipt.artifact_id)
+        assert outcome.receipt.status == ReceiptStatus.REJECTED
+        assert outcome.receipt.metadata["reason"] == "ingress_handler_failed"
+        assert artifact.sealed
+        assert Path(artifact.file_path).read_bytes() == b"raw file survives plugin failure"
+        assert not upload.exists()
     finally:
         await engine.stop()
         await repository.close()

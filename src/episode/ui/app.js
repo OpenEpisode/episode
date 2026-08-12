@@ -32,6 +32,15 @@ function eventBadge(t) {
   const cls = (t || "").toLowerCase();
   return `<span class="badge badge-${cls}">${t}</span>`;
 }
+function episodeTriggerBadge(triggerType) {
+  if (triggerType === "doorbell") {
+    return '<span class="badge badge-doorbell episode-trigger" title="Triggered by a Doorbell Event">Doorbell</span>';
+  }
+  if (triggerType === "motion") {
+    return '<span class="badge badge-motion episode-trigger" title="Triggered by a motion Event">Motion</span>';
+  }
+  return "";
+}
 function sourceBadges(sources) {
   if (!Array.isArray(sources)) return sources || "";
   return sources.map(s => `<span class="label">${s}</span>`).join(" ");
@@ -183,9 +192,12 @@ async function episodes(page = 1) {
           <a href="#episode/${e.id}" class="card episode-card" style="text-decoration:none;color:inherit;display:block">
             ${covers[e.id] ? `<div class="episode-cover"><img src="${API}/evidence/${covers[e.id]}/file" loading="lazy"></div>` : ""}
             <div class="episode-card-body">
-              <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:0.5rem">
+              <div class="episode-card-heading">
                 <h3>${trunc(e.primary_area_id || "?", 24)}</h3>
-                ${stateBadge(e.state)}
+                <div class="episode-card-badges">
+                  ${episodeTriggerBadge(e.trigger_type)}
+                  ${stateBadge(e.state)}
+                </div>
               </div>
               <div class="meta">
                 <span>${plural(e.event_count, "event")}</span>

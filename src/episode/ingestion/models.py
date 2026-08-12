@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from types import MappingProxyType
 
 from episode.domain.models import ReceiptStatus
@@ -27,6 +28,26 @@ class IngressDelivery:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", bytes(self.payload))
+        object.__setattr__(self, "metadata", _immutable_mapping(self.metadata))
+
+
+@dataclass(frozen=True)
+class FileIngressDelivery:
+    """A file received by a transport and awaiting durable preservation."""
+
+    source: str
+    transport: str
+    received_at: datetime
+    file_path: Path
+    media_type: str = "application/octet-stream"
+    artifact_type: str = "uploaded_file"
+    device_id: str = ""
+    area_id: str = ""
+    original_filename: str | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "file_path", Path(self.file_path))
         object.__setattr__(self, "metadata", _immutable_mapping(self.metadata))
 
 
@@ -69,11 +90,30 @@ class EventObservation:
 
 
 @dataclass(frozen=True)
+class EvidenceObservation:
+    timestamp: datetime
+    evidence_type: str
+    source: str
+    mime_type: str
+    device_id: str = ""
+    area_id: str = ""
+    device_ip: str = ""
+    original_filename: str | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", _immutable_mapping(self.metadata))
+
+
+@dataclass(frozen=True)
 class IngressHandlerResult:
     claimed: bool = False
     status: ReceiptStatus = ReceiptStatus.ACCEPTED
     event: EventObservation | None = None
+    evidence: EvidenceObservation | None = None
     metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if self.event is not None and self.evidence is not None:
+            raise ValueError("An ingress handler result cannot contain both event and evidence")
         object.__setattr__(self, "metadata", _immutable_mapping(self.metadata))

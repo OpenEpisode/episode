@@ -31,6 +31,7 @@ class EpisodeResponse(ApiModel):
     event_count: int
     evidence_count: int
     summary: str
+    trigger_type: str | None = None
 
 
 class EventResponse(ApiModel):

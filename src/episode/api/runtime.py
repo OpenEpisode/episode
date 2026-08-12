@@ -138,6 +138,8 @@ def _integration_capabilities(kind: str, status: Mapping[str, Any]) -> list[str]
         "isapi": ["events"],
         "alarm_server": ["events"],
         "ftp": ["evidence-upload"],
+        "hikvision_alarm_server": ["event-interpretation"],
+        "hikvision_ftp": ["snapshot-interpretation"],
         "hikvision_sdk": ["events", "device-information"],
     }.get(kind, [])
 
@@ -156,7 +158,10 @@ def _connector_summary(kind: str, status: Mapping[str, Any], state: OperationalS
     if kind == "alarm_server":
         return f"{int(status.get('requests_handled', 0))} deliveries accepted"
     if kind == "ftp":
-        return f"Listening on port {status.get('port', '-')}"
+        return (
+            f"Listening on port {status.get('port', '-')} · "
+            f"{int(status.get('uploads_received', 0))} uploads preserved"
+        )
     return "Running"
 
 
@@ -176,7 +181,15 @@ def _connector_details(kind: str, status: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "isapi": ("stream_active", "last_event", "last_error"),
         "alarm_server": ("path", "port", "requests_handled", "requests_rejected"),
-        "ftp": ("host", "port", "passive_ports"),
+        "ftp": (
+            "host",
+            "port",
+            "passive_ports",
+            "uploads_received",
+            "uploads_failed",
+            "last_upload_at",
+            "last_error",
+        ),
     }.get(kind, ("last_error",))
     return {key: status[key] for key in keys if key in status and status[key] is not None}
 

@@ -94,9 +94,17 @@ Configure event-triggered picture uploads in the camera or NVR. Allow TCP 2121
 and 30000-30009 through host and network firewalls. Do not reuse the example
 password.
 
-The source address and filename metadata help associate a snapshot with its
-device and nearby Event. The received bytes are preserved unchanged; bounding
-boxes and future annotations remain separate metadata.
+FTP is a vendor-neutral transport in Episode. It first preserves and checksums
+every file, then the configured Hikvision FTP plugin recognizes supported
+camera and video-intercom filenames and creates snapshot Evidence. Unknown or
+malformed filenames remain visible as raw deliveries instead of being deleted.
+The source address and filename metadata help associate a recognized snapshot
+with its Device and nearby Event. The received bytes are preserved unchanged;
+bounding boxes and future annotations remain separate metadata.
+
+The System page reports the FTP listener and upload counts separately from the
+Hikvision FTP snapshot interpreter. A failed interpreter degrades its plugin
+status without stopping FTP or discarding the preserved upload.
 
 The Episode timeline shows every snapshot, including unmatched files. When an
 annotated target Event and consecutive `MD_WITH_TARGET` snapshots form a

@@ -85,6 +85,26 @@ def _event_annotations(event) -> tuple[dict[str, float] | None, str | None]:
     )
 
 
+def _episode_trigger_type(event_type: str | None) -> str | None:
+    normalized = (event_type or "").lower()
+    if normalized == "doorbell":
+        return "doorbell"
+    if "motion" in normalized or normalized in {
+        "human_detection",
+        "vehicle_detection",
+        "linedetection",
+        "fielddetection",
+    }:
+        return "motion"
+    return None
+
+
+def _public_episode(episode, trigger_event_type: str | None = None) -> EpisodeResponse:
+    data = asdict(episode) if not isinstance(episode, dict) else dict(episode)
+    data["trigger_type"] = _episode_trigger_type(trigger_event_type)
+    return EpisodeResponse.model_validate(data)
+
+
 def create_api(
     repo,
     data_dir: str = "",
@@ -380,14 +400,17 @@ def create_api(
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
     ):
-        return await repo.list_episodes(area_id, state, limit, offset)
+        episodes = await repo.list_episodes(area_id, state, limit, offset)
+        trigger_types = await repo.episode_trigger_event_types([episode.id for episode in episodes])
+        return [_public_episode(episode, trigger_types.get(episode.id)) for episode in episodes]
 
     @app.get("/api/v1/episodes/{episode_id}", response_model=EpisodeResponse)
     async def get_episode(episode_id: str):
         episode = await repo.get_episode(episode_id)
         if not episode:
             raise HTTPException(404, "Episode not found")
-        return episode
+        trigger_types = await repo.episode_trigger_event_types([episode.id])
+        return _public_episode(episode, trigger_types.get(episode.id))
 
     @app.get("/api/v1/episodes/{episode_id}/events")
     async def episode_events(episode_id: str):

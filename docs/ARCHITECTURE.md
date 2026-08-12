@@ -78,11 +78,14 @@ Dependencies point inward: transports, plugins, storage, actions, API, and UI
 may depend on domain concepts. The domain must not depend on Hikvision, FastAPI,
 SQLite, or FFmpeg. Shared transports must not import vendor parsers.
 
-The first shared-ingress implementation is Alarm Server: the core HTTP
-transport preserves the complete request body, while the configured Hikvision
-handler extracts `EventNotificationAlert`, resolves its device identity, and
-emits a normalized observation. HCNetSDK callbacks follow the same raw-first
-route; native decoding remains isolated in the SDK plugin.
+The shared-ingress implementations now cover two transport shapes. The core
+HTTP transport preserves the complete Alarm Server request body, while the
+configured Hikvision handler extracts `EventNotificationAlert` and emits a
+normalized observation. The core FTP transport preserves each uploaded file;
+the Hikvision FTP handler recognizes supported filenames and emits snapshot
+Evidence. Unknown files remain visible raw deliveries. HCNetSDK callbacks
+follow the same raw-first route; native decoding remains isolated in the SDK
+plugin.
 
 ## Persistence model
 

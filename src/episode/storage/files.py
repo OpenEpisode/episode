@@ -63,17 +63,26 @@ def save_bytes(
     return path
 
 
-def move_snapshot(
+def move_received_file(
     evidence_root: str,
     src_path: str,
-    subdir: str = "snapshots",
+    subdir: str,
 ) -> str:
+    """Move a received file without changing its name or immutable bytes."""
     dest = ensure_dir(os.path.join(evidence_root, subdir))
     filename = os.path.basename(src_path)
     dest_path = available_destination(os.path.join(dest, filename))
     shutil.move(src_path, dest_path)
     seal_file(dest_path)
     return dest_path
+
+
+def move_snapshot(
+    evidence_root: str,
+    src_path: str,
+    subdir: str = "snapshots",
+) -> str:
+    return move_received_file(evidence_root, src_path, subdir)
 
 
 def sha256_file(path: str) -> str:

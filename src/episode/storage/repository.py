@@ -971,6 +971,28 @@ class Repository:
         )
         return [self._row_to_episode(r) for r in rows]
 
+    async def episode_trigger_event_types(self, episode_ids: list[str]) -> dict[str, str]:
+        """Return the first active Event type for each requested Episode."""
+        if not episode_ids:
+            return {}
+        placeholders = ",".join("?" for _item in episode_ids)
+        rows = await self._conn.execute_fetchall(
+            f"""SELECT episode_id, event_type
+                FROM (
+                    SELECT episode_id, event_type,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY episode_id
+                               ORDER BY timestamp ASC, id ASC
+                           ) AS event_order
+                    FROM events
+                    WHERE episode_id IN ({placeholders})
+                      AND event_state = 'active'
+                )
+                WHERE event_order = 1""",
+            episode_ids,
+        )
+        return {row["episode_id"]: row["event_type"] for row in rows}
+
     async def find_open_episode_for_area(self, area_id: str, timeout: int) -> Episode | None:
         cutoff = _utc_iso(datetime.now(tz=timezone.utc) - timedelta(seconds=timeout))
         rows = await self._conn.execute_fetchall(

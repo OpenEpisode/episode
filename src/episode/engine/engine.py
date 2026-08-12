@@ -152,8 +152,14 @@ class EpisodeEngine:
         return result
 
     async def _on_evidence_received(self, msg: Message):
+        """Compatibility adapter for connectors not yet using IngestionService."""
         receipt = await self._persist_delivery(msg)
         evidence = Evidence(**msg.data["evidence"])
+        await self.ingest_evidence(evidence, receipt=receipt)
+
+    async def ingest_evidence(
+        self, evidence: Evidence, *, receipt: IngestionReceipt | None = None
+    ) -> Evidence:
         await self._repo.create_evidence(evidence)
         if receipt:
             await self._repo.link_ingestion_receipt(
@@ -173,6 +179,7 @@ class EpisodeEngine:
         else:
             logger.debug("Evidence %s has no episode_id, attempting orphan match", evidence.id)
             await self._match_orphan_evidence(evidence)
+        return evidence
 
     async def _correlate(self, event: Event):
         if not event.area_id:

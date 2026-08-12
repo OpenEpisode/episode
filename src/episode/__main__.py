@@ -13,7 +13,7 @@ from episode.actions.snapshot import SnapshotEngine
 from episode.api.routes import create_api
 from episode.api.runtime import OperationalView
 from episode.config import EpisodeConfig, load_config
-from episode.connectors.hikvision.ftp import FTPConnector
+from episode.connectors.ftp import FTPConnector
 from episode.connectors.hikvision.isapi import ISAPIConnector
 from episode.connectors.http_ingress import HTTPIngressConnector
 from episode.connectors.onvif import ONVIFConnector
@@ -239,7 +239,7 @@ class Application:
             )
         if t == "ftp":
             return FTPConnector(
-                cfg.settings.get("name", t), self._bus, cfg.settings, self._config, repo=self._repo
+                cfg.settings.get("name", t), self._ingestion, cfg.settings, self._config
             )
         logger.warning("Unknown connector type: %s", t)
         return None

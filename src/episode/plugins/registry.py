@@ -66,5 +66,13 @@ def builtin_plugin_registry() -> PluginRegistry:
                 activation_connector_type="alarm_server",
                 factory=module_plugin_factory("episode.plugins.hikvision_alarm"),
             ),
+            PluginRegistration(
+                id="hikvision-ftp",
+                name="Hikvision FTP snapshots",
+                kind="file-ingress-handler",
+                activation_capability="",
+                activation_connector_type="ftp",
+                factory=module_plugin_factory("episode.plugins.hikvision_ftp"),
+            ),
         ]
     )

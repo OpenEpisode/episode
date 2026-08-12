@@ -31,7 +31,8 @@ self-hosters who want local, portable evidence.
 - Discovers ONVIF media profiles and can subscribe to motion and tamper events when enabled per device.
 - Records from discovered RTSP streams and can optionally request ONVIF snapshots.
 - Optionally enriches observations with Hikvision ISAPI and Alarm Server events.
-- Receives camera-created snapshots over FTP.
+- Preserves camera-created files through a generic FTP transport, then lets the
+  configured Hikvision plugin interpret supported snapshot filenames.
 - Preserves and checksums raw XML, snapshots, and recordings locally.
 - Records every connector delivery and deduplicates matching observations.
 - Correlates observations from multiple cameras into Episodes.

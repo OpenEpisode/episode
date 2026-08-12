@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import pytest
 
@@ -7,7 +9,7 @@ from episode import __version__
 from episode.api.routes import create_api
 from episode.api.runtime import OperationalView
 from episode.config import EpisodeConfig
-from episode.domain.models import Area, CapabilityConfig, Device
+from episode.domain.models import Area, CapabilityConfig, Device, Episode, Event
 from episode.storage.repository import Repository
 
 
@@ -212,3 +214,85 @@ async def test_growing_collections_reject_unbounded_queries():
         ]
 
     assert all(response.status_code == 422 for response in responses)
+
+
+@pytest.mark.asyncio
+async def test_episode_api_projects_the_first_active_event_as_its_trigger(tmp_path):
+    config = EpisodeConfig(data_dir=str(tmp_path))
+    repository = Repository(config)
+    await repository.initialize()
+    started = datetime(2026, 8, 12, 10, 0, tzinfo=timezone.utc)
+    try:
+        doorbell_episode = Episode(
+            id="doorbell-episode",
+            primary_area_id="front",
+            start_time=started,
+        )
+        motion_episode = Episode(
+            id="motion-episode",
+            primary_area_id="garden",
+            start_time=started + timedelta(minutes=1),
+        )
+        manual_episode = Episode(
+            id="manual-episode",
+            primary_area_id="garage",
+            start_time=started + timedelta(minutes=2),
+        )
+        for episode in (doorbell_episode, motion_episode, manual_episode):
+            await repository.create_episode(episode)
+
+        await repository.create_event(
+            Event(
+                device_id="doorbell",
+                area_id="front",
+                timestamp=started,
+                event_type="doorbell",
+                event_state="active",
+                episode_id=doorbell_episode.id,
+            )
+        )
+        await repository.create_event(
+            Event(
+                device_id="camera",
+                area_id="front",
+                timestamp=started + timedelta(seconds=2),
+                event_type="human_detection",
+                event_state="active",
+                episode_id=doorbell_episode.id,
+            )
+        )
+        await repository.create_event(
+            Event(
+                device_id="camera",
+                area_id="garden",
+                timestamp=started + timedelta(minutes=1),
+                event_type="vehicle_detection",
+                event_state="active",
+                episode_id=motion_episode.id,
+            )
+        )
+        await repository.create_event(
+            Event(
+                device_id="operator",
+                area_id="garage",
+                timestamp=started + timedelta(minutes=2),
+                event_type="manual",
+                event_state="active",
+                episode_id=manual_episode.id,
+            )
+        )
+
+        transport = httpx.ASGITransport(app=create_api(repository, config.data_dir))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            episodes = (await client.get("/api/v1/episodes")).json()
+            detail = (await client.get("/api/v1/episodes/doorbell-episode")).json()
+
+        triggers = {episode["id"]: episode["trigger_type"] for episode in episodes}
+        assert triggers == {
+            "doorbell-episode": "doorbell",
+            "motion-episode": "motion",
+            "manual-episode": None,
+        }
+        assert detail["trigger_type"] == "doorbell"
+    finally:
+        await repository.close()

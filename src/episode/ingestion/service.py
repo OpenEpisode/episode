@@ -7,11 +7,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from episode.domain.models import Event, IngestionReceipt, ReceiptStatus
+from episode.domain.models import Event, Evidence, IngestionReceipt, RawArtifact, ReceiptStatus
 from episode.engine.engine import CanonicalEventResult, EpisodeEngine
-from episode.ingestion.models import IngressDelivery, StoredIngressEnvelope
+from episode.ingestion.models import FileIngressDelivery, IngressDelivery, StoredIngressEnvelope
 from episode.ingestion.router import IngressDispatchResult, IngressRouter
-from episode.storage.files import describe_artifact, save_bytes
+from episode.storage.files import describe_artifact, move_received_file, save_bytes
 from episode.storage.repository import Repository
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,7 @@ class IngestionOutcome:
     receipt: IngestionReceipt
     dispatches: tuple[IngressDispatchResult, ...]
     canonical_event: CanonicalEventResult | None = None
+    evidence: Evidence | None = None
 
 
 class IngestionService:
@@ -61,10 +62,7 @@ class IngestionService:
         self._max_payload_bytes = max_payload_bytes
 
     async def accept(self, delivery: IngressDelivery) -> IngestionOutcome:
-        if not delivery.source:
-            raise ValueError("Ingress delivery source is required")
-        if not delivery.transport:
-            raise ValueError("Ingress delivery transport is required")
+        self._validate_identity(delivery.source, delivery.transport)
         if len(delivery.payload) > self._max_payload_bytes:
             raise ValueError("Ingress delivery exceeds the configured safety limit")
 
@@ -104,13 +102,76 @@ class IngestionService:
 
         # This durable boundary always completes before a plugin sees the payload.
         artifact, receipt = await self._repository.persist_delivery(artifact, receipt)
+        return await self._interpret(delivery, artifact, receipt, delivery.payload)
+
+    async def accept_file(self, delivery: FileIngressDelivery) -> IngestionOutcome:
+        """Preserve an uploaded file before exposing its bytes to plugin handlers."""
+        self._validate_identity(delivery.source, delivery.transport)
+        if not delivery.file_path.is_file():
+            raise ValueError("Ingress delivery file does not exist")
+        byte_size = delivery.file_path.stat().st_size
+        if byte_size > self._max_payload_bytes:
+            raise ValueError("Ingress delivery exceeds the configured safety limit")
+
+        transport = _safe_component(delivery.transport, "unknown")
+        original_filename = delivery.original_filename or delivery.file_path.name
+        path = await asyncio.to_thread(
+            move_received_file,
+            self._data_dir,
+            str(delivery.file_path),
+            f"orphans/ingress/{transport}",
+        )
+        artifact = await asyncio.to_thread(
+            describe_artifact,
+            path,
+            delivery.artifact_type,
+            delivery.media_type,
+            original_filename=original_filename,
+            metadata={
+                "transport": delivery.transport,
+                "source": delivery.source,
+                **dict(delivery.metadata),
+            },
+        )
+        receipt = IngestionReceipt(
+            source=delivery.source,
+            received_at=delivery.received_at,
+            status=ReceiptStatus.ACCEPTED,
+            device_id=delivery.device_id,
+            area_id=delivery.area_id,
+            metadata={
+                "transport": delivery.transport,
+                **dict(delivery.metadata),
+            },
+        )
+        artifact, receipt = await self._repository.persist_delivery(artifact, receipt)
+
+        # Reading happens after persistence: plugin code can never observe an
+        # upload that has not crossed the raw evidence durability boundary.
+        payload = await asyncio.to_thread(Path(path).read_bytes)
+        return await self._interpret(delivery, artifact, receipt, payload)
+
+    @staticmethod
+    def _validate_identity(source: str, transport: str) -> None:
+        if not source:
+            raise ValueError("Ingress delivery source is required")
+        if not transport:
+            raise ValueError("Ingress delivery transport is required")
+
+    async def _interpret(
+        self,
+        delivery: IngressDelivery | FileIngressDelivery,
+        artifact: RawArtifact,
+        receipt: IngestionReceipt,
+        payload: bytes,
+    ) -> IngestionOutcome:
         envelope = StoredIngressEnvelope(
             receipt_id=receipt.id,
             artifact_id=artifact.id,
             source=delivery.source,
             transport=delivery.transport,
             received_at=delivery.received_at,
-            payload=delivery.payload,
+            payload=payload,
             media_type=delivery.media_type,
             byte_size=artifact.byte_size,
             sha256=artifact.sha256,
@@ -161,6 +222,7 @@ class IngestionService:
             diagnostic_metadata.update(dict(handler_result.metadata))
 
         canonical = None
+        evidence = None
         if handler_result and handler_result.event:
             observation = handler_result.event
             receipt.observed_at = observation.timestamp
@@ -193,6 +255,41 @@ class IngestionService:
                 receipt.device_id = device_id
                 receipt.area_id = area_id
                 canonical = await self._engine.ingest_event(event, receipt=receipt)
+        elif handler_result and handler_result.evidence:
+            observation = handler_result.evidence
+            receipt.observed_at = observation.timestamp
+            device_id = observation.device_id or delivery.device_id
+            area_id = observation.area_id or delivery.area_id
+            device = await self._repository.get_device(device_id) if device_id else None
+            if device is None and observation.device_ip:
+                device = await self._repository.find_device_by_ip(observation.device_ip)
+            if device:
+                device_id = device.id
+                area_id = device.area_id
+            if not device_id or not area_id:
+                status = ReceiptStatus.UNMATCHED
+                diagnostic_metadata["reason"] = "device_not_resolved"
+            else:
+                evidence = Evidence(
+                    device_id=device_id,
+                    area_id=area_id,
+                    timestamp=observation.timestamp,
+                    evidence_type=observation.evidence_type,
+                    file_path=artifact.file_path,
+                    mime_type=observation.mime_type,
+                    original_filename=(observation.original_filename or delivery.original_filename),
+                    artifact_id=artifact.id,
+                    byte_size=artifact.byte_size,
+                    sha256=artifact.sha256,
+                    metadata={
+                        **dict(observation.metadata),
+                        "interpretation_source": observation.source,
+                        "ingress_handler": claimed.handler_id,
+                    },
+                )
+                receipt.device_id = device_id
+                receipt.area_id = area_id
+                await self._engine.ingest_evidence(evidence, receipt=receipt)
 
         receipt.status = status
         receipt.metadata = diagnostic_metadata
@@ -208,4 +305,5 @@ class IngestionService:
             receipt=receipt,
             dispatches=dispatches,
             canonical_event=canonical,
+            evidence=evidence,
         )
