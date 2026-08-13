@@ -17,8 +17,8 @@ from episode.ingestion.models import (
     StoredIngressEnvelope,
 )
 from episode.ingestion.router import IngressHandlerRegistration, IngressRouter
-from episode.plugins.hikvision_sdk.events import interpret_event
-from episode.plugins.hikvision_sdk.runtime import SDKDeviceConfig, SDKDeviceWorker
+from episode.plugins.hikvision.sdk.events import interpret_event
+from episode.plugins.hikvision.sdk.runtime import SDKDeviceConfig, SDKDeviceWorker
 from episode.plugins.models import (
     PluginContext,
     PluginInstanceState,
@@ -142,7 +142,7 @@ def _default_probe_command(plugin_path: Path) -> Sequence[str]:
     return [
         sys.executable,
         "-m",
-        "episode.plugins.hikvision_sdk.probe",
+        "episode.plugins.hikvision.sdk.probe",
         str(plugin_path),
     ]
 

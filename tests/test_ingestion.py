@@ -22,7 +22,7 @@ from episode.ingestion.models import (
 )
 from episode.ingestion.router import IngressHandlerRegistration, IngressRouter
 from episode.ingestion.service import IngestionService
-from episode.plugins.hikvision_alarm.plugin import HikvisionAlarmPlugin
+from episode.plugins.hikvision.alarm_server.plugin import HikvisionAlarmPlugin
 from episode.plugins.models import PluginContext
 from episode.storage.repository import Repository
 

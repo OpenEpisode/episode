@@ -63,7 +63,13 @@ not to protocol connectors.
 src/episode/
 ├── connectors/       shared ingress transports
 ├── ingestion/        raw-first preservation and bounded plugin dispatch
-├── plugins/          lazy integrations and vendor interpretation
+├── plugins/          lazy integrations and protocol/vendor interpretation
+│   ├── onvif/        standards-based Device integration
+│   └── hikvision/    import-empty vendor namespace and shared XML helpers
+│       ├── alarm_server/
+│       ├── ftp/
+│       ├── isapi/
+│       └── sdk/
 ├── media/            camera media registry and timelapse service
 ├── actions/          vendor-neutral snapshot action
 ├── domain/           vendor-neutral models and identities

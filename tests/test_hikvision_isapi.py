@@ -15,9 +15,9 @@ from episode.ingestion.models import IngressDelivery
 from episode.ingestion.router import IngressRouter
 from episode.ingestion.service import IngestionService
 from episode.plugins.deliveries import RawPluginDeliveryStore
-from episode.plugins.hikvision_alarm.plugin import HikvisionAlarmPlugin
-from episode.plugins.hikvision_isapi.plugin import HikvisionISAPIPlugin
-from episode.plugins.hikvision_isapi.runtime import (
+from episode.plugins.hikvision.alarm_server.plugin import HikvisionAlarmPlugin
+from episode.plugins.hikvision.isapi.plugin import HikvisionISAPIPlugin
+from episode.plugins.hikvision.isapi.runtime import (
     ISAPIDeviceConfig,
     ISAPIDeviceConnection,
     ISAPIEventStreamDecoder,

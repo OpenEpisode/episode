@@ -1,5 +1,1 @@
-"""Shared implementation details for built-in Hikvision plugins."""
-
-from episode.plugins.hikvision.events import HikvisionEvent
-
-__all__ = ["HikvisionEvent"]
+"""Namespace for built-in Hikvision integrations and shared protocol helpers."""

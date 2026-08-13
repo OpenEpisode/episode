@@ -99,6 +99,24 @@ def test_builtin_plugin_module_is_not_imported_during_registration(monkeypatch):
     assert imported == []
 
 
+@pytest.mark.asyncio
+async def test_importing_one_hikvision_plugin_does_not_load_its_siblings():
+    source = (
+        "import importlib,json,sys;"
+        "importlib.import_module('episode.plugins.hikvision.isapi');"
+        "siblings=['episode.plugins.hikvision.alarm_server',"
+        "'episode.plugins.hikvision.ftp','episode.plugins.hikvision.sdk'];"
+        f"print({PROBE_RESULT_PREFIX!r}+json.dumps({{"
+        "'ok':True,'loaded':[name for name in siblings if name in sys.modules]}))"
+    )
+    runner = SubprocessProbeRunner()
+
+    result = await runner.run(_python_command(source))
+
+    assert result.succeeded
+    assert result.payload == {"ok": True, "loaded": []}
+
+
 def test_shared_connector_activates_only_its_registered_handler_plugin():
     registry = builtin_plugin_registry()
 

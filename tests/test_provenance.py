@@ -16,7 +16,7 @@ from episode.engine.engine import EpisodeEngine
 from episode.ingestion.router import IngressRouter
 from episode.ingestion.service import IngestionService
 from episode.plugins.deliveries import RawPluginDeliveryStore
-from episode.plugins.hikvision_isapi.plugin import HikvisionISAPIPlugin
+from episode.plugins.hikvision.isapi.plugin import HikvisionISAPIPlugin
 from episode.plugins.models import PluginContext, RawPluginDelivery
 from episode.storage.files import describe_artifact
 from episode.storage.repository import Repository

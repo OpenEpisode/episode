@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 
-from episode.plugins.hikvision_sdk.events import (
+from episode.plugins.hikvision.sdk.events import (
     COMM_ALARM_VIDEO_INTERCOM,
     COMM_UPLOAD_VIDEO_INTERCOM_EVENT,
     DISMISS_CALL,

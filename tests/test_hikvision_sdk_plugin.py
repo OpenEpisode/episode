@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from episode.plugins.hikvision_sdk.plugin import (
+from episode.plugins.hikvision.sdk.plugin import (
     HikvisionSDKPlugin,
     inspect_sdk,
     read_elf_architecture,

@@ -1,4 +1,4 @@
-from episode.plugins.hikvision_ftp.plugin import HikvisionFTPPlugin
+from episode.plugins.hikvision.ftp.plugin import HikvisionFTPPlugin
 
 
 def create_plugin(context):

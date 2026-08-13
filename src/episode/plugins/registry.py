@@ -89,16 +89,16 @@ def builtin_plugin_registry() -> PluginRegistry:
                 name="Hikvision HCNetSDK",
                 kind="native-sdk",
                 activation_capability="hikvision_sdk",
-                factory=module_plugin_factory("episode.plugins.hikvision_sdk"),
+                factory=module_plugin_factory("episode.plugins.hikvision.sdk"),
             ),
             PluginRegistration(
                 id="hikvision-isapi",
                 name="Hikvision ISAPI",
                 kind="device-integration",
                 activation_capability="isapi",
-                factory=module_plugin_factory("episode.plugins.hikvision_isapi"),
+                factory=module_plugin_factory("episode.plugins.hikvision.isapi"),
                 validation_capability="isapi",
-                validator=module_plugin_validator("episode.plugins.hikvision_isapi.validation"),
+                validator=module_plugin_validator("episode.plugins.hikvision.isapi.validation"),
             ),
             PluginRegistration(
                 id="hikvision-alarm-server",
@@ -106,7 +106,7 @@ def builtin_plugin_registry() -> PluginRegistry:
                 kind="ingress-handler",
                 activation_capability="",
                 activation_connector_type="alarm_server",
-                factory=module_plugin_factory("episode.plugins.hikvision_alarm"),
+                factory=module_plugin_factory("episode.plugins.hikvision.alarm_server"),
             ),
             PluginRegistration(
                 id="hikvision-ftp",
@@ -114,7 +114,7 @@ def builtin_plugin_registry() -> PluginRegistry:
                 kind="file-ingress-handler",
                 activation_capability="",
                 activation_connector_type="ftp",
-                factory=module_plugin_factory("episode.plugins.hikvision_ftp"),
+                factory=module_plugin_factory("episode.plugins.hikvision.ftp"),
             ),
         ]
     )

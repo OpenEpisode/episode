@@ -17,9 +17,9 @@ from episode.engine.engine import EpisodeEngine
 from episode.ingestion.router import IngressHandlerRegistration, IngressRouter
 from episode.ingestion.service import IngestionService
 from episode.plugins.deliveries import RawPluginDeliveryStore
-from episode.plugins.hikvision_sdk.plugin import HikvisionSDKPlugin
-from episode.plugins.hikvision_sdk.runtime import SDKDeviceConfig, SDKDeviceWorker
-from episode.plugins.hikvision_sdk.worker import (
+from episode.plugins.hikvision.sdk.plugin import HikvisionSDKPlugin
+from episode.plugins.hikvision.sdk.runtime import SDKDeviceConfig, SDKDeviceWorker
+from episode.plugins.hikvision.sdk.worker import (
     NET_DVR_ALARMER,
     NET_DVR_DEVICECFG_V50,
     NET_DVR_DEVICEINFO_V30,

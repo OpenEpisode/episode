@@ -1,4 +1,4 @@
-from episode.plugins.hikvision_isapi.plugin import HikvisionISAPIPlugin
+from episode.plugins.hikvision.isapi.plugin import HikvisionISAPIPlugin
 
 
 def create_plugin(context):

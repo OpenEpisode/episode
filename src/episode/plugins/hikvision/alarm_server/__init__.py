@@ -1,4 +1,4 @@
-from episode.plugins.hikvision_alarm.plugin import HikvisionAlarmPlugin
+from episode.plugins.hikvision.alarm_server.plugin import HikvisionAlarmPlugin
 from episode.plugins.models import PluginContext
 
 

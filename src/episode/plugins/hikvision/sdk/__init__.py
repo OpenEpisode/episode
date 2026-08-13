@@ -1,4 +1,4 @@
-from episode.plugins.hikvision_sdk.plugin import HikvisionSDKPlugin
+from episode.plugins.hikvision.sdk.plugin import HikvisionSDKPlugin
 from episode.plugins.models import PluginContext
 
 

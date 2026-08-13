@@ -7,7 +7,7 @@ import pytest
 
 from episode.domain.models import CapabilityConfig, Device
 from episode.inventory.validation import DeviceValidationService
-from episode.plugins.hikvision_isapi.validation import validate_device as validate_isapi
+from episode.plugins.hikvision.isapi.validation import validate_device as validate_isapi
 from episode.plugins.onvif.validation import validate_device as validate_onvif
 
 
@@ -58,7 +58,7 @@ async def test_validation_reports_protocol_evidence_without_enabling_integration
         FakeONVIFClient,
     )
     monkeypatch.setattr(
-        "episode.plugins.hikvision_isapi.validation.httpx.AsyncClient",
+        "episode.plugins.hikvision.isapi.validation.httpx.AsyncClient",
         FakeHTTPClient,
     )
 

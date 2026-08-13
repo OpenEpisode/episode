@@ -11,7 +11,7 @@ from episode.engine.engine import EpisodeEngine
 from episode.ingestion.router import IngressRouter
 from episode.ingestion.service import IngestionService
 from episode.media.timelapse import is_timelapse_eligible
-from episode.plugins.hikvision_ftp.plugin import HikvisionFTPPlugin, parse_hikvision_filename
+from episode.plugins.hikvision.ftp.plugin import HikvisionFTPPlugin, parse_hikvision_filename
 from episode.plugins.models import PluginContext
 from episode.storage.repository import Repository
 

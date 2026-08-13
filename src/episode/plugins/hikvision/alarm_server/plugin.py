@@ -9,7 +9,7 @@ from episode.ingestion.models import (
     StoredIngressEnvelope,
 )
 from episode.ingestion.router import IngressHandlerRegistration, IngressRouter
-from episode.plugins.hikvision.events import HikvisionEvent
+from episode.plugins.hikvision.xml_events import HikvisionEvent
 from episode.plugins.models import PluginContext, PluginState, PluginStatus
 
 logger = logging.getLogger(__name__)

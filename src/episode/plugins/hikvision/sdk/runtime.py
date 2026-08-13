@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from episode.plugins.hikvision_sdk.worker import (
+from episode.plugins.hikvision.sdk.worker import (
     MAX_NOTIFICATION_BYTES,
     WORKER_MESSAGE_PREFIX,
 )
@@ -42,7 +42,7 @@ def default_worker_command(plugin_path: Path) -> Sequence[str]:
     return [
         sys.executable,
         "-m",
-        "episode.plugins.hikvision_sdk.worker",
+        "episode.plugins.hikvision.sdk.worker",
         str(plugin_path),
     ]
 
