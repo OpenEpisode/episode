@@ -475,6 +475,9 @@ class OperationalView:
                         "messages_received": item.get("messages_received", 0),
                         "last_message_at": item.get("last_message_at"),
                         "error": item.get("error"),
+                        "summary": item.get("summary"),
+                        "capabilities": list(item.get("capabilities") or []),
+                        "details": dict(item.get("details") or {}),
                     }
                     for item in instances
                 ],
@@ -503,15 +506,21 @@ class OperationalView:
         integration_type = "isapi" if plugin_type == "hikvision_isapi" else plugin_type
         state = _state_for_plugin(instance.get("state"))
         messages = int(instance.get("messages_received", 0))
-        summary = str(instance.get("error") or f"Connected · {messages} notifications")
+        summary = str(
+            instance.get("error")
+            or instance.get("summary")
+            or f"Connected · {messages} notifications"
+        )
         details = {}
         if detailed:
             details = {
+                **dict(instance.get("details") or {}),
                 "messages_received": messages,
                 "connected_at": instance.get("connected_at"),
                 "last_message_at": instance.get("last_message_at"),
                 "error": instance.get("error"),
             }
+        capabilities = list(instance.get("capabilities") or [])
         return {
             "id": f"{integration_type}:{instance.get('id')}",
             "name": str(plugin.get("name") or plugin_type),
@@ -519,7 +528,7 @@ class OperationalView:
             "kind": "device",
             "state": state,
             "device_id": str(instance.get("id") or "") or None,
-            "capabilities": _integration_capabilities(integration_type, plugin),
+            "capabilities": capabilities or _integration_capabilities(integration_type, plugin),
             "summary": summary,
             "details": details,
         }

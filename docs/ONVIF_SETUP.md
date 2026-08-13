@@ -1,9 +1,11 @@
 # ONVIF camera setup
 
-ONVIF is Episode's primary camera integration. Episode uses it to discover
-media profiles, choose an RTSP stream, optionally request JPEG snapshots, and
-subscribe to motion, tamper, and other advertised Events. Vendor integrations
-can run beside ONVIF to add richer detail without replacing original receipts.
+ONVIF is Episode's primary camera integration. It is loaded lazily as a
+per-Device plugin only when an enabled Device has ONVIF configured. The plugin
+discovers media profiles, chooses an RTSP stream, exposes optional JPEG
+snapshots, and can subscribe to motion, tamper, and other advertised Events.
+Vendor integrations can run beside ONVIF to add richer detail without replacing
+original receipts.
 
 ## Camera requirements
 
@@ -78,7 +80,8 @@ uploads.
 Initial ONVIF property values are preserved as ignored ingestion receipts but
 do not create Episodes. Changed motion and tamper values are normalized into
 vendor-neutral Events. Equivalent topics describing the same device state are
-aggregated, while every raw notification remains artifact-backed.
+aggregated. The complete SOAP response is preserved exactly, and each derived
+notification remains separately traceable to its source receipt.
 
 An active transition can open or extend an Episode. Its matching inactive
 transition is retained and attached to an open Episode, but does not open one or

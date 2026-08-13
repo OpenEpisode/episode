@@ -7,7 +7,6 @@ from typing import Any
 
 import httpx
 
-from episode.connectors.onvif.client import ONVIFClient, ONVIFError
 from episode.domain.models import Device
 
 _INTEGRATIONS = ("onvif", "isapi", "hikvision_sdk")
@@ -31,53 +30,11 @@ class DeviceValidationService:
     async def validate(self, device: Device) -> dict[str, dict[str, Any]]:
         checked_at = datetime.now(timezone.utc).isoformat()
         onvif, isapi = await asyncio.gather(
-            self._probe_onvif(device, checked_at),
+            self._validate_plugin_integration("onvif", device, checked_at),
             self._validate_plugin_integration("isapi", device, checked_at),
         )
         sdk = self._sdk_support(device, checked_at)
         return {"onvif": onvif, "isapi": isapi, "hikvision_sdk": sdk}
-
-    async def _probe_onvif(self, device: Device, checked_at: str) -> dict[str, Any]:
-        config = device.get_config("onvif")
-        client = ONVIFClient(
-            device.ip_address,
-            device.username,
-            device.password,
-            protocol=config.protocol if config and config.protocol else "http",
-            port=config.port if config else 80,
-            path=config.path if config and config.path else "/onvif/device_service",
-            auth_mode=(
-                str(config.settings.get("auth_mode", "digest_wsse")) if config else "digest_wsse"
-            ),
-            timeout=min(self._timeout, 8),
-        )
-        try:
-            discovered = await asyncio.wait_for(client.discover(), timeout=self._timeout)
-            profiles = len(discovered.profiles)
-            capabilities = ["discovery"]
-            if profiles:
-                capabilities.append("media")
-            if any(profile.snapshot_uri for profile in discovered.profiles):
-                capabilities.append("snapshots")
-            if discovered.event_topics:
-                capabilities.append("events")
-            return self._result(
-                "supported",
-                (f"ONVIF responded · {profiles} media profile{'s' if profiles != 1 else ''}"),
-                checked_at,
-                capabilities=capabilities,
-                details={
-                    "manufacturer": discovered.manufacturer,
-                    "model": discovered.model,
-                    "firmware_version": discovered.firmware_version,
-                    "profiles": profiles,
-                    "event_topics": len(discovered.event_topics),
-                },
-            )
-        except Exception as error:
-            return self._failure(error, "ONVIF", checked_at)
-        finally:
-            await client.close()
 
     async def _validate_plugin_integration(
         self,
@@ -159,12 +116,6 @@ class DeviceValidationService:
             return self._result(
                 "unreachable",
                 f"{label} endpoint could not be reached",
-                checked_at,
-            )
-        if isinstance(error, ONVIFError):
-            return self._result(
-                "unavailable",
-                f"{label} responded but validation failed: {str(error)[:120]}",
                 checked_at,
             )
         return self._result(

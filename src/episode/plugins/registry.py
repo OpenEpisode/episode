@@ -76,6 +76,15 @@ def builtin_plugin_registry() -> PluginRegistry:
     return PluginRegistry(
         [
             PluginRegistration(
+                id="onvif",
+                name="ONVIF",
+                kind="device-integration",
+                activation_capability="onvif",
+                factory=module_plugin_factory("episode.plugins.onvif"),
+                validation_capability="onvif",
+                validator=module_plugin_validator("episode.plugins.onvif.validation"),
+            ),
+            PluginRegistration(
                 id="hikvision-sdk",
                 name="Hikvision HCNetSDK",
                 kind="native-sdk",

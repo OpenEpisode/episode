@@ -42,6 +42,9 @@ class PluginInstanceStatus:
     last_message_at: datetime | None = None
     error: str | None = None
     device_info: PluginDeviceInfo | None = None
+    summary: str | None = None
+    capabilities: tuple[str, ...] = ()
+    details: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,7 @@ class RawPluginDelivery:
 
 
 RawPluginDeliverySink = Callable[[RawPluginDelivery], Awaitable[None]]
+PluginDeviceUpdateSink = Callable[[object], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -92,6 +96,8 @@ class PluginContext:
     configured_devices: tuple[Mapping[str, object], ...] = ()
     raw_delivery_sink: RawPluginDeliverySink | None = None
     ingress_router: object | None = None
+    media_registry: object | None = None
+    device_update_sink: PluginDeviceUpdateSink | None = None
 
 
 class ManagedPlugin(Protocol):

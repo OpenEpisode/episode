@@ -61,7 +61,7 @@ not to protocol connectors.
 
 ```text
 src/episode/
-├── connectors/       shared transports and the remaining ONVIF connector
+├── connectors/       shared ingress transports
 ├── ingestion/        raw-first preservation and bounded plugin dispatch
 ├── plugins/          lazy integrations and vendor interpretation
 ├── media/            camera media registry and timelapse service
@@ -86,10 +86,15 @@ the Hikvision FTP handler recognizes supported filenames and emits snapshot
 Evidence. Unknown files remain visible raw deliveries. HCNetSDK callbacks
 follow the same raw-first route; native decoding remains isolated in the SDK
 plugin.
+
 ISAPI stream ownership, Digest authentication, reconnect behavior, bounded
-stream decoding, ignored-Event policy, and XML interpretation likewise live in
-its lazily activated Device plugin. The application core sees only raw plugin
-deliveries and normalized observations.
+stream decoding, ignored-Event policy, and XML interpretation live in its lazily
+activated Device plugin. ONVIF discovery, media registration, validation,
+snapshot endpoints, pull-point subscriptions, and notification interpretation
+follow the same lifecycle. Complete SOAP pull responses are preserved before
+derived notifications are interpreted. The application core sees only generic
+plugin services, raw deliveries, media registrations, inventory updates, and
+normalized observations.
 
 ## Persistence model
 
@@ -185,10 +190,11 @@ Signed manifests and external timestamping are possible future extensions.
 ## Extension rules
 
 New shared transports should submit opaque deliveries to `IngestionService`.
-Vendor or protocol plugins register narrow matchers and return a normalized
-observation only after the durable boundary. The remaining ONVIF Device
-connector must preserve Raw Artifacts and Ingestion Receipts before publishing
-an Event or Evidence compatibility message until its planned plugin migration.
+Device and ingress-handler plugins register narrow matchers and return a
+normalized observation only after the durable boundary. Device integrations own
+their protocol clients, discovery, connection supervision, validation, and
+interpretation; the application must not construct protocol-specific
+connectors.
 
 New actions should consume canonical domain messages or target-resolution
 decisions. They must not subscribe directly to vendor-specific connector

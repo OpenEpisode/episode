@@ -15,8 +15,6 @@ from episode.api.runtime import OperationalView
 from episode.config import EpisodeConfig, load_config
 from episode.connectors.ftp import FTPConnector
 from episode.connectors.http_ingress import HTTPIngressConnector
-from episode.connectors.onvif import ONVIFConnector
-from episode.domain.models import Device
 from episode.engine.bus import EventBus
 from episode.engine.engine import EpisodeEngine
 from episode.ingestion.router import IngressRouter
@@ -70,10 +68,12 @@ class Application:
                 self._configured_connector_types,
             ),
             PluginContext(
-                Path(config.plugins_dir),
-                tuple(config.devices),
-                self._raw_plugin_deliveries,
-                self._ingress_router,
+                plugins_dir=Path(config.plugins_dir),
+                configured_devices=tuple(config.devices),
+                raw_delivery_sink=self._raw_plugin_deliveries,
+                ingress_router=self._ingress_router,
+                media_registry=self._media,
+                device_update_sink=self._repo.upsert_device,
             ),
         )
         self._inventory = InventoryService(self._repo)
@@ -138,10 +138,12 @@ class Application:
                 self._configured_connector_types,
             ),
             PluginContext(
-                Path(self._config.plugins_dir),
-                configured_devices,
-                self._raw_plugin_deliveries,
-                self._ingress_router,
+                plugins_dir=Path(self._config.plugins_dir),
+                configured_devices=configured_devices,
+                raw_delivery_sink=self._raw_plugin_deliveries,
+                ingress_router=self._ingress_router,
+                media_registry=self._media,
+                device_update_sink=self._repo.upsert_device,
             ),
         )
 
@@ -173,14 +175,6 @@ class Application:
             if conn:
                 if isinstance(conn, HTTPIngressConnector):
                     conn.mount(self._fastapi_app)
-                self._connectors.append(conn)
-                await conn.start()
-
-        # Per-device connectors are auto-created from device capabilities
-        devices = await self._repo.list_devices()
-        for device in devices:
-            if "onvif" in device.capabilities and device.ip_address:
-                conn = self._build_onvif_connector(device)
                 self._connectors.append(conn)
                 await conn.start()
 
@@ -233,24 +227,6 @@ class Application:
             )
         logger.warning("Unknown connector type: %s", t)
         return None
-
-    def _build_onvif_connector(self, device: Device) -> ONVIFConnector:
-        cap = device.get_config("onvif")
-        settings = {
-            "protocol": cap.protocol if cap and cap.protocol else "http",
-            "port": cap.port if cap and cap.port else 80,
-            "path": cap.path if cap and cap.path else "/onvif/device_service",
-            **(cap.settings if cap else {}),
-        }
-        return ONVIFConnector(
-            f"ONVIF:{device.name}",
-            self._bus,
-            settings,
-            self._config,
-            device,
-            self._repo,
-            self._media,
-        )
 
 
 def create_app(config: EpisodeConfig | None = None) -> Application:

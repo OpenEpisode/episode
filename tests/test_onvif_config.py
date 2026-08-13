@@ -1,81 +1,112 @@
-from types import SimpleNamespace
+from __future__ import annotations
 
 import pytest
 
-from episode.config import EpisodeConfig
-from episode.connectors.onvif.connector import ONVIFConnector
-from episode.domain.models import CapabilityConfig, Device
-from episode.engine.bus import EventBus
 from episode.media.registry import MediaRegistry
+from episode.plugins.onvif.client import ONVIFDevice, ONVIFProfile
+from episode.plugins.onvif.device import ONVIFDeviceConnection, device_config
 
 
-def _connector(settings=None):
-    return ONVIFConnector(
-        "ONVIF:Test",
-        EventBus(),
-        settings or {},
-        EpisodeConfig(),
-        Device(
-            id="camera-test",
-            name="Test camera",
-            area_id="test-area",
-            ip_address="192.0.2.10",
-            username="user",
-            password="password",
-        ),
-        repo=object(),
-        media=MediaRegistry(),
-    )
+def _device(*, events_enabled: bool = False, **overrides):
+    value = {
+        "id": "camera-test",
+        "name": "Test camera",
+        "device_type": "camera",
+        "area_id": "test-area",
+        "ip_address": "192.0.2.10",
+        "username": "user",
+        "password": "password",
+        "capabilities": ["onvif", "video"],
+        "configs": {
+            "onvif": {
+                "protocol": "http",
+                "port": 80,
+                "path": "/onvif/device_service",
+                "settings": {"events_enabled": events_enabled},
+            },
+            "video": {
+                "protocol": "rtsp",
+                "port": 8554,
+                "path": "/manual",
+                "settings": {"recording_mode": "on_episode"},
+            },
+        },
+    }
+    value.update(overrides)
+    return value
 
 
 def test_onvif_events_are_disabled_by_default():
-    connector = _connector()
+    config, error = device_config(_device())
 
-    assert connector._events_enabled is False
+    assert error is None
+    assert config.events_enabled is False
 
 
 def test_onvif_events_can_be_enabled_explicitly():
-    connector = _connector({"events_enabled": True})
+    config, error = device_config(_device(events_enabled=True))
 
-    assert connector._events_enabled is True
+    assert error is None
+    assert config.events_enabled is True
+
+
+def test_invalid_onvif_timeout_is_isolated_as_configuration_error():
+    value = _device()
+    value["configs"]["onvif"]["settings"]["timeout"] = "not-a-number"
+    config, error = device_config(value)
+
+    assert config is None
 
 
 @pytest.mark.asyncio
 async def test_onvif_discovery_keeps_manual_rtsp_fallback_separate():
-    connector = _connector()
-    connector._configured_device.configs["video"] = CapabilityConfig(
-        protocol="rtsp",
-        port=8554,
-        path="/manual",
-        settings={"recording_mode": "on_episode"},
-    )
-    connector._onvif_device = SimpleNamespace(
+    config, error = device_config(_device())
+    assert error is None
+    discovered = ONVIFDevice(
         manufacturer="Example",
         model="Camera",
         firmware_version="1.0",
-        event_topics=[],
-        profiles=[],
-        services={},
+        profiles=[
+            ONVIFProfile(
+                token="auto-main",
+                stream_uri="rtsp://192.0.2.10/discovered",
+                snapshot_uri="http://192.0.2.10/snapshot",
+            )
+        ],
     )
 
-    class Repository:
-        saved = None
+    class Client:
+        async def discover(self):
+            return discovered
 
-        async def upsert_device(self, device):
-            self.saved = device
+        async def close(self):
+            pass
 
-    repository = Repository()
-    connector._repo = repository
-    profile = SimpleNamespace(
-        token="auto-main",
-        stream_uri="rtsp://192.0.2.10/discovered",
-        snapshot_uri="http://192.0.2.10/snapshot",
+        async def unsubscribe(self, _url):
+            pass
+
+    saved = []
+
+    async def save(device):
+        saved.append(device)
+
+    async def sink(_delivery):
+        pass
+
+    media = MediaRegistry()
+    connection = ONVIFDeviceConnection(
+        config,
+        sink,
+        media,
+        save,
+        client_factory=lambda _config: Client(),
     )
 
-    await connector._apply_discovered_capabilities(profile)
+    await connection._discover()
 
-    video = connector._configured_device.get_config("video")
+    video = config.device.get_config("video")
     assert video.build_url("192.0.2.10") == "rtsp://192.0.2.10:8554/manual"
     assert video.settings == {"recording_mode": "on_episode"}
-    assert connector._configured_device.metadata["onvif"]["profile_token"] == "auto-main"
-    assert repository.saved is connector._configured_device
+    assert config.device.metadata["onvif"]["profile_token"] == "auto-main"
+    assert saved == [config.device]
+    assert media.get("camera-test").stream_uri == "rtsp://192.0.2.10/discovered"

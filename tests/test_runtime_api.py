@@ -16,30 +16,6 @@ from episode.storage.repository import Repository
 def _operations() -> OperationalView:
     connectors = [
         {
-            "name": "ONVIF:Gate",
-            "type": "onvif",
-            "running": True,
-            "healthy": True,
-            "connected": True,
-            "device_id": "gate-camera",
-            "manufacturer": "Example",
-            "model": "Camera 4K",
-            "firmware_version": "1.2.3",
-            "profiles": [
-                {
-                    "token": "main",
-                    "name": "Main",
-                    "encoding": "H264",
-                    "width": 3840,
-                    "height": 2160,
-                    "snapshot": True,
-                }
-            ],
-            "event_topics": [f"Topic{index}" for index in range(200)],
-            "events_enabled": False,
-            "events_received": 0,
-        },
-        {
             "name": "ISAPI:Gate",
             "type": "isapi",
             "running": True,
@@ -57,6 +33,44 @@ def _operations() -> OperationalView:
         },
     ]
     plugins = [
+        {
+            "id": "onvif",
+            "name": "ONVIF",
+            "kind": "device-integration",
+            "state": "ready",
+            "instances": [
+                {
+                    "id": "gate-camera",
+                    "name": "Gate camera",
+                    "state": "running",
+                    "messages_received": 0,
+                    "device_info": {
+                        "manufacturer": "Example",
+                        "model": "Camera 4K",
+                        "firmware_version": "1.2.3",
+                    },
+                    "summary": "Connected · 1 media profile · Events disabled",
+                    "capabilities": ["discovery", "media", "snapshots", "events"],
+                    "details": {
+                        "connected": True,
+                        "subscribed": False,
+                        "events_enabled": False,
+                        "profiles": [
+                            {
+                                "token": "main",
+                                "name": "Main",
+                                "encoding": "H264",
+                                "width": 3840,
+                                "height": 2160,
+                                "snapshot": True,
+                            }
+                        ],
+                        "selected_profile": "main",
+                        "event_topics": [f"Topic{index}" for index in range(200)],
+                    },
+                }
+            ],
+        },
         {
             "id": "hikvision-sdk",
             "name": "Hikvision HCNetSDK",
@@ -78,7 +92,7 @@ def _operations() -> OperationalView:
                     },
                 }
             ],
-        }
+        },
     ]
     return OperationalView(
         version=__version__,
@@ -134,7 +148,7 @@ async def test_status_is_compact_and_diagnostics_are_separate():
     diagnostics = diagnostics_response.json()
     assert len(diagnostics["integrations"]) == 4
     onvif = next(item for item in diagnostics["integrations"] if item["type"] == "onvif")
-    assert len(onvif["details"]["event_topics"]) == 200
+    assert len(onvif["details"]["instances"][0]["details"]["event_topics"]) == 200
 
 
 @pytest.mark.asyncio

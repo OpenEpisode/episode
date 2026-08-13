@@ -13,7 +13,7 @@ When contributing, please keep the following principles in mind:
 - Raw artifacts and evidence bytes are immutable.
 - Canonical Event observations remain stable while associations may evolve.
 - Episodes and review timelines represent interpretation.
-- Connectors and plugins translate protocols without owning correlation policy.
+- Shared connectors preserve deliveries and plugins interpret them without owning correlation policy.
 - The core domain remains vendor-independent.
 
 Architectural consistency is preferred over rapid feature growth.
@@ -30,7 +30,7 @@ If not, it is probably better suited for a future release.
 
 - Keep modules focused.
 - Prefer composition over inheritance.
-- Keep vendor interpretation inside connectors or plugins.
+- Keep vendor interpretation inside plugins; shared connectors remain vendor-neutral.
 - Preserve raw deliveries before interpretation.
 - Write code that is easy to understand and test.
 

@@ -70,7 +70,10 @@ def _timestamp(value: str) -> datetime:
 
 def parse_notifications(root: ET.Element) -> list[ONVIFNotification]:
     notifications: list[ONVIFNotification] = []
-    for node in root.findall(f".//{{{WSNT}}}NotificationMessage"):
+    nodes = root.findall(f".//{{{WSNT}}}NotificationMessage")
+    if root.tag == f"{{{WSNT}}}NotificationMessage":
+        nodes.insert(0, root)
+    for node in nodes:
         topic = node.findtext(f"{{{WSNT}}}Topic", "").strip()
         message = node.find(f".//{{{TT}}}Message")
         if message is None:

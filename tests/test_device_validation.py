@@ -8,6 +8,7 @@ import pytest
 from episode.domain.models import CapabilityConfig, Device
 from episode.inventory.validation import DeviceValidationService
 from episode.plugins.hikvision_isapi.validation import validate_device as validate_isapi
+from episode.plugins.onvif.validation import validate_device as validate_onvif
 
 
 @pytest.mark.asyncio
@@ -53,7 +54,7 @@ async def test_validation_reports_protocol_evidence_without_enabling_integration
             return FakeResponse()
 
     monkeypatch.setattr(
-        "episode.inventory.validation.ONVIFClient",
+        "episode.plugins.onvif.validation.ONVIFClient",
         FakeONVIFClient,
     )
     monkeypatch.setattr(
@@ -87,7 +88,7 @@ async def test_validation_reports_protocol_evidence_without_enabling_integration
                 "capabilities": ["events"],
             }
         ],
-        integration_validators={"isapi": validate_isapi},
+        integration_validators={"onvif": validate_onvif, "isapi": validate_isapi},
     )
 
     results = await service.validate(device)

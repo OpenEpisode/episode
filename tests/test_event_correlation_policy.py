@@ -6,10 +6,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from episode.config import EpisodeConfig
-from episode.connectors.onvif.parser import ONVIFNotification, ONVIFStateTracker
 from episode.domain.models import EventState
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
+from episode.plugins.onvif.events import ONVIFNotification, ONVIFStateTracker
 from episode.storage.repository import Repository
 
 

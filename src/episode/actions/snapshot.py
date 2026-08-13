@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import asdict
 from datetime import datetime, timezone
 from time import monotonic
@@ -67,6 +68,9 @@ class SnapshotEngine:
     async def _capture(self, event: Event) -> None:
         device_id = event.device_id
         try:
+            media = self._media.get(device_id)
+            provider = re.sub(r"[^a-z0-9_-]+", "-", media.source.lower()) if media else "media"
+            origin = f"{provider or 'media'}:snapshot"
             data, content_type = await self._media.fetch_snapshot(device_id)
             extension = ".png" if content_type == "image/png" else ".jpg"
             path = await asyncio.to_thread(
@@ -74,7 +78,7 @@ class SnapshotEngine:
                 self._config.orphans_dir,
                 "snapshots",
                 data,
-                prefix=f"onvif_{device_id[:12]}",
+                prefix=f"{provider or 'media'}_{device_id[:12]}",
                 extension=extension,
             )
             artifact = await asyncio.to_thread(
@@ -82,7 +86,7 @@ class SnapshotEngine:
                 path,
                 "snapshot",
                 content_type,
-                metadata={"origin": "onvif:snapshot"},
+                metadata={"origin": origin},
             )
             evidence = Evidence(
                 device_id=device_id,
@@ -96,10 +100,10 @@ class SnapshotEngine:
                 sha256=artifact.sha256,
                 event_id=event.id,
                 episode_id=event.episode_id,
-                metadata={"origin": "onvif:snapshot", "requested_for": event.id},
+                metadata={"origin": origin, "requested_for": event.id},
             )
             receipt = IngestionReceipt(
-                source="onvif:snapshot",
+                source=origin,
                 observed_at=evidence.timestamp,
                 artifact_id=artifact.id,
                 device_id=device_id,

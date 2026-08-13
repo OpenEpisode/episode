@@ -34,7 +34,7 @@ self-hosters who want local, portable evidence.
 - Preserves camera-created files through a generic FTP transport, then lets the
   configured Hikvision plugin interpret supported snapshot filenames.
 - Preserves and checksums raw XML, snapshots, and recordings locally.
-- Records every connector delivery and deduplicates matching observations.
+- Records every ingress delivery and deduplicates matching observations.
 - Correlates observations from multiple cameras into Episodes.
 - Starts and stops configured recordings around Episode activity.
 - Reviews each Episode through a chronological Event timeline linked to its recordings and snapshots.
@@ -156,7 +156,7 @@ matching plugin capability.
   camera network and the Docker host.
 - If the UI works locally but cameras cannot send Alarm Server events, set
   `EPISODE_HTTP_BIND=0.0.0.0` and keep the host on a trusted network.
-- Use `docker compose --env-file .env logs -f episode` to inspect connector and
+- Use `docker compose --env-file .env logs -f episode` to inspect integration and
   recording errors.
 
 The [ONVIF troubleshooting guide](docs/ONVIF_SETUP.md#troubleshooting) contains a
@@ -176,7 +176,7 @@ inventory—are ignored by Git and must never be committed.
 
 - Preserve raw inputs before parsing or processing them.
 - Keep original evidence immutable and derived annotations separate.
-- Record connector deliveries as receipts; several receipts may describe one Event.
+- Record ingress deliveries as receipts; several receipts may describe one Event.
 - Treat Episodes as interpretations and preserve how they were assembled.
 - Keep connectors, correlation, and actions independently extensible.
 - Prefer safe defaults, local operation, and recoverable data.
@@ -184,7 +184,7 @@ inventory—are ignored by Git and must never be committed.
 ## Project status
 
 Episode is a working ONVIF-first public alpha for technical self-hosters using
-IP cameras and Docker. Hikvision connectors provide optional enrichment. The
+IP cameras and Docker. Hikvision integrations provide optional enrichment. The
 current priorities are reliable preservation, correct
 correlation, simple installation, and an uncluttered Episode-first interface.
 

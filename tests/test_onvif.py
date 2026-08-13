@@ -10,12 +10,12 @@ import pytest
 
 from episode.actions.snapshot import SnapshotEngine
 from episode.config import EpisodeConfig
-from episode.connectors.onvif.client import ONVIFClient
-from episode.connectors.onvif.parser import ONVIFStateTracker, parse_notifications
 from episode.domain.models import EventState
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
 from episode.media import CameraMedia, MediaRegistry
+from episode.plugins.onvif.client import ONVIFClient
+from episode.plugins.onvif.events import ONVIFStateTracker, parse_notifications
 from episode.storage.repository import Repository
 
 NOTIFICATIONS = b"""<?xml version="1.0"?>
@@ -90,7 +90,9 @@ async def test_snapshot_action_preserves_downloaded_bytes_as_episode_evidence():
     repo = Repository(config)
     bus = EventBus()
     media = MediaRegistry()
-    media.register(CameraMedia(device_id="camera-1", snapshot_uri="http://camera/snapshot"))
+    media.register(
+        CameraMedia(device_id="camera-1", snapshot_uri="http://camera/snapshot", source="onvif")
+    )
 
     expected = b"\xff\xd8\xff\xe0immutable-jpeg-evidence"
 
