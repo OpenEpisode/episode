@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import xml.etree.ElementTree as ET
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlunsplit
 
 import httpx
 
@@ -13,6 +11,7 @@ from episode.connectors.onvif.client import ONVIFClient, ONVIFError
 from episode.domain.models import Device
 
 _INTEGRATIONS = ("onvif", "isapi", "hikvision_sdk")
+IntegrationValidator = Callable[[Device, str, float], Awaitable[Mapping[str, Any]]]
 
 
 class DeviceValidationService:
@@ -22,16 +21,18 @@ class DeviceValidationService:
         self,
         *,
         runtime_integrations: Callable[[Device], Sequence[Mapping[str, Any]]] = lambda _device: (),
+        integration_validators: Mapping[str, IntegrationValidator] | None = None,
         timeout: float = 10,
     ) -> None:
         self._runtime_integrations = runtime_integrations
+        self._integration_validators = dict(integration_validators or {})
         self._timeout = timeout
 
     async def validate(self, device: Device) -> dict[str, dict[str, Any]]:
         checked_at = datetime.now(timezone.utc).isoformat()
         onvif, isapi = await asyncio.gather(
             self._probe_onvif(device, checked_at),
-            self._probe_isapi(device, checked_at),
+            self._validate_plugin_integration("isapi", device, checked_at),
         )
         sdk = self._sdk_support(device, checked_at)
         return {"onvif": onvif, "isapi": isapi, "hikvision_sdk": sdk}
@@ -78,44 +79,24 @@ class DeviceValidationService:
         finally:
             await client.close()
 
-    async def _probe_isapi(self, device: Device, checked_at: str) -> dict[str, Any]:
-        config = device.get_config("isapi")
-        protocol = config.protocol if config and config.protocol else "http"
-        port = config.port if config else 80
-        port_part = f":{port}" if port and port not in (80, 443) else ""
-        url = urlunsplit(
-            (protocol, f"{device.ip_address}{port_part}", "/ISAPI/System/deviceInfo", "", "")
-        )
-        auth = httpx.DigestAuth(device.username, device.password) if device.username else None
+    async def _validate_plugin_integration(
+        self,
+        integration: str,
+        device: Device,
+        checked_at: str,
+    ) -> dict[str, Any]:
+        validator = self._integration_validators.get(integration)
+        if validator is None:
+            return self._result(
+                "not_validated",
+                f"No validation probe is registered for {integration}",
+                checked_at,
+            )
         try:
-            async with httpx.AsyncClient(
-                auth=auth,
-                timeout=httpx.Timeout(min(self._timeout, 8)),
-                follow_redirects=False,
-            ) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-            root = ET.fromstring(response.content)
-            details = {
-                "manufacturer": self._xml_text(root, "manufacturer"),
-                "model": self._xml_text(root, "model"),
-                "firmware_version": self._xml_text(root, "firmwareVersion"),
-            }
-            return self._result(
-                "supported",
-                "ISAPI device information responded · Event stream not tested",
-                checked_at,
-                capabilities=["device-information"],
-                details={key: value for key, value in details.items() if value},
-            )
-        except ET.ParseError:
-            return self._result(
-                "unavailable",
-                "ISAPI endpoint returned an unexpected response",
-                checked_at,
-            )
+            result = await validator(device, checked_at, self._timeout)
+            return dict(result)
         except Exception as error:
-            return self._failure(error, "ISAPI", checked_at)
+            return self._failure(error, integration.upper(), checked_at)
 
     def _sdk_support(self, device: Device, checked_at: str) -> dict[str, Any]:
         integration = next(
@@ -191,13 +172,6 @@ class DeviceValidationService:
             f"{label} validation failed ({error.__class__.__name__})",
             checked_at,
         )
-
-    @staticmethod
-    def _xml_text(root: ET.Element, name: str) -> str:
-        for element in root.iter():
-            if element.tag.rsplit("}", 1)[-1] == name:
-                return element.text or ""
-        return ""
 
     @staticmethod
     def _result(

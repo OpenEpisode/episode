@@ -78,6 +78,9 @@ class RawPluginDelivery:
     received_at: datetime
     payload: bytes
     metadata: Mapping[str, object]
+    source: str = ""
+    media_type: str = "application/octet-stream"
+    artifact_type: str = "plugin_notification"
 
 
 RawPluginDeliverySink = Callable[[RawPluginDelivery], Awaitable[None]]
@@ -100,6 +103,7 @@ class ManagedPlugin(Protocol):
 
 
 PluginFactory = Callable[[PluginContext], ManagedPlugin]
+PluginDeviceValidator = Callable[[object, str, float], Awaitable[Mapping[str, object]]]
 
 
 @dataclass(frozen=True)
@@ -110,6 +114,8 @@ class PluginRegistration:
     activation_capability: str
     factory: PluginFactory
     activation_connector_type: str = ""
+    validation_capability: str = ""
+    validator: PluginDeviceValidator | None = None
 
     def validating_status(self) -> PluginStatus:
         return PluginStatus(

@@ -10,10 +10,14 @@ import pytest
 
 from episode.api.routes import create_api
 from episode.config import EpisodeConfig
-from episode.connectors.hikvision.parser import ingest_hikvision_xml
 from episode.domain.models import Area, Device, EventState, IngestionReceipt, ReceiptStatus
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
+from episode.ingestion.router import IngressRouter
+from episode.ingestion.service import IngestionService
+from episode.plugins.deliveries import RawPluginDeliveryStore
+from episode.plugins.hikvision_isapi.plugin import HikvisionISAPIPlugin
+from episode.plugins.models import PluginContext, RawPluginDelivery
 from episode.storage.files import describe_artifact
 from episode.storage.repository import Repository
 
@@ -145,22 +149,25 @@ async def test_rejected_delivery_is_preserved_without_creating_event(tmp_path):
     bus = EventBus()
     engine = EpisodeEngine(repo, bus, timeout=30)
     await engine.start()
+    router = IngressRouter()
+    ingestion = IngestionService(config.data_dir, repo, engine, router)
+    sink = RawPluginDeliveryStore(ingestion)
+    plugin = HikvisionISAPIPlugin(
+        PluginContext(config.plugins_dir, raw_delivery_sink=sink, ingress_router=router)
+    )
+    await plugin.start()
     try:
-        delivery = ingest_hikvision_xml(
-            b"not valid XML",
-            "camera-gate",
-            "gate",
-            "hikvision:isapi",
-            config.orphans_dir,
-        )
-        assert delivery.event is None
-        await bus.publish(
-            Message(
-                type="receipt.received",
-                data={
-                    "artifact": asdict(delivery.artifact),
-                    "receipt": asdict(delivery.receipt),
-                },
+        await sink(
+            RawPluginDelivery(
+                plugin_id="hikvision-isapi",
+                device_id="camera-gate",
+                area_id="gate",
+                received_at=datetime.now(tz=timezone.utc),
+                payload=b"not valid XML",
+                source="hikvision:isapi",
+                media_type="application/xml",
+                artifact_type="event_payload",
+                metadata={"ignore_events": []},
             )
         )
 
@@ -170,9 +177,9 @@ async def test_rejected_delivery_is_preserved_without_creating_event(tmp_path):
         assert await repo.list_events() == []
         artifact = await repo.get_raw_artifact(receipts[0].artifact_id)
         assert artifact is not None
-        assert artifact.sha256 == delivery.artifact.sha256
         assert artifact.byte_size == len(b"not valid XML")
     finally:
+        await plugin.stop()
         await engine.stop()
         await repo.close()
 

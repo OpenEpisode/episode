@@ -9,7 +9,7 @@ which actions run.
 
 ```mermaid
 flowchart LR
-    Device[Device or user] --> Transport[Core transport or device connector]
+    Device[Device or user] --> Transport[Core transport or configured Device plugin]
     Transport --> Ingress[Raw-first ingress]
     Ingress --> Artifact[Sealed raw artifact]
     Ingress --> Receipt[Ingestion receipt]
@@ -61,7 +61,7 @@ not to protocol connectors.
 
 ```text
 src/episode/
-├── connectors/       shared transports and current device connectors
+├── connectors/       shared transports and the remaining ONVIF connector
 ├── ingestion/        raw-first preservation and bounded plugin dispatch
 ├── plugins/          lazy integrations and vendor interpretation
 ├── media/            camera media registry and timelapse service
@@ -86,6 +86,10 @@ the Hikvision FTP handler recognizes supported filenames and emits snapshot
 Evidence. Unknown files remain visible raw deliveries. HCNetSDK callbacks
 follow the same raw-first route; native decoding remains isolated in the SDK
 plugin.
+ISAPI stream ownership, Digest authentication, reconnect behavior, bounded
+stream decoding, ignored-Event policy, and XML interpretation likewise live in
+its lazily activated Device plugin. The application core sees only raw plugin
+deliveries and normalized observations.
 
 ## Persistence model
 
@@ -182,9 +186,9 @@ Signed manifests and external timestamping are possible future extensions.
 
 New shared transports should submit opaque deliveries to `IngestionService`.
 Vendor or protocol plugins register narrow matchers and return a normalized
-observation only after the durable boundary. Per-device connectors that have
-not migrated yet must still preserve Raw Artifacts and Ingestion Receipts before
-publishing an Event or Evidence compatibility message.
+observation only after the durable boundary. The remaining ONVIF Device
+connector must preserve Raw Artifacts and Ingestion Receipts before publishing
+an Event or Evidence compatibility message until its planned plugin migration.
 
 New actions should consume canonical domain messages or target-resolution
 decisions. They must not subscribe directly to vendor-specific connector

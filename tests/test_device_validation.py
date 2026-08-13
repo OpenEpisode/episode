@@ -7,6 +7,7 @@ import pytest
 
 from episode.domain.models import CapabilityConfig, Device
 from episode.inventory.validation import DeviceValidationService
+from episode.plugins.hikvision_isapi.validation import validate_device as validate_isapi
 
 
 @pytest.mark.asyncio
@@ -56,7 +57,7 @@ async def test_validation_reports_protocol_evidence_without_enabling_integration
         FakeONVIFClient,
     )
     monkeypatch.setattr(
-        "episode.inventory.validation.httpx.AsyncClient",
+        "episode.plugins.hikvision_isapi.validation.httpx.AsyncClient",
         FakeHTTPClient,
     )
 
@@ -85,7 +86,8 @@ async def test_validation_reports_protocol_evidence_without_enabling_integration
                 "name": "HCNetSDK",
                 "capabilities": ["events"],
             }
-        ]
+        ],
+        integration_validators={"isapi": validate_isapi},
     )
 
     results = await service.validate(device)

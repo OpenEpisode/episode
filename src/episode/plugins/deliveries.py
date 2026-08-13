@@ -14,12 +14,12 @@ class RawPluginDeliveryStore:
     async def __call__(self, delivery: RawPluginDelivery) -> None:
         await self._ingestion.accept(
             IngressDelivery(
-                source=f"plugin:{delivery.plugin_id}",
+                source=delivery.source or f"plugin:{delivery.plugin_id}",
                 transport="plugin",
                 received_at=delivery.received_at,
                 payload=delivery.payload,
-                media_type="application/octet-stream",
-                artifact_type="plugin_notification",
+                media_type=delivery.media_type,
+                artifact_type=delivery.artifact_type,
                 device_id=delivery.device_id,
                 area_id=delivery.area_id,
                 metadata={

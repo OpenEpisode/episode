@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 
-from episode.connectors.hikvision.parser import HikvisionEvent
 from episode.domain.models import ReceiptStatus
 from episode.ingestion.models import (
     EventObservation,
@@ -10,6 +9,7 @@ from episode.ingestion.models import (
     StoredIngressEnvelope,
 )
 from episode.ingestion.router import IngressHandlerRegistration, IngressRouter
+from episode.plugins.hikvision.events import HikvisionEvent
 from episode.plugins.models import PluginContext, PluginState, PluginStatus
 
 logger = logging.getLogger(__name__)

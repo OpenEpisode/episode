@@ -140,6 +140,7 @@ def _integration_capabilities(kind: str, status: Mapping[str, Any]) -> list[str]
         "ftp": ["evidence-upload"],
         "hikvision_alarm_server": ["event-interpretation"],
         "hikvision_ftp": ["snapshot-interpretation"],
+        "hikvision_isapi": ["events"],
         "hikvision_sdk": ["events", "device-information"],
     }.get(kind, [])
 
@@ -499,6 +500,7 @@ class OperationalView:
         detailed: bool,
     ) -> dict[str, Any]:
         plugin_type = str(plugin.get("id") or "plugin").replace("-", "_")
+        integration_type = "isapi" if plugin_type == "hikvision_isapi" else plugin_type
         state = _state_for_plugin(instance.get("state"))
         messages = int(instance.get("messages_received", 0))
         summary = str(instance.get("error") or f"Connected · {messages} notifications")
@@ -511,13 +513,13 @@ class OperationalView:
                 "error": instance.get("error"),
             }
         return {
-            "id": f"{plugin_type}:{instance.get('id')}",
+            "id": f"{integration_type}:{instance.get('id')}",
             "name": str(plugin.get("name") or plugin_type),
-            "type": plugin_type,
+            "type": integration_type,
             "kind": "device",
             "state": state,
             "device_id": str(instance.get("id") or "") or None,
-            "capabilities": _integration_capabilities(plugin_type, plugin),
+            "capabilities": _integration_capabilities(integration_type, plugin),
             "summary": summary,
             "details": details,
         }

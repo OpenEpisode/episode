@@ -87,7 +87,12 @@ def test_builtin_plugin_module_is_not_imported_during_registration(monkeypatch):
     monkeypatch.setattr("episode.plugins.registry.importlib.import_module", track_import)
     registry = builtin_plugin_registry()
 
+    validators = registry.validators()
+    assert set(validators) == {"isapi"}
+    assert imported == []
     assert registry.for_capabilities({"onvif", "video"}) == []
+    selected = registry.for_capabilities({"isapi"})
+    assert [registration.id for registration in selected] == ["hikvision-isapi"]
     selected = registry.for_capabilities({"hikvision_sdk"})
     assert [registration.id for registration in selected] == ["hikvision-sdk"]
     assert imported == []

@@ -45,9 +45,13 @@ then save and restart Episode. Credentials entered for the
 Device are shared with its enabled integrations and are never returned to the
 browser.
 
-Episode connects to `/ISAPI/Event/notification/alertStream` using the configured
-ISAPI protocol, port, and path. A connection or authentication failure appears
-in `docker compose --env-file .env logs -f episode`.
+Enabling ISAPI lazily activates the built-in Hikvision ISAPI Device plugin. The
+core does not connect to or decode the vendor stream. The plugin connects to
+`/ISAPI/Event/notification/alertStream` using the configured protocol, port,
+path, and Digest authentication, then preserves every complete XML delivery
+before interpreting it. Connection and authentication failures are isolated to
+that Device and appear in the Device/System views and in
+`docker compose --env-file .env logs -f episode`.
 
 ## Alarm Server events
 

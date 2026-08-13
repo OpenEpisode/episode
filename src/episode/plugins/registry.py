@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
-from episode.plugins.models import PluginContext, PluginFactory, PluginRegistration
+from episode.plugins.models import (
+    PluginContext,
+    PluginDeviceValidator,
+    PluginFactory,
+    PluginRegistration,
+)
 
 
 class PluginRegistry:
@@ -39,6 +44,13 @@ class PluginRegistry:
     def for_capabilities(self, capabilities: Iterable[str]) -> list[PluginRegistration]:
         return self.for_configuration(capabilities)
 
+    def validators(self) -> Mapping[str, PluginDeviceValidator]:
+        return {
+            registration.validation_capability: registration.validator
+            for registration in self._registrations.values()
+            if registration.validation_capability and registration.validator is not None
+        }
+
 
 def module_plugin_factory(module_name: str) -> PluginFactory:
     def create(context: PluginContext):
@@ -46,6 +58,18 @@ def module_plugin_factory(module_name: str) -> PluginFactory:
         return module.create_plugin(context)
 
     return create
+
+
+def module_plugin_validator(
+    module_name: str,
+    function_name: str = "validate_device",
+) -> PluginDeviceValidator:
+    async def validate(device: object, checked_at: str, timeout: float):
+        module = importlib.import_module(module_name)
+        validator = getattr(module, function_name)
+        return await validator(device, checked_at, timeout)
+
+    return validate
 
 
 def builtin_plugin_registry() -> PluginRegistry:
@@ -57,6 +81,15 @@ def builtin_plugin_registry() -> PluginRegistry:
                 kind="native-sdk",
                 activation_capability="hikvision_sdk",
                 factory=module_plugin_factory("episode.plugins.hikvision_sdk"),
+            ),
+            PluginRegistration(
+                id="hikvision-isapi",
+                name="Hikvision ISAPI",
+                kind="device-integration",
+                activation_capability="isapi",
+                factory=module_plugin_factory("episode.plugins.hikvision_isapi"),
+                validation_capability="isapi",
+                validator=module_plugin_validator("episode.plugins.hikvision_isapi.validation"),
             ),
             PluginRegistration(
                 id="hikvision-alarm-server",

@@ -14,7 +14,6 @@ from episode.api.routes import create_api
 from episode.api.runtime import OperationalView
 from episode.config import EpisodeConfig, load_config
 from episode.connectors.ftp import FTPConnector
-from episode.connectors.hikvision.isapi import ISAPIConnector
 from episode.connectors.http_ingress import HTTPIngressConnector
 from episode.connectors.onvif import ONVIFConnector
 from episode.domain.models import Device
@@ -92,7 +91,8 @@ class Application:
         self._validation = DeviceValidationService(
             runtime_integrations=lambda device: self._operations.device_detail(device)[
                 "integrations"
-            ]
+            ],
+            integration_validators=self._plugin_registry.validators(),
         )
         self._fastapi_app = create_api(
             self._repo,
@@ -184,16 +184,6 @@ class Application:
                 self._connectors.append(conn)
                 await conn.start()
 
-            cap = device.get_config("isapi")
-            if (
-                "isapi" in device.capabilities
-                and cap
-                and cap.build_url(device.ip_address, device.username, device.password)
-            ):
-                conn = self._build_isapi_connector(device)
-                self._connectors.append(conn)
-                await conn.start()
-
         self._inventory.mark_runtime_current()
 
         # Mount static UI last so connector routes take precedence
@@ -261,25 +251,6 @@ class Application:
             self._repo,
             self._media,
         )
-
-    def _build_isapi_connector(self, device: Device) -> ISAPIConnector:
-        cap = device.get_config("isapi")
-        isapi_url = (
-            cap.build_url(device.ip_address, device.username, device.password) if cap else ""
-        )
-        if not isapi_url and device.ip_address:
-            isapi_url = f"http://{device.ip_address}/ISAPI/Event/notification/alertStream"
-        ignore_events: list[str] = (cap.settings or {}).get("ignore_events", []) if cap else []
-        settings = {
-            "name": f"ISAPI:{device.name}",
-            "url": isapi_url,
-            "username": device.username,
-            "password": device.password,
-            "device_id": device.id,
-            "area_id": device.area_id,
-            "ignore_events": ignore_events,
-        }
-        return ISAPIConnector(settings["name"], self._bus, settings, self._config)
 
 
 def create_app(config: EpisodeConfig | None = None) -> Application:
