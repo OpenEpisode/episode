@@ -1,7 +1,7 @@
 import { API, api, apiBlob } from "./api.js?v=2";
 import { notify } from "./dialogs.js?v=1";
 import { $, $$, escHtml } from "./dom.js";
-import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js?v=4";
+import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js?v=5";
 import { fmt, fmtDuration, fmtShort, plural, titleCase, trunc } from "./format.js?v=3";
 import { confirmAreaDelete, confirmDeviceDelete, openAreaEditor, openDeviceEditor } from "./inventory.js?v=3";
 
@@ -81,6 +81,16 @@ function renderPayloadInterpretation(metadata) {
         `).join("")}
       </dl>
     </div>`;
+}
+
+function hasEmbeddedEventPicture(metadata) {
+  const descriptor = metadata?.embedded_picture;
+  if (descriptor && Number.isInteger(descriptor.byte_size)) {
+    return descriptor.byte_size > 0;
+  }
+  return metadata?.picture_transport === "binary"
+    && Number.isInteger(metadata?.picture_byte_size)
+    && metadata.picture_byte_size > 0;
 }
 
 function hexDump(buffer, limit = 2048) {
@@ -365,6 +375,19 @@ async function event(id) {
       </div>`;
     }
 
+    const lockName = String(ev.metadata?.lock_name || "").trim();
+    const eventPictureHtml = ev.has_raw_payload && hasEmbeddedEventPicture(ev.metadata) ? `
+      <div class="section">
+        <h3>Event picture</h3>
+        <div class="event-embedded-picture">
+          <img src="${API}/events/${encodeURIComponent(ev.id)}/picture"
+               alt="${escHtml(lockName ? `Unlock record for ${lockName}` : "Door unlock record")}">
+        </div>
+        <div class="meta" style="margin-top:0.5rem">
+          Image embedded in the original vendor callback. The raw payload remains unchanged.
+        </div>
+      </div>` : "";
+
     showContent(`
       <div class="breadcrumbs"><a href="#activity">Activity</a> <span class="sep">›</span> <span>${eventBadge(ev.event_type)}</span></div>
       <div class="detail-header">
@@ -379,6 +402,7 @@ async function event(id) {
         <div class="card"><div class="meta"><strong>Device</strong><br>${ev.device_id}</div></div>
         <div class="card"><div class="meta"><strong>Area</strong><br>${ev.area_id}</div></div>
       </div>
+      ${eventPictureHtml}
       ${snapHtml}
       ${ev.has_raw_payload ? `
         <div class="section">

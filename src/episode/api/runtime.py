@@ -15,12 +15,12 @@ from episode.domain.models import Device
 
 OperationalState = Literal["healthy", "degraded", "unavailable", "disabled", "unknown"]
 
-_DEVICE_INTEGRATION_FLAGS = {"onvif", "isapi", "hikvision_sdk"}
 
-
-def product_capabilities(capabilities: Sequence[str]) -> list[str]:
+def product_capabilities(
+    capabilities: Sequence[str], integration_flags: Sequence[str] = ()
+) -> list[str]:
     """Return user-facing capabilities without integration activation flags."""
-    return sorted(set(capabilities) - _DEVICE_INTEGRATION_FLAGS)
+    return sorted(set(capabilities) - set(integration_flags))
 
 
 class IntegrationResponse(BaseModel):
@@ -127,35 +127,15 @@ def _state_for_plugin(value: object) -> OperationalState:
 
 
 def _integration_capabilities(kind: str, status: Mapping[str, Any]) -> list[str]:
-    if kind == "onvif":
-        capabilities = ["discovery", "media"]
-        if any(profile.get("snapshot") for profile in status.get("profiles", [])):
-            capabilities.append("snapshots")
-        if status.get("event_topics") or status.get("events_enabled"):
-            capabilities.append("events")
-        return capabilities
     return {
-        "isapi": ["events"],
         "alarm_server": ["events"],
         "ftp": ["evidence-upload"],
-        "hikvision_alarm_server": ["event-interpretation"],
-        "hikvision_ftp": ["snapshot-interpretation"],
-        "hikvision_isapi": ["events"],
-        "hikvision_sdk": ["events", "device-information"],
     }.get(kind, [])
 
 
 def _connector_summary(kind: str, status: Mapping[str, Any], state: OperationalState) -> str:
     if state != "healthy":
         return str(status.get("last_error") or "Unavailable")
-    if kind == "onvif":
-        profiles = len(status.get("profiles", []))
-        event_policy = "events enabled" if status.get("events_enabled") else "events disabled"
-        return (
-            f"Connected · {profiles} media profile{'s' if profiles != 1 else ''} · {event_policy}"
-        )
-    if kind == "isapi":
-        return "Event stream connected"
     if kind == "alarm_server":
         return f"{int(status.get('requests_handled', 0))} deliveries accepted"
     if kind == "ftp":
@@ -168,19 +148,6 @@ def _connector_summary(kind: str, status: Mapping[str, Any], state: OperationalS
 
 def _connector_details(kind: str, status: Mapping[str, Any]) -> dict[str, Any]:
     keys = {
-        "onvif": (
-            "connected",
-            "subscribed",
-            "events_enabled",
-            "profiles",
-            "selected_profile",
-            "event_topics",
-            "events_received",
-            "events_suppressed",
-            "last_event",
-            "last_error",
-        ),
-        "isapi": ("stream_active", "last_event", "last_error"),
         "alarm_server": ("path", "port", "requests_handled", "requests_rejected"),
         "ftp": (
             "host",
@@ -314,13 +281,22 @@ class OperationalView:
 
     def device_summary(self, device: Device) -> dict[str, Any]:
         integrations = self._device_integrations(device, detailed=False)
+        integration_flags = [
+            str(metadata.get("activation_capability"))
+            for plugin in self._plugins()
+            if isinstance((metadata := plugin.get("integration")), Mapping)
+            and metadata.get("activation_capability")
+        ]
+        integration_flags.extend(
+            str(integration["type"]) for integration in integrations if integration.get("type")
+        )
         return {
             "id": device.id,
             "name": device.name,
             "device_type": device.device_type,
             "area_id": device.area_id,
             "enabled": device.enabled,
-            "capabilities": product_capabilities(device.capabilities),
+            "capabilities": product_capabilities(device.capabilities, integration_flags),
             "state": "disabled" if not device.enabled else self._device_state(integrations),
             "identity": self._device_identity(device),
             "integrations": integrations,
@@ -354,7 +330,8 @@ class OperationalView:
             for status in self._connectors()
             if status.get("device_id") == device.id
         ]
-        for plugin in self._plugins():
+        plugins = self._plugins()
+        for plugin in plugins:
             integrations.extend(
                 self._plugin_instance_integration(plugin, instance, detailed=detailed)
                 for instance in plugin.get("instances", [])
@@ -362,26 +339,23 @@ class OperationalView:
             )
 
         present = {item["type"] for item in integrations}
-        for capability, integration_type in {
-            "onvif": "onvif",
-            "isapi": "isapi",
-            "hikvision_sdk": "hikvision_sdk",
-        }.items():
+        for plugin in plugins:
+            metadata = plugin.get("integration")
+            if not isinstance(metadata, Mapping) or not metadata.get("device_scoped"):
+                continue
+            capability = str(metadata.get("activation_capability") or "")
+            integration_type = str(metadata.get("type") or "")
             if capability not in device.capabilities or integration_type in present:
                 continue
             integrations.append(
                 {
                     "id": f"{integration_type}:{device.id}",
-                    "name": {
-                        "onvif": "ONVIF",
-                        "isapi": "ISAPI",
-                        "hikvision_sdk": "Hikvision HCNetSDK",
-                    }[integration_type],
+                    "name": str(metadata.get("name") or plugin.get("name") or integration_type),
                     "type": integration_type,
                     "kind": "device",
                     "state": "unavailable",
                     "device_id": device.id,
-                    "capabilities": _integration_capabilities(integration_type, {}),
+                    "capabilities": list(metadata.get("capabilities") or []),
                     "summary": "Configured but unavailable",
                     "details": {},
                 }
@@ -404,20 +378,25 @@ class OperationalView:
         return "unavailable"
 
     def _device_identity(self, device: Device) -> dict[str, str | None]:
-        candidates: list[Mapping[str, Any]] = [
+        candidates: list[Mapping[str, Any]] = []
+        candidates.extend(
             status
             for status in self._connectors()
-            if status.get("device_id") == device.id and status.get("type") == "onvif"
-        ]
+            if status.get("device_id") == device.id
+            and any(status.get(key) for key in ("manufacturer", "model", "firmware_version"))
+        )
         for plugin in self._plugins():
             candidates.extend(
                 instance.get("device_info") or {}
                 for instance in plugin.get("instances", [])
                 if instance.get("id") == device.id
             )
-        metadata = device.metadata.get("onvif", {})
-        if isinstance(metadata, Mapping):
-            candidates.append(metadata)
+        candidates.extend(
+            value
+            for value in device.metadata.values()
+            if isinstance(value, Mapping)
+            and any(value.get(key) for key in ("manufacturer", "model", "firmware_version"))
+        )
 
         def first(key: str) -> str | None:
             return next((str(item[key]) for item in candidates if item.get(key)), None)
@@ -455,6 +434,10 @@ class OperationalView:
         *,
         detailed: bool,
     ) -> dict[str, Any]:
+        metadata = plugin.get("integration")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        plugin_type = str(metadata.get("type") or plugin.get("id") or "plugin").replace("-", "_")
+        capabilities = list(metadata.get("capabilities") or [])
         state = _state_for_plugin(plugin.get("state"))
         instances = list(plugin.get("instances", []))
         summary = str(plugin.get("error") or str(plugin.get("state", "")).replace("_", " ").title())
@@ -482,15 +465,14 @@ class OperationalView:
                     for item in instances
                 ],
             }
-        plugin_type = str(plugin.get("id") or "plugin").replace("-", "_")
         return {
             "id": str(plugin.get("id") or "plugin"),
-            "name": str(plugin.get("name") or "Plugin"),
+            "name": str(metadata.get("name") or plugin.get("name") or "Plugin"),
             "type": plugin_type,
             "kind": "plugin",
             "state": state,
             "device_id": None,
-            "capabilities": _integration_capabilities(plugin_type, plugin),
+            "capabilities": capabilities,
             "summary": summary,
             "details": details,
         }
@@ -502,8 +484,11 @@ class OperationalView:
         *,
         detailed: bool,
     ) -> dict[str, Any]:
-        plugin_type = str(plugin.get("id") or "plugin").replace("-", "_")
-        integration_type = "isapi" if plugin_type == "hikvision_isapi" else plugin_type
+        metadata = plugin.get("integration")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        integration_type = str(metadata.get("type") or plugin.get("id") or "plugin").replace(
+            "-", "_"
+        )
         state = _state_for_plugin(instance.get("state"))
         messages = int(instance.get("messages_received", 0))
         summary = str(
@@ -521,14 +506,15 @@ class OperationalView:
                 "error": instance.get("error"),
             }
         capabilities = list(instance.get("capabilities") or [])
+        capabilities = capabilities or list(metadata.get("capabilities") or [])
         return {
             "id": f"{integration_type}:{instance.get('id')}",
-            "name": str(plugin.get("name") or plugin_type),
+            "name": str(metadata.get("name") or plugin.get("name") or integration_type),
             "type": integration_type,
             "kind": "device",
             "state": state,
             "device_id": str(instance.get("id") or "") or None,
-            "capabilities": capabilities or _integration_capabilities(integration_type, plugin),
+            "capabilities": capabilities,
             "summary": summary,
             "details": details,
         }

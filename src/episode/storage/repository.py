@@ -33,8 +33,12 @@ from episode.storage.migrations import (
 )
 from episode.storage.projection import EpisodeBundleProjector
 from episode.storage.provenance import ProvenanceStore
+from episode.storage.recovery import reconcile_episode_counts, reconcile_episode_paths
 
 logger = logging.getLogger(__name__)
+
+
+SQLITE_BUSY_TIMEOUT_MS = 15_000
 
 
 def _utc_iso(dt: datetime | None) -> str | None:
@@ -63,6 +67,11 @@ class Repository:
         os.makedirs(os.path.join(self._data_dir, "orphans", "events"), exist_ok=True)
         self._conn = await aiosqlite.connect(self._db_path)
         self._conn.row_factory = aiosqlite.Row
+        await self._conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        journal_mode = await self._conn.execute_fetchall("PRAGMA journal_mode = WAL")
+        if not journal_mode or str(journal_mode[0][0]).lower() != "wal":
+            raise RuntimeError("Episode requires SQLite WAL mode")
+        await self._conn.execute("PRAGMA synchronous = NORMAL")
         await migrate_legacy_identity_schema(self._conn)
         await self._conn.executescript(SCHEMA_SQL)
         await migrate_inventory_schema(self._conn)
@@ -72,17 +81,34 @@ class Repository:
         self._provenance = ProvenanceStore(self._conn)
         await self._provenance.migrate_schema()
         await self._conn.commit()
+        if not self._legacy_identity_schema:
+            await self._enable_foreign_keys(self._conn)
         # Raw artifacts and their receipts use a dedicated connection so their
         # transaction cannot be committed accidentally by another repository
         # coroutine sharing the main connection.
         self._delivery_conn = await aiosqlite.connect(self._db_path)
         self._delivery_conn.row_factory = aiosqlite.Row
+        await self._delivery_conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        await self._delivery_conn.execute("PRAGMA synchronous = NORMAL")
         self._delivery_provenance = ProvenanceStore(self._delivery_conn)
         await self._delivery_provenance.migrate_schema()
 
         await self._migrate_episode_layout()
+        await reconcile_episode_paths(
+            self._conn,
+            self._provenance,
+            self._data_dir,
+        )
+        await reconcile_episode_counts(self._conn)
         await self._backfill_artifacts()
         await self.rebuild_episode_manifests()
+
+    @staticmethod
+    async def _enable_foreign_keys(connection: aiosqlite.Connection) -> None:
+        await connection.execute("PRAGMA foreign_keys = ON")
+        enabled = await connection.execute_fetchall("PRAGMA foreign_keys")
+        if not enabled or enabled[0][0] != 1:
+            raise RuntimeError("Episode requires SQLite foreign-key enforcement")
 
     async def close(self):
         if self._delivery_conn:
@@ -262,8 +288,14 @@ class Repository:
                 receipt.artifact_id = stored_artifact.id
                 await self._delivery_provenance.create_receipt(receipt, commit=False)
                 await self._delivery_conn.commit()
-            except Exception:
-                await self._delivery_conn.rollback()
+            except BaseException:
+                # CancelledError is a BaseException. Without this rollback, a
+                # cancelled connector task can retain SQLite's write lock for
+                # the lifetime of the process and stall every other ingress.
+                try:
+                    await asyncio.shield(self._delivery_conn.rollback())
+                except Exception:
+                    logger.exception("Could not roll back interrupted delivery transaction")
                 raise
         return stored_artifact, receipt
 
@@ -1027,35 +1059,9 @@ class Repository:
             return
         if event.episode_id:
             raise ValueError(f"Event {event_id} already belongs to episode {event.episode_id}")
-        raw_payload_path = event.raw_payload_path if event else None
-        receipts = await self.list_ingestion_receipts(event_id=event_id)
-
-        for receipt in receipts:
-            if receipt.artifact_id and self._provenance is not None:
-                artifact = await self._provenance.get_artifact(receipt.artifact_id)
-                if artifact:
-                    old_path = artifact.file_path
-                    new_path = await async_move_to_episode(
-                        self._data_dir, episode_id, old_path, "events"
-                    )
-                    if new_path != old_path:
-                        await self._provenance.update_artifact_path(artifact.id, new_path)
-                    if raw_payload_path == old_path:
-                        raw_payload_path = new_path
-            if self._provenance is not None:
-                await self._provenance.link_receipt(
-                    receipt.id, event_id=event_id, episode_id=episode_id
-                )
-
-        if raw_payload_path and not receipts:
-            raw_payload_path = await async_move_to_episode(
-                self._data_dir, episode_id, raw_payload_path, "events"
-            )
-
         cursor = await self._conn.execute(
-            """UPDATE events SET episode_id = ?, raw_payload_path = ?
-               WHERE id = ? AND episode_id IS NULL""",
-            (episode_id, raw_payload_path, event_id),
+            "UPDATE events SET episode_id = ? WHERE id = ? AND episode_id IS NULL",
+            (episode_id, event_id),
         )
         if cursor.rowcount != 1:
             await self._conn.rollback()
@@ -1068,6 +1074,36 @@ class Repository:
             (episode_id,),
         )
         await self._conn.commit()
+
+        raw_payload_path = event.raw_payload_path
+        receipts = await self.list_ingestion_receipts(event_id=event_id)
+        for receipt in receipts:
+            if self._provenance is not None:
+                await self._provenance.link_receipt(
+                    receipt.id, event_id=event_id, episode_id=episode_id
+                )
+            if receipt.artifact_id and self._provenance is not None:
+                artifact = await self._provenance.get_artifact(receipt.artifact_id)
+                if artifact:
+                    old_path = artifact.file_path
+                    new_path = await async_move_to_episode(
+                        self._data_dir, episode_id, old_path, "events"
+                    )
+                    if new_path != old_path:
+                        await self._provenance.update_artifact_path(artifact.id, new_path)
+                    if raw_payload_path == old_path:
+                        raw_payload_path = new_path
+
+        if raw_payload_path and not receipts:
+            raw_payload_path = await async_move_to_episode(
+                self._data_dir, episode_id, raw_payload_path, "events"
+            )
+        if raw_payload_path != event.raw_payload_path:
+            await self._conn.execute(
+                "UPDATE events SET raw_payload_path = ? WHERE id = ?",
+                (raw_payload_path, event_id),
+            )
+            await self._conn.commit()
         await asyncio.to_thread(
             append_journal,
             self._data_dir,
@@ -1082,8 +1118,41 @@ class Repository:
         self, evidence_id: str, episode_id: str, *, _defer_manifest: bool = False
     ):
         evidence = await self.get_evidence(evidence_id)
-        new_path = evidence.file_path if evidence else ""
-        if evidence and evidence.file_path:
+        if not evidence:
+            return
+        if evidence.episode_id == episode_id:
+            return
+        if evidence.episode_id:
+            raise ValueError(
+                f"Evidence {evidence_id} already belongs to episode {evidence.episode_id}"
+            )
+        cursor = await self._conn.execute(
+            "UPDATE evidence SET episode_id = ? WHERE id = ? AND episode_id IS NULL",
+            (episode_id, evidence_id),
+        )
+        if cursor.rowcount != 1:
+            await self._conn.rollback()
+            current = await self.get_evidence(evidence_id)
+            if current and current.episode_id == episode_id:
+                return
+            raise RuntimeError(
+                f"Evidence {evidence_id} could not be linked to episode {episode_id}"
+            )
+        await self._conn.execute(
+            "UPDATE episodes SET evidence_count = evidence_count + 1 WHERE id = ?",
+            (episode_id,),
+        )
+        await self._conn.commit()
+
+        receipts = await self.list_ingestion_receipts(evidence_id=evidence_id)
+        if self._provenance is not None:
+            for receipt in receipts:
+                await self._provenance.link_receipt(
+                    receipt.id, evidence_id=evidence_id, episode_id=episode_id
+                )
+
+        new_path = evidence.file_path
+        if evidence.file_path:
             subdir = {
                 "snapshot": "snapshots",
                 "recording": "recordings",
@@ -1098,21 +1167,12 @@ class Repository:
             ):
                 await self._provenance.update_artifact_path(evidence.artifact_id, new_path)
 
-        await self._conn.execute(
-            "UPDATE evidence SET episode_id = ?, file_path = ? WHERE id = ?",
-            (episode_id, new_path, evidence_id),
-        )
-        receipts = await self.list_ingestion_receipts(evidence_id=evidence_id)
-        if self._provenance is not None:
-            for receipt in receipts:
-                await self._provenance.link_receipt(
-                    receipt.id, evidence_id=evidence_id, episode_id=episode_id
-                )
-        await self._conn.execute(
-            "UPDATE episodes SET evidence_count = evidence_count + 1 WHERE id = ?",
-            (episode_id,),
-        )
-        await self._conn.commit()
+        if new_path != evidence.file_path:
+            await self._conn.execute(
+                "UPDATE evidence SET file_path = ? WHERE id = ?",
+                (new_path, evidence_id),
+            )
+            await self._conn.commit()
         await asyncio.to_thread(
             append_journal,
             self._data_dir,

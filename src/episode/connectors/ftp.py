@@ -32,7 +32,7 @@ class FTPConnector(Connector):
         config: dict,
         app_config: EpisodeConfig,
     ):
-        super().__init__(name, None, config)
+        super().__init__(name, config)
         self._ingestion = ingestion
         self._host = config.get("host", "0.0.0.0")
         self._port = config.get("port", 2121)

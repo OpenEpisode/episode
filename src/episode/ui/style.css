@@ -381,6 +381,22 @@ pre.payload-xml {
   font-weight: 600;
   margin-bottom: 0.25rem;
 }
+.event-embedded-picture {
+  align-items: center;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
+  padding: 0.75rem;
+}
+.event-embedded-picture img {
+  display: block;
+  max-height: 65vh;
+  max-width: 100%;
+  object-fit: contain;
+}
 .payload-fields {
   display: grid;
   grid-template-columns: minmax(9rem, 0.35fr) minmax(0, 1fr);

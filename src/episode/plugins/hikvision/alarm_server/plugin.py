@@ -8,7 +8,7 @@ from episode.ingestion.models import (
     IngressHandlerResult,
     StoredIngressEnvelope,
 )
-from episode.ingestion.router import IngressHandlerRegistration, IngressRouter
+from episode.ingestion.router import IngressHandlerRegistration
 from episode.plugins.hikvision.xml_events import HikvisionEvent
 from episode.plugins.models import PluginContext, PluginState, PluginStatus
 
@@ -35,9 +35,7 @@ def _extract_xml(payload: bytes) -> bytes | None:
 
 class HikvisionAlarmPlugin:
     def __init__(self, context: PluginContext):
-        self._router = (
-            context.ingress_router if isinstance(context.ingress_router, IngressRouter) else None
-        )
+        self._router = context.ingress_router
         self._registered = False
 
     @staticmethod

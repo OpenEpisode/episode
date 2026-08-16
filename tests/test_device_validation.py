@@ -9,6 +9,7 @@ from episode.domain.models import CapabilityConfig, Device
 from episode.inventory.validation import DeviceValidationService
 from episode.plugins.hikvision.isapi.validation import validate_device as validate_isapi
 from episode.plugins.onvif.validation import validate_device as validate_onvif
+from episode.plugins.registry import builtin_plugin_registry
 
 
 @pytest.mark.asyncio
@@ -89,6 +90,7 @@ async def test_validation_reports_protocol_evidence_without_enabling_integration
             }
         ],
         integration_validators={"onvif": validate_onvif, "isapi": validate_isapi},
+        integration_registrations=builtin_plugin_registry().device_integrations(),
     )
 
     results = await service.validate(device)

@@ -11,7 +11,7 @@ import pytest
 import pytest_asyncio
 
 from episode.config import EpisodeConfig
-from episode.domain.models import EpisodeState, Event, EventState
+from episode.domain.models import Area, Device, EpisodeState, Event, EventState
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
 from episode.storage import projection as projection_module
@@ -45,6 +45,17 @@ def bus():
 async def engine(repo, bus, config):
     eng = EpisodeEngine(repo, bus, timeout=config.episode_timeout)
     await repo.initialize()
+    for area_id in ("area-1", "area-2"):
+        await repo.upsert_area(Area(id=area_id, name=area_id))
+    for device_id, area_id in (
+        ("device-0", "area-1"),
+        ("device-1", "area-1"),
+        ("device-2", "area-1"),
+        ("device-3", "area-2"),
+    ):
+        await repo.upsert_device(
+            Device(id=device_id, name=device_id, device_type="camera", area_id=area_id)
+        )
     await eng.start()
     yield eng
     await eng.stop()
@@ -369,6 +380,59 @@ async def test_orphan_evidence_matches_event(engine, repo, bus):
     assert len(evidence_list) == 1
     ev = evidence_list[0]
     assert ev.episode_id is not None
+
+
+@pytest.mark.asyncio
+async def test_preset_episode_evidence_uses_the_complete_linking_path(engine, repo, bus, config):
+    timestamp = datetime.now(tz=timezone.utc)
+    await bus.publish(
+        Message(
+            type="event.received",
+            data={
+                "event": {
+                    "device_id": "device-1",
+                    "area_id": "area-1",
+                    "timestamp": timestamp,
+                    "event_type": "motion_detection",
+                    "event_state": EventState.ACTIVE.value,
+                    "source": "test",
+                }
+            },
+        )
+    )
+    episode = (await repo.list_episodes())[0]
+    source_path = os.path.join(config.data_dir, "recording.mp4")
+    with open(source_path, "wb") as recording:
+        recording.write(b"recording bytes")
+
+    await bus.publish(
+        Message(
+            type="evidence.received",
+            data={
+                "evidence": {
+                    "device_id": "device-1",
+                    "area_id": "area-1",
+                    "timestamp": timestamp,
+                    "evidence_type": "recording",
+                    "file_path": source_path,
+                    "mime_type": "video/mp4",
+                    "episode_id": episode.id,
+                }
+            },
+        )
+    )
+
+    updated = await repo.get_episode(episode.id)
+    evidence = await repo.list_evidence(episode_id=episode.id)
+    assert updated.evidence_count == len(evidence) == 1
+    assert evidence[0].episode_id == episode.id
+    assert evidence[0].file_path.startswith(
+        os.path.join(config.data_dir, "episodes", episode.id, "recordings")
+    )
+    journal = os.path.join(config.data_dir, "episodes", episode.id, "journal.ndjson")
+    with open(journal, encoding="utf-8") as journal_file:
+        journal_types = [json.loads(line)["type"] for line in journal_file]
+    assert "evidence.added" in journal_types
 
 
 @pytest.mark.asyncio

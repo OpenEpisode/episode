@@ -115,6 +115,13 @@ def test_interprets_unlock_record_and_embedded_picture_without_claiming_success(
         "picture_transport": "binary",
         "picture_byte_size": len(picture),
         "picture_sha256": sha256(picture).hexdigest(),
+        "embedded_picture": {
+            "offset": 568,
+            "byte_size": len(picture),
+            "mime_type": "image/jpeg",
+            "filename": "door-unlock.jpg",
+            "sha256": sha256(picture).hexdigest(),
+        },
         "device_timestamp": "2026-08-05T15:47:05",
     }
 

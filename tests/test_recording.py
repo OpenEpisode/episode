@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from episode.config import EpisodeConfig
-from episode.domain.models import CapabilityConfig, Device, Episode, EpisodeState, EventState
+from episode.domain.models import Area, CapabilityConfig, Device, Episode, EpisodeState, EventState
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
 from episode.recording.engine import RecordingEngine
@@ -80,9 +80,15 @@ def _now():
     return datetime.now(tz=timezone.utc)
 
 
+async def _add_areas(repo: Repository, *area_ids: str) -> None:
+    for area_id in area_ids:
+        await repo.upsert_area(Area(id=area_id, name=area_id))
+
+
 @pytest.mark.asyncio
 async def test_recording_skips_non_video_device(repo, bus, config):
     await repo.initialize()
+    await _add_areas(repo, "area-1")
     device = Device(
         id="device-no-video",
         name="Door Contact",
@@ -127,6 +133,7 @@ async def test_recording_skips_non_video_device(repo, bus, config):
 @pytest.mark.asyncio
 async def test_recording_skips_video_device_without_url(repo, bus, config):
     await repo.initialize()
+    await _add_areas(repo, "area-1")
     device = Device(
         id="device-video-no-url",
         name="Camera without config",
@@ -169,6 +176,7 @@ async def test_recording_skips_video_device_without_url(repo, bus, config):
 @pytest.mark.asyncio
 async def test_non_video_event_starts_area_episode_recordings(repo, bus, config):
     await repo.initialize()
+    await _add_areas(repo, "area-1", "area-2")
     sensor = Device(
         id="ground-sensor",
         name="Ground sensor",
@@ -247,6 +255,7 @@ async def test_non_video_event_starts_area_episode_recordings(repo, bus, config)
 @pytest.mark.asyncio
 async def test_doorbell_and_area_camera_share_episode_recording_lifecycle(repo, bus, config):
     await repo.initialize()
+    await _add_areas(repo, "front-door")
     doorbell = _video_device("doorbell", "front-door", "on_event")
     camera = _video_device("camera-x", "front-door", "on_episode")
     await repo.upsert_device(doorbell)
@@ -425,6 +434,7 @@ async def test_completed_segments_are_published_while_latest_remains_active(
 @pytest.mark.asyncio
 async def test_failed_recording_does_not_retry_after_episode_closes(repo, bus, config, monkeypatch):
     await repo.initialize()
+    await _add_areas(repo, "garagem")
     episode = Episode(
         id="episode-1",
         primary_area_id="garagem",
@@ -512,6 +522,7 @@ async def test_timed_out_recording_probe_is_reaped(repo, bus, config, monkeypatc
 @pytest.mark.asyncio
 async def test_event_without_area_does_not_activate_all_cameras(repo, bus, config):
     await repo.initialize()
+    await _add_areas(repo, "area-1")
     await repo.upsert_device(_video_device("camera-x", "area-1", "on_episode"))
 
     engine = EpisodeEngine(repo, bus, timeout=config.episode_timeout)

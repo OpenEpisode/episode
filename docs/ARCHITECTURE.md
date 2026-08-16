@@ -102,10 +102,37 @@ derived notifications are interpreted. The application core sees only generic
 plugin services, raw deliveries, media registrations, inventory updates, and
 normalized observations.
 
+The plugin context exposes narrow typed services rather than concrete core
+implementations. Registration metadata is the authoritative catalog for a
+plugin's operational name, integration type, activation capability, validation,
+scope, and advertised capabilities. API and inventory projections consume that
+catalog instead of maintaining vendor-specific maps. Public plugin status is
+validated as JSON-safe data; a broken status implementation degrades only that
+plugin.
+
+Runtime resources are entered through one application lifecycle and released in
+reverse order. Shared transports stop accepting deliveries before plugin
+handlers, actions, the Episode engine, and storage are stopped. A failure in one
+cleanup is logged without preventing the remaining resources from closing.
+
+
 ## Persistence model
 
 SQLite is the operational index. It makes filtering and correlation efficient,
 but it is not the only way to understand an incident.
+
+SQLite runs in write-ahead-log (WAL) mode so API and engine reads can continue
+while connectors commit raw deliveries. Both connections use a bounded busy
+timeout for brief writer contention. The main operational connection enforces
+the canonical schema's foreign keys; the raw-delivery connection persists its
+receipt before the normalized Event or Evidence exists and links it afterwards.
+Raw-delivery transactions are serialized and always rolled back when interrupted,
+including task cancellation, so an abandoned connector task cannot retain the
+database write lock.
+
+Startup recovery also derives each Episode's Event and Evidence counters from
+the canonical rows before rebuilding portable manifests. Interrupted or older
+write paths therefore cannot leave collection summaries permanently stale.
 
 Area and Device inventory is persistent configuration stored in SQLite.
 `episode.json` remains responsible for system-wide services and action
@@ -187,6 +214,10 @@ identifier through receipt metadata without changing the Event API.
 - Incoming SOAP/XML and completed evidence are SHA-256 hashed.
 - Write permissions are removed when the filesystem supports it.
 - File moves are collision-safe and never intentionally overwrite evidence.
+- Episode association is committed before files are relocated, making an
+  interrupted operation recoverable.
+- Startup reconciles database paths, receipt links, and checksum-identical files
+  already moved into Episode folders, then rebuilds manifests.
 - Public APIs expose checksums and provenance, not internal absolute paths.
 - Overlays and future AI output belong in annotations or derived artifacts.
 
@@ -201,6 +232,11 @@ normalized observation only after the durable boundary. Device integrations own
 their protocol clients, discovery, connection supervision, validation, and
 interpretation; the application must not construct protocol-specific
 connectors.
+
+Device integrations may suppress repeated transport-level status heartbeats
+before submission when the integration is explicitly configured to ignore that
+Event type. The first observed state and every transition are still preserved;
+non-ignored Events always cross the raw-first boundary unchanged.
 
 New actions should consume canonical domain messages or target-resolution
 decisions. They must not subscribe directly to vendor-specific connector

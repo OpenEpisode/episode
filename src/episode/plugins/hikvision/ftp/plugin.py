@@ -11,7 +11,7 @@ from episode.ingestion.models import (
     IngressHandlerResult,
     StoredIngressEnvelope,
 )
-from episode.ingestion.router import IngressHandlerRegistration, IngressRouter
+from episode.ingestion.router import IngressHandlerRegistration
 from episode.plugins.models import PluginContext, PluginState, PluginStatus
 
 logger = logging.getLogger(__name__)
@@ -69,9 +69,7 @@ def parse_hikvision_filename(filename: str) -> dict[str, object]:
 
 class HikvisionFTPPlugin:
     def __init__(self, context: PluginContext):
-        self._router = (
-            context.ingress_router if isinstance(context.ingress_router, IngressRouter) else None
-        )
+        self._router = context.ingress_router
         self._devices_by_ip = {
             str(device.get("ip_address")): device
             for device in context.configured_devices

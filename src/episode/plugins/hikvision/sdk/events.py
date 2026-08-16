@@ -176,7 +176,15 @@ def _interpret_unlock_record(
         "picture_byte_size": picture_length,
     }
     if picture:
-        metadata["picture_sha256"] = sha256(picture).hexdigest()
+        picture_sha256 = sha256(picture).hexdigest()
+        metadata["picture_sha256"] = picture_sha256
+        metadata["embedded_picture"] = {
+            "offset": declared_size,
+            "byte_size": picture_length,
+            "mime_type": "image/jpeg",
+            "filename": "door-unlock.jpg",
+            "sha256": picture_sha256,
+        }
     if device_timestamp:
         metadata["device_timestamp"] = device_timestamp.isoformat()
 

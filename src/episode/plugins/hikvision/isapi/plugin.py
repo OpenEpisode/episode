@@ -10,7 +10,7 @@ from episode.ingestion.models import (
     IngressHandlerResult,
     StoredIngressEnvelope,
 )
-from episode.ingestion.router import IngressHandlerRegistration, IngressRouter
+from episode.ingestion.router import IngressHandlerRegistration
 from episode.plugins.hikvision.isapi.runtime import ISAPIDeviceConnection, device_config
 from episode.plugins.hikvision.xml_events import HikvisionEvent
 from episode.plugins.models import (
@@ -39,9 +39,7 @@ def _configured_devices(devices: tuple[Mapping[str, object], ...]) -> list[Mappi
 
 class HikvisionISAPIPlugin:
     def __init__(self, context: PluginContext, *, connection_factory=ISAPIDeviceConnection):
-        self._router = (
-            context.ingress_router if isinstance(context.ingress_router, IngressRouter) else None
-        )
+        self._router = context.ingress_router
         self._delivery_sink = context.raw_delivery_sink
         self._configured_devices = _configured_devices(context.configured_devices)
         self._connection_factory = connection_factory

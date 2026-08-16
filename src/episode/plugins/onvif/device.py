@@ -10,12 +10,13 @@ from time import monotonic
 import httpx
 
 from episode.domain.models import CapabilityConfig, Device
-from episode.media.registry import CameraMedia, MediaRegistry
+from episode.media.registry import CameraMedia
 from episode.plugins.models import (
     PluginDeviceInfo,
     PluginDeviceUpdateSink,
     PluginInstanceState,
     PluginInstanceStatus,
+    PluginMediaRegistry,
     RawPluginDelivery,
     RawPluginDeliverySink,
 )
@@ -62,7 +63,7 @@ class ONVIFDeviceConnection:
         self,
         config: ONVIFDeviceConfig,
         delivery_sink: RawPluginDeliverySink,
-        media: MediaRegistry,
+        media: PluginMediaRegistry,
         device_update_sink: PluginDeviceUpdateSink,
         *,
         client_factory: ClientFactory = _default_client_factory,

@@ -5,7 +5,13 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
+
+from episode.domain.models import Device
+
+if TYPE_CHECKING:
+    from episode.ingestion.router import IngressHandlerRegistration
+    from episode.media.registry import CameraMedia
 
 
 class PluginState(StrEnum):
@@ -87,7 +93,25 @@ class RawPluginDelivery:
 
 
 RawPluginDeliverySink = Callable[[RawPluginDelivery], Awaitable[None]]
-PluginDeviceUpdateSink = Callable[[object], Awaitable[None]]
+PluginDeviceUpdateSink = Callable[[Device], Awaitable[Device]]
+
+
+class PluginIngressRouter(Protocol):
+    """Narrow ingress service exposed to plugins."""
+
+    def register(self, registration: IngressHandlerRegistration) -> None: ...
+
+    def unregister(self, handler_id: str) -> None: ...
+
+    def status(self, handler_id: str) -> Mapping[str, object] | None: ...
+
+
+class PluginMediaRegistry(Protocol):
+    """Narrow media discovery service exposed to plugins."""
+
+    def register(self, source: CameraMedia) -> None: ...
+
+    def get(self, device_id: str) -> CameraMedia | None: ...
 
 
 @dataclass(frozen=True)
@@ -95,8 +119,8 @@ class PluginContext:
     plugins_dir: Path
     configured_devices: tuple[Mapping[str, object], ...] = ()
     raw_delivery_sink: RawPluginDeliverySink | None = None
-    ingress_router: object | None = None
-    media_registry: object | None = None
+    ingress_router: PluginIngressRouter | None = None
+    media_registry: PluginMediaRegistry | None = None
     device_update_sink: PluginDeviceUpdateSink | None = None
 
 
@@ -113,6 +137,16 @@ PluginDeviceValidator = Callable[[object, str, float], Awaitable[Mapping[str, ob
 
 
 @dataclass(frozen=True)
+class PluginIntegration:
+    """Operational metadata consumed by the core without loading plugin code."""
+
+    type: str
+    name: str
+    device_scoped: bool = False
+    capabilities: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class PluginRegistration:
     id: str
     name: str
@@ -122,6 +156,7 @@ class PluginRegistration:
     activation_connector_type: str = ""
     validation_capability: str = ""
     validator: PluginDeviceValidator | None = None
+    integration: PluginIntegration | None = None
 
     def validating_status(self) -> PluginStatus:
         return PluginStatus(

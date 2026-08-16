@@ -38,6 +38,13 @@ def _operations() -> OperationalView:
             "name": "ONVIF",
             "kind": "device-integration",
             "state": "ready",
+            "integration": {
+                "type": "onvif",
+                "name": "ONVIF",
+                "device_scoped": True,
+                "activation_capability": "onvif",
+                "capabilities": ["discovery", "media"],
+            },
             "instances": [
                 {
                     "id": "gate-camera",
@@ -76,6 +83,13 @@ def _operations() -> OperationalView:
             "name": "Hikvision HCNetSDK",
             "kind": "native-sdk",
             "state": "ready",
+            "integration": {
+                "type": "hikvision_sdk",
+                "name": "Hikvision HCNetSDK",
+                "device_scoped": True,
+                "activation_capability": "hikvision_sdk",
+                "capabilities": ["events", "device-information"],
+            },
             "version": "6.1.9.48",
             "architecture": "amd64",
             "metrics": {"deliveries": 3, "failures": 0},
@@ -237,6 +251,17 @@ async def test_episode_api_projects_the_first_active_event_as_its_trigger(tmp_pa
     await repository.initialize()
     started = datetime(2026, 8, 12, 10, 0, tzinfo=timezone.utc)
     try:
+        for area_id in ("front", "garden", "garage"):
+            await repository.upsert_area(Area(id=area_id, name=area_id))
+        for device_id, area_id in (
+            ("doorbell", "front"),
+            ("camera-front", "front"),
+            ("camera-garden", "garden"),
+            ("operator", "garage"),
+        ):
+            await repository.upsert_device(
+                Device(id=device_id, name=device_id, device_type="camera", area_id=area_id)
+            )
         doorbell_episode = Episode(
             id="doorbell-episode",
             primary_area_id="front",
@@ -267,7 +292,7 @@ async def test_episode_api_projects_the_first_active_event_as_its_trigger(tmp_pa
         )
         await repository.create_event(
             Event(
-                device_id="camera",
+                device_id="camera-front",
                 area_id="front",
                 timestamp=started + timedelta(seconds=2),
                 event_type="human_detection",
@@ -277,7 +302,7 @@ async def test_episode_api_projects_the_first_active_event_as_its_trigger(tmp_pa
         )
         await repository.create_event(
             Event(
-                device_id="camera",
+                device_id="camera-garden",
                 area_id="garden",
                 timestamp=started + timedelta(minutes=1),
                 event_type="vehicle_detection",

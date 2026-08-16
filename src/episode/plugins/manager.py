@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from datetime import datetime
+from enum import Enum
 
 from episode.plugins.models import (
     ManagedPlugin,
@@ -13,6 +15,22 @@ from episode.plugins.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _json_safe(value: object) -> object:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Enum):
+        return value.value
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("Plugin status mappings must use string keys")
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_safe(item) for item in value]
+    raise TypeError(f"Plugin status contains unsupported {value.__class__.__name__}")
 
 
 class PluginManager:
@@ -44,10 +62,36 @@ class PluginManager:
 
     def statuses(self) -> list[dict]:
         for registration, plugin in self._plugins:
-            status = plugin.status()
-            self._validate_status(registration, status)
-            self._statuses[registration.id] = status
-        return [self._statuses[registration.id].public() for registration in self._registrations]
+            try:
+                status = plugin.status()
+                self._validate_status(registration, status)
+                self._statuses[registration.id] = status
+            except Exception:
+                logger.exception("Plugin %s failed while reporting status", registration.id)
+                self._statuses[registration.id] = PluginStatus(
+                    id=registration.id,
+                    name=registration.name,
+                    kind=registration.kind,
+                    state=PluginState.FAILED,
+                    error="Plugin status is unavailable. See the Episode log for details.",
+                )
+        results = []
+        for registration in self._registrations:
+            try:
+                result = self._public_status(registration, self._statuses[registration.id])
+            except Exception:
+                logger.exception("Plugin %s returned an invalid public status", registration.id)
+                failed = PluginStatus(
+                    id=registration.id,
+                    name=registration.name,
+                    kind=registration.kind,
+                    state=PluginState.FAILED,
+                    error="Plugin status is unavailable. See the Episode log for details.",
+                )
+                self._statuses[registration.id] = failed
+                result = self._public_status(registration, failed)
+            results.append(result)
+        return results
 
     async def start(self) -> None:
         if self._started:
@@ -113,3 +157,22 @@ class PluginManager:
             )
         if status.name != registration.name or status.kind != registration.kind:
             raise ValueError(f"Plugin {registration.id!r} returned inconsistent metadata")
+
+    @staticmethod
+    def _public_status(
+        registration: PluginRegistration,
+        status: PluginStatus,
+    ) -> dict:
+        result = status.public()
+        if registration.integration:
+            result["integration"] = {
+                "type": registration.integration.type,
+                "name": registration.integration.name,
+                "device_scoped": registration.integration.device_scoped,
+                "activation_capability": registration.activation_capability,
+                "capabilities": list(registration.integration.capabilities),
+            }
+        public = _json_safe(result)
+        if not isinstance(public, dict):
+            raise TypeError("Plugin status must be a mapping")
+        return public

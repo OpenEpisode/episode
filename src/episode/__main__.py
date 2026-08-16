@@ -13,6 +13,7 @@ from episode.actions.snapshot import SnapshotEngine
 from episode.api.routes import create_api
 from episode.api.runtime import OperationalView
 from episode.config import EpisodeConfig, load_config
+from episode.connectors.base import ManagedConnector
 from episode.connectors.ftp import FTPConnector
 from episode.connectors.http_ingress import HTTPIngressConnector
 from episode.engine.bus import EventBus
@@ -20,6 +21,7 @@ from episode.engine.engine import EpisodeEngine
 from episode.ingestion.router import IngressRouter
 from episode.ingestion.service import IngestionService
 from episode.inventory import DeviceValidationService, InventoryService
+from episode.lifecycle import Lifecycle
 from episode.media import MediaRegistry
 from episode.media.timelapse import TimelapseService
 from episode.plugins import PluginContext, PluginManager, builtin_plugin_registry
@@ -34,6 +36,7 @@ logger = logging.getLogger(__name__)
 class Application:
     def __init__(self, config: EpisodeConfig):
         self._config = config
+        self._lifecycle = Lifecycle()
         self._bus = EventBus()
         self._repo = Repository(config)
         self._engine = EpisodeEngine(self._repo, self._bus, config.episode_timeout)
@@ -77,7 +80,7 @@ class Application:
             ),
         )
         self._inventory = InventoryService(self._repo)
-        self._connectors = []
+        self._connectors: list[ManagedConnector] = []
         self._operations = OperationalView(
             version=__version__,
             engine_status=self._engine.status,
@@ -93,6 +96,7 @@ class Application:
                 "integrations"
             ],
             integration_validators=self._plugin_registry.validators(),
+            integration_registrations=self._plugin_registry.device_integrations(),
         )
         self._fastapi_app = create_api(
             self._repo,
@@ -116,7 +120,11 @@ class Application:
         logging.getLogger("pyftpdlib").setLevel(logging.WARNING)
 
         logger.info("Initializing storage...")
-        await self._repo.initialize()
+        await self._lifecycle.start(
+            "Storage",
+            self._repo.initialize,
+            self._repo.close,
+        )
 
         logger.info("Loading persistent Area and Device inventory...")
         imported = await self._inventory.bootstrap(
@@ -148,22 +156,42 @@ class Application:
         )
 
         logger.info("Starting Episode Engine...")
-        await self._engine.start()
+        await self._lifecycle.start(
+            "Episode Engine",
+            self._engine.start,
+            self._engine.stop,
+        )
 
         logger.info("Starting media services...")
-        await self._timelapses.start()
+        await self._lifecycle.start(
+            "Timelapse service",
+            self._timelapses.start,
+            self._timelapses.stop,
+        )
 
         logger.info("Starting Recording Engine...")
-        await self._recorder.start()
+        await self._lifecycle.start(
+            "Recording Engine",
+            self._recorder.start,
+            self._recorder.stop,
+        )
 
         if self._config.actions.snapshot.enabled:
             logger.info("Starting Snapshot Engine...")
-            await self._snapshotter.start()
+            await self._lifecycle.start(
+                "Snapshot Engine",
+                self._snapshotter.start,
+                self._snapshotter.stop,
+            )
         else:
             logger.info("Snapshot action disabled by policy")
 
         logger.info("Starting configured plugins...")
-        await self._plugins.start()
+        await self._lifecycle.start(
+            "Plugin manager",
+            self._plugins.start,
+            self._plugins.stop,
+        )
 
         logger.info("Starting connectors...")
 
@@ -176,7 +204,11 @@ class Application:
                 if isinstance(conn, HTTPIngressConnector):
                     conn.mount(self._fastapi_app)
                 self._connectors.append(conn)
-                await conn.start()
+                await self._lifecycle.start(
+                    f"Connector {conn.name}",
+                    conn.start,
+                    conn.stop,
+                )
 
         self._inventory.mark_runtime_current()
 
@@ -202,14 +234,7 @@ class Application:
 
     async def shutdown(self):
         logger.info("Shutting down...")
-        await self._plugins.stop()
-        for conn in self._connectors:
-            await conn.stop()
-        await self._timelapses.stop()
-        await self._snapshotter.stop()
-        await self._recorder.stop()
-        await self._engine.stop()
-        await self._repo.close()
+        await self._lifecycle.shutdown()
 
     def _build_connector(self, cfg):
         t = cfg.type

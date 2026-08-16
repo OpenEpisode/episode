@@ -160,6 +160,12 @@ class EpisodeEngine:
     async def ingest_evidence(
         self, evidence: Evidence, *, receipt: IngestionReceipt | None = None
     ) -> Evidence:
+        target_episode_id = evidence.episode_id
+        # Linking owns the Episode counter, portable file move, journal, and
+        # manifest update. Store preset recording Evidence as unlinked first so
+        # it follows the same idempotent path as correlated snapshots.
+        if target_episode_id:
+            evidence.episode_id = None
         await self._repo.create_evidence(evidence)
         if receipt:
             await self._repo.link_ingestion_receipt(
@@ -169,13 +175,14 @@ class EpisodeEngine:
         logger.info(
             "Persisted evidence %s (no event yet, episode_id=%s)", evidence.id, evidence.episode_id
         )
-        if evidence.episode_id:
+        if target_episode_id:
             logger.debug(
                 "Evidence %s has pre-set episode_id=%s, linking directly",
                 evidence.id,
-                evidence.episode_id,
+                target_episode_id,
             )
-            await self._repo.add_evidence_to_episode(evidence.id, evidence.episode_id)
+            await self._repo.add_evidence_to_episode(evidence.id, target_episode_id)
+            evidence.episode_id = target_episode_id
         else:
             logger.debug("Evidence %s has no episode_id, attempting orphan match", evidence.id)
             await self._match_orphan_evidence(evidence)

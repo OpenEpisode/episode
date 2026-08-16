@@ -23,12 +23,25 @@ from episode.plugins.hikvision.isapi.runtime import (
     ISAPIEventStreamDecoder,
     device_config,
 )
+from episode.plugins.hikvision.xml_events import HikvisionEvent
 from episode.plugins.models import PluginContext, PluginInstanceState, RawPluginDelivery
 from episode.storage.repository import Repository
 
 
 def _xml() -> bytes:
     return (Path(__file__).parent / "fixtures/hikvision/alarm_event.xml").read_bytes()
+
+
+def _video_loss_xml(state: str) -> bytes:
+    return f"""<EventNotificationAlert version="2.0"
+      xmlns="http://www.hikvision.com/ver20/XMLSchema">
+      <ipAddress>192.0.2.10</ipAddress>
+      <channelID>1</channelID>
+      <dateTime>2026-08-14T10:41:18+01:00</dateTime>
+      <eventType>videoloss</eventType>
+      <eventState>{state}</eventState>
+      <channelName>Gate camera</channelName>
+    </EventNotificationAlert>""".encode()
 
 
 def _configured_device(**overrides):
@@ -274,6 +287,68 @@ async def test_device_connection_preserves_fragmented_stream_and_stops_cleanly()
 
     await connection.stop()
     assert connection.status().state == PluginInstanceState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_device_connection_preserves_ignored_state_transitions_not_heartbeats():
+    deliveries = []
+    notifications = [
+        _video_loss_xml("inactive"),
+        _video_loss_xml("inactive"),
+        _video_loss_xml("active"),
+        _video_loss_xml("active"),
+        _video_loss_xml("inactive"),
+    ]
+
+    async def sink(delivery):
+        deliveries.append(delivery)
+
+    def client_factory(auth):
+        async def handler(request):
+            return httpx.Response(
+                200,
+                stream=_HangingStream([b"\r\n".join(notifications)]),
+            )
+
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            auth=auth,
+            timeout=None,
+        )
+
+    connection = ISAPIDeviceConnection(
+        ISAPIDeviceConfig(
+            id="gate-camera",
+            name="Gate camera",
+            area_id="gate",
+            address="192.0.2.10",
+            username="admin",
+            password="secret",
+            ignore_events=("videoloss",),
+        ),
+        sink,
+        client_factory=client_factory,
+        reconnect_delay=0.01,
+    )
+
+    await connection.start()
+    for _attempt in range(100):
+        if connection.status().messages_received == len(notifications):
+            break
+        await asyncio.sleep(0.01)
+
+    assert [HikvisionEvent.from_bytes(item.payload).event_state.value for item in deliveries] == [
+        "inactive",
+        "active",
+        "inactive",
+    ]
+    assert connection.status().messages_received == 5
+    assert connection.status().details == {
+        "deliveries_preserved": 3,
+        "deliveries_suppressed": 2,
+    }
+
+    await connection.stop()
 
 
 @pytest.mark.asyncio

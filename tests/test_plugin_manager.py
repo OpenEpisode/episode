@@ -162,6 +162,7 @@ def test_device_capability_configures_plugin_without_importing_it(tmp_path, monk
 
     assert application._plugins.statuses()[0]["id"] == "hikvision-sdk"
     assert application._plugins.statuses()[0]["state"] == PluginState.VALIDATING
+    assert application._plugins.statuses()[0]["integration"]["type"] == "hikvision_sdk"
     assert imported == []
 
 
@@ -198,6 +199,43 @@ async def test_plugin_startup_failure_does_not_block_other_plugins(tmp_path):
     assert statuses[0]["error"] == "Plugin startup failed. See the Episode log for details."
     assert statuses[1]["state"] == PluginState.READY
     assert events == ["load:healthy", "start:healthy"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_status_failure_is_isolated_from_other_plugins(tmp_path):
+    events: list[str] = []
+
+    class UnstablePlugin(FakePlugin):
+        def __init__(self):
+            super().__init__("unstable", "Unstable", "test", events)
+            self._status_calls = 0
+
+        def status(self) -> PluginStatus:
+            self._status_calls += 1
+            if self._status_calls > 1:
+                raise RuntimeError("status failed")
+            return super().status()
+
+    unstable = PluginRegistration(
+        "unstable",
+        "Unstable",
+        "test",
+        "unstable",
+        lambda _context: UnstablePlugin(),
+    )
+    healthy = _registration("healthy", "healthy", events)
+    manager = PluginManager([unstable, healthy], PluginContext(tmp_path))
+
+    await manager.start()
+    statuses = manager.statuses()
+    await manager.stop()
+
+    assert statuses[0]["state"] == PluginState.FAILED
+    assert statuses[0]["error"] == (
+        "Plugin status is unavailable. See the Episode log for details."
+    )
+    assert statuses[1]["state"] == PluginState.READY
+    assert "stop:healthy" in events
 
 
 @pytest.mark.asyncio
@@ -263,3 +301,34 @@ async def test_cancelled_generic_probe_cleans_up_worker():
     await runner.stop()
 
     assert runner._process is None
+
+
+@pytest.mark.asyncio
+async def test_invalid_public_status_is_replaced_with_failure(tmp_path):
+    events: list[str] = []
+
+    class InvalidStatusPlugin(FakePlugin):
+        def status(self) -> PluginStatus:
+            return PluginStatus(
+                "invalid",
+                "Invalid",
+                "test",
+                PluginState.READY,
+                metrics={"unsupported": object()},
+            )
+
+    registration = PluginRegistration(
+        "invalid",
+        "Invalid",
+        "test",
+        "invalid",
+        lambda _context: InvalidStatusPlugin("invalid", "Invalid", "test", events),
+    )
+    manager = PluginManager([registration], PluginContext(tmp_path))
+
+    await manager.start()
+    status = manager.statuses()[0]
+    await manager.stop()
+
+    assert status["state"] == PluginState.FAILED
+    assert status["metrics"] == {}

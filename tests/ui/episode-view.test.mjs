@@ -52,6 +52,20 @@ test("renders a media-first timeline with all Doorbell states and snapshots", ()
       metadata: { phase: "dismissed" },
     },
     {
+      id: "unlock",
+      timestamp: "2026-08-10T12:08:58Z",
+      device_id: "doorbell",
+      event_type: "door_access",
+      event_state: "active",
+      sources: ["hikvision:sdk"],
+      metadata: {
+        sdk_event_name: "unlock_record",
+        lock_name: "Door1",
+        unlock_method: "householder",
+        unlock_outcome: "not_reported_by_device",
+      },
+    },
+    {
       id: "human",
       timestamp: "2026-08-10T12:09:11Z",
       device_id: "camera",
@@ -100,6 +114,10 @@ test("renders a media-first timeline with all Doorbell states and snapshots", ()
   assert.match(html, /doorbell · 16s/);
   assert.match(html, /Human detected/);
   assert.match(html, /Doorbell call ended/);
+  assert.match(html, /Door unlock record/);
+  assert.match(html, /Door1 · Householder/);
+  assert.match(html, /Lock: Door1/);
+  assert.match(html, /Method: Householder/);
   assert.equal((html.match(/<strong>Snapshot<\/strong>/g) || []).length, 2);
   assert.match(html, /Linked to Human detected/);
   assert.match(html, /Uncorrelated evidence/);

@@ -10,7 +10,7 @@ import pytest
 
 from episode.actions.snapshot import SnapshotEngine
 from episode.config import EpisodeConfig
-from episode.domain.models import EventState
+from episode.domain.models import Area, Device, EventState
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
 from episode.media import CameraMedia, MediaRegistry
@@ -104,6 +104,10 @@ async def test_snapshot_action_preserves_downloaded_bytes_as_episode_evidence():
     episode_engine = EpisodeEngine(repo, bus, timeout=10)
     snapshot_engine = SnapshotEngine(bus, media, config)
     await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(id="camera-1", name="Camera 1", device_type="camera", area_id="entrance")
+    )
     await episode_engine.start()
     await snapshot_engine.start()
 

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from episode.config import EpisodeConfig
-from episode.domain.models import EventState
+from episode.domain.models import Area, Device, EventState
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
 from episode.plugins.onvif.events import ONVIFNotification, ONVIFStateTracker
@@ -78,6 +78,10 @@ async def test_inactive_event_attaches_without_extending_episode(tmp_path):
     bus = EventBus()
     engine = EpisodeEngine(repo, bus, timeout=30)
     await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(id="camera-1", name="Camera 1", device_type="camera", area_id="entrance")
+    )
     await engine.start()
     try:
         timestamp = datetime.now(timezone.utc)
@@ -139,6 +143,10 @@ async def test_inactive_event_does_not_open_episode(tmp_path):
     bus = EventBus()
     engine = EpisodeEngine(repo, bus, timeout=30)
     await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(id="camera-1", name="Camera 1", device_type="camera", area_id="entrance")
+    )
     await engine.start()
     try:
         await bus.publish(

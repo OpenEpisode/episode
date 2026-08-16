@@ -1,5 +1,5 @@
 import { API } from "./api.js?v=2";
-import { $, $$ } from "./dom.js";
+import { $, $$, escHtml } from "./dom.js";
 import { fmtDuration, fmtTime, titleCase, trunc } from "./format.js?v=3";
 import {
   buildEpisodeTimeline,
@@ -64,10 +64,12 @@ function eventMarkerClass(entry) {
 }
 
 function eventContext(event) {
-  if (event.event_type === "door_access" && event.metadata?.unlock_method) {
-    return titleCase(event.metadata.unlock_method);
-  }
-  return "";
+  if (event.event_type !== "door_access") return "";
+  const lockName = String(event.metadata?.lock_name || "").trim();
+  const unlockMethod = event.metadata?.unlock_method
+    ? titleCase(event.metadata.unlock_method)
+    : "";
+  return [lockName, unlockMethod].filter(Boolean).join(" · ");
 }
 
 function renderTimelineEvent(entry) {
@@ -75,6 +77,10 @@ function renderTimelineEvent(entry) {
     ? ` · ${secondsLabel(entry.end - entry.start)}`
     : "";
   const context = eventContext(entry.event);
+  const lockName = String(entry.event.metadata?.lock_name || "").trim();
+  const unlockMethod = entry.event.metadata?.unlock_method
+    ? titleCase(entry.event.metadata.unlock_method)
+    : "";
   return `<div class="timeline-entry timeline-entry-${eventMarkerClass(entry)}"
       data-timeline-id="${entry.id}">
     <time datetime="${new Date(entry.start).toISOString()}">${fmtTime(entry.start)}</time>
@@ -82,11 +88,13 @@ function renderTimelineEvent(entry) {
     <div class="timeline-entry-content">
       <button type="button" class="timeline-moment" data-moment-id="${entry.id}">
         <strong>${entry.title}</strong>
-        <span>${trunc(entry.deviceId || "Unknown Device", 28)}${duration}${context ? ` · ${context}` : ""}</span>
+        <span>${trunc(entry.deviceId || "Unknown Device", 28)}${duration}${context ? ` · ${escHtml(context)}` : ""}</span>
       </button>
       <details class="timeline-details">
         <summary>Details</summary>
         <div>${titleCase(entry.event.event_state)} · ${eventSources(entry.event)}</div>
+        ${lockName ? `<div>Lock: ${escHtml(lockName)}</div>` : ""}
+        ${unlockMethod ? `<div>Method: ${escHtml(unlockMethod)}</div>` : ""}
         ${entry.event.metadata?.unlock_outcome ? `<div>Outcome: ${titleCase(entry.event.metadata.unlock_outcome)}</div>` : ""}
         <a href="#event/${entry.event.id}">Open Event</a>
       </details>

@@ -9,6 +9,7 @@ from urllib.parse import urlunsplit
 
 import httpx
 
+from episode.plugins.hikvision.xml_events import HikvisionEvent
 from episode.plugins.models import (
     PluginInstanceState,
     PluginInstanceStatus,
@@ -109,6 +110,7 @@ class ISAPIDeviceConnection:
         self._client: httpx.AsyncClient | None = None
         self._task: asyncio.Task | None = None
         self._running = False
+        self._ignored_states: dict[tuple[str, str], str] = {}
         self._status = PluginInstanceStatus(
             id=config.id,
             name=config.name,
@@ -184,6 +186,9 @@ class ISAPIDeviceConnection:
 
     async def _preserve(self, payload: bytes) -> None:
         received_at = datetime.now(tz=timezone.utc)
+        if self._is_repeated_ignored_state(payload):
+            self._record_delivery(received_at, suppressed=True)
+            return
         await self._delivery_sink(
             RawPluginDelivery(
                 plugin_id="hikvision-isapi",
@@ -200,11 +205,31 @@ class ISAPIDeviceConnection:
                 },
             )
         )
+        self._record_delivery(received_at, suppressed=False)
+
+    def _is_repeated_ignored_state(self, payload: bytes) -> bool:
+        parsed = HikvisionEvent.from_bytes(payload)
+        if parsed is None:
+            return False
+        ignored = {name.strip().lower() for name in self.config.ignore_events}
+        if not {parsed.event_type.lower(), parsed.vendor_event_type.lower()} & ignored:
+            return False
+        key = (parsed.vendor_event_type.lower(), parsed.channel_name.lower())
+        state = parsed.event_state.value
+        repeated = self._ignored_states.get(key) == state
+        self._ignored_states[key] = state
+        return repeated
+
+    def _record_delivery(self, received_at: datetime, *, suppressed: bool) -> None:
+        details = dict(self._status.details)
+        metric = "deliveries_suppressed" if suppressed else "deliveries_preserved"
+        details[metric] = int(details.get(metric, 0)) + 1
         self._status = replace(
             self._status,
             messages_received=self._status.messages_received + 1,
             last_message_at=received_at,
             error=None,
+            details=details,
         )
 
     def _set_reconnecting(self, error: str) -> None:

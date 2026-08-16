@@ -8,8 +8,8 @@ from typing import Any
 import httpx
 
 from episode.domain.models import Device
+from episode.plugins.models import PluginRegistration
 
-_INTEGRATIONS = ("onvif", "isapi", "hikvision_sdk")
 IntegrationValidator = Callable[[Device, str, float], Awaitable[Mapping[str, Any]]]
 
 
@@ -21,67 +21,87 @@ class DeviceValidationService:
         *,
         runtime_integrations: Callable[[Device], Sequence[Mapping[str, Any]]] = lambda _device: (),
         integration_validators: Mapping[str, IntegrationValidator] | None = None,
+        integration_registrations: Sequence[PluginRegistration] = (),
         timeout: float = 10,
     ) -> None:
         self._runtime_integrations = runtime_integrations
         self._integration_validators = dict(integration_validators or {})
+        self._integration_registrations = tuple(
+            registration
+            for registration in integration_registrations
+            if registration.validation_capability and registration.integration
+        )
         self._timeout = timeout
+
+    @property
+    def integration_types(self) -> tuple[str, ...]:
+        return tuple(
+            registration.integration.type
+            for registration in self._integration_registrations
+            if registration.integration
+        )
 
     async def validate(self, device: Device) -> dict[str, dict[str, Any]]:
         checked_at = datetime.now(timezone.utc).isoformat()
-        onvif, isapi = await asyncio.gather(
-            self._validate_plugin_integration("onvif", device, checked_at),
-            self._validate_plugin_integration("isapi", device, checked_at),
+        results = await asyncio.gather(
+            *(
+                self._validate_integration(registration, device, checked_at)
+                for registration in self._integration_registrations
+            )
         )
-        sdk = self._sdk_support(device, checked_at)
-        return {"onvif": onvif, "isapi": isapi, "hikvision_sdk": sdk}
+        return dict(zip(self.integration_types, results, strict=True))
 
-    async def _validate_plugin_integration(
+    async def _validate_integration(
         self,
-        integration: str,
+        registration: PluginRegistration,
         device: Device,
         checked_at: str,
     ) -> dict[str, Any]:
+        integration = registration.validation_capability
         validator = self._integration_validators.get(integration)
         if validator is None:
-            return self._result(
-                "not_validated",
-                f"No validation probe is registered for {integration}",
-                checked_at,
-            )
+            return self._runtime_support(registration, device, checked_at)
         try:
             result = await validator(device, checked_at, self._timeout)
             return dict(result)
         except Exception as error:
             return self._failure(error, integration.upper(), checked_at)
 
-    def _sdk_support(self, device: Device, checked_at: str) -> dict[str, Any]:
+    def _runtime_support(
+        self,
+        registration: PluginRegistration,
+        device: Device,
+        checked_at: str,
+    ) -> dict[str, Any]:
+        metadata = registration.integration
+        if metadata is None:
+            raise RuntimeError(f"Plugin {registration.id} has no integration metadata")
         integration = next(
             (
                 item
                 for item in self._runtime_integrations(device)
-                if item.get("type") == "hikvision_sdk"
+                if item.get("type") == metadata.type
             ),
             None,
         )
         if integration and integration.get("state") == "healthy":
             return self._result(
                 "supported",
-                "HCNetSDK worker is connected",
+                f"{metadata.name} is connected",
                 checked_at,
-                capabilities=["events", "device-information"],
+                capabilities=list(metadata.capabilities),
             )
         if integration:
             return self._result(
                 "unavailable",
-                str(integration.get("summary") or "HCNetSDK is configured but unavailable"),
+                str(integration.get("summary") or f"{metadata.name} is unavailable"),
                 checked_at,
             )
         return self._result(
             "not_validated",
             (
-                "HCNetSDK device login is not probed automatically; "
-                "enable it explicitly and restart to validate"
+                f"{metadata.name} is not probed automatically; enable it "
+                "explicitly and restart to validate"
             ),
             checked_at,
         )
@@ -147,7 +167,7 @@ def stored_support(device: Device) -> dict[str, dict[str, Any]]:
     if not isinstance(value, dict):
         return {}
     return {
-        integration: dict(result)
+        str(integration): dict(result)
         for integration, result in value.items()
-        if integration in _INTEGRATIONS and isinstance(result, dict)
+        if isinstance(integration, str) and isinstance(result, dict)
     }

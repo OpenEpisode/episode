@@ -6,7 +6,7 @@ import os
 from dataclasses import asdict
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from episode import __version__
 from episode.api.inventory import (
@@ -83,6 +83,67 @@ def _event_annotations(event) -> tuple[dict[str, float] | None, str | None]:
         bounding_box if isinstance(bounding_box, dict) else None,
         target_type if isinstance(target_type, str) else None,
     )
+
+
+def _event_embedded_picture(event) -> dict[str, object] | None:
+    metadata = event.get("metadata", {}) if isinstance(event, dict) else event.metadata
+    if not isinstance(metadata, dict):
+        return None
+
+    descriptor = metadata.get("embedded_picture")
+    if isinstance(descriptor, dict):
+        picture = dict(descriptor)
+    elif metadata.get("picture_transport") == "binary":
+        # Compatibility for unlock Events captured before the explicit descriptor existed.
+        picture = {
+            "offset": metadata.get("structure_size"),
+            "byte_size": metadata.get("picture_byte_size"),
+            "mime_type": "image/jpeg",
+            "filename": "door-unlock.jpg",
+            "sha256": metadata.get("picture_sha256"),
+        }
+    else:
+        return None
+
+    offset = picture.get("offset")
+    byte_size = picture.get("byte_size")
+    mime_type = picture.get("mime_type")
+    if (
+        isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset < 0
+        or isinstance(byte_size, bool)
+        or not isinstance(byte_size, int)
+        or byte_size <= 0
+        or not isinstance(mime_type, str)
+        or not mime_type.startswith("image/")
+    ):
+        return None
+
+    supplied_name = os.path.basename(str(picture.get("filename") or "event-picture.jpg"))
+    filename = (
+        "".join(
+            character
+            if character.isascii() and (character.isalnum() or character in ".-_")
+            else "_"
+            for character in supplied_name
+        ).strip("._")
+        or "event-picture.jpg"
+    )
+    checksum = picture.get("sha256")
+    if not (
+        isinstance(checksum, str)
+        and len(checksum) == 64
+        and all(character in "0123456789abcdefABCDEF" for character in checksum)
+    ):
+        checksum = None
+    return {
+        "offset": offset,
+        "byte_size": byte_size,
+        "mime_type": mime_type,
+        "filename": filename,
+        "sha256": checksum,
+    }
 
 
 def _episode_trigger_type(event_type: str | None) -> str | None:
@@ -291,10 +352,17 @@ def create_api(
                 },
             }
         support = stored_support(device)
-        for integration in result.get("integrations", []):
+        device_integrations = [
+            integration
+            for integration in result.get("integrations", [])
+            if integration.get("kind") == "device"
+        ]
+        integration_types = set(validator.integration_types if validator else ())
+        integration_types.update(integration.get("type") for integration in device_integrations)
+        integration_types.discard(None)
+
+        for integration in device_integrations:
             integration_type = integration.get("type")
-            if integration_type not in {"onvif", "isapi", "hikvision_sdk"}:
-                continue
             if integration.get("state") == "healthy":
                 previous = support.get(integration_type, {})
                 support[integration_type] = {
@@ -312,7 +380,7 @@ def create_api(
                     "capabilities": [],
                     "details": {},
                 }
-        for integration_type in ("onvif", "isapi", "hikvision_sdk"):
+        for integration_type in sorted(integration_types):
             support.setdefault(
                 integration_type,
                 {
@@ -528,6 +596,42 @@ def create_api(
             event.raw_payload_path,
             media_type=media_type,
             filename=os.path.basename(event.raw_payload_path),
+        )
+
+    @app.get("/api/v1/events/{event_id}/picture")
+    async def event_picture(event_id: str):
+        event = await repo.get_event(event_id)
+        if not event:
+            raise HTTPException(404, "Event not found")
+        picture = _event_embedded_picture(event)
+        raw_path = event.raw_payload_path
+        if not picture or not raw_path or not os.path.isfile(raw_path):
+            raise HTTPException(404, "Event picture not found")
+
+        offset = int(picture["offset"])
+        byte_size = int(picture["byte_size"])
+        if offset + byte_size > os.path.getsize(raw_path):
+            raise HTTPException(404, "Event picture not found")
+
+        def picture_bytes():
+            remaining = byte_size
+            with open(raw_path, "rb") as payload_file:
+                payload_file.seek(offset)
+                while remaining:
+                    chunk = payload_file.read(min(remaining, 64 * 1024))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        headers = {
+            "Content-Length": str(byte_size),
+            "Content-Disposition": f'inline; filename="{picture["filename"]}"',
+        }
+        if picture["sha256"]:
+            headers["ETag"] = f'"{picture["sha256"]}"'
+        return StreamingResponse(
+            picture_bytes(), media_type=str(picture["mime_type"]), headers=headers
         )
 
     # --- Ingestion receipts ---

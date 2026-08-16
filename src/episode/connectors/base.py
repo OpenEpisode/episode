@@ -2,16 +2,24 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-
-from episode.engine.bus import EventBus
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
 
+class ManagedConnector(Protocol):
+    name: str
+
+    async def start(self) -> None: ...
+
+    async def stop(self) -> None: ...
+
+    def status(self) -> dict: ...
+
+
 class Connector(ABC):
-    def __init__(self, name: str, bus: EventBus, config: dict):
+    def __init__(self, name: str, config: dict):
         self.name = name
-        self._bus = bus
         self._config = config
         self._running = False
 

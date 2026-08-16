@@ -16,7 +16,7 @@ from episode.ingestion.models import (
     IngressHandlerResult,
     StoredIngressEnvelope,
 )
-from episode.ingestion.router import IngressHandlerRegistration, IngressRouter
+from episode.ingestion.router import IngressHandlerRegistration
 from episode.plugins.hikvision.sdk.events import interpret_event
 from episode.plugins.hikvision.sdk.runtime import SDKDeviceConfig, SDKDeviceWorker
 from episode.plugins.models import (
@@ -224,9 +224,7 @@ class HikvisionSDKPlugin:
         self._path = context.plugins_dir / PLUGIN_ID
         self._configured_devices = _configured_sdk_devices(context.configured_devices)
         self._delivery_sink = context.raw_delivery_sink
-        self._ingress_router = (
-            context.ingress_router if isinstance(context.ingress_router, IngressRouter) else None
-        )
+        self._ingress_router = context.ingress_router
         self._handler_registered = False
         self._runner = runner or SubprocessProbeRunner()
         self._probe_command = probe_command or _default_probe_command
