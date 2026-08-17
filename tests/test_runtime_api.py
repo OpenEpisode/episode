@@ -31,6 +31,20 @@ def _operations() -> OperationalView:
             "requests_handled": 12,
             "requests_rejected": 0,
         },
+        {
+            "name": "Event API",
+            "type": "event_api",
+            "running": True,
+            "path": "/api/v1/events",
+            "port": 8989,
+            "requests_handled": 4,
+            "events_accepted": 2,
+            "duplicates": 1,
+            "requests_rejected": 1,
+            "unmatched": 0,
+            "handler_failures": 0,
+            "handler_timeouts": 0,
+        },
     ]
     plugins = [
         {
@@ -152,17 +166,21 @@ async def test_status_is_compact_and_diagnostics_are_separate():
             "snapshots": "disabled",
         },
         "integrations": {
-            "total": 4,
-            "healthy": 4,
+            "total": 5,
+            "healthy": 5,
             "degraded": 0,
             "unavailable": 0,
         },
     }
     assert len(status_response.content) < 500
     diagnostics = diagnostics_response.json()
-    assert len(diagnostics["integrations"]) == 4
+    assert len(diagnostics["integrations"]) == 5
     onvif = next(item for item in diagnostics["integrations"] if item["type"] == "onvif")
     assert len(onvif["details"]["instances"][0]["details"]["event_topics"]) == 200
+    event_api = next(item for item in diagnostics["integrations"] if item["type"] == "event_api")
+    assert event_api["capabilities"] == ["event-input"]
+    assert event_api["summary"] == "2 Events accepted · 1 duplicates"
+    assert event_api["details"]["requests_handled"] == 4
 
 
 @pytest.mark.asyncio
@@ -315,7 +333,7 @@ async def test_episode_api_projects_the_first_active_event_as_its_trigger(tmp_pa
                 device_id="operator",
                 area_id="garage",
                 timestamp=started + timedelta(minutes=2),
-                event_type="manual",
+                event_type="manual_trigger",
                 event_state="active",
                 episode_id=manual_episode.id,
             )
@@ -330,7 +348,7 @@ async def test_episode_api_projects_the_first_active_event_as_its_trigger(tmp_pa
         assert triggers == {
             "doorbell-episode": "doorbell",
             "motion-episode": "motion",
-            "manual-episode": None,
+            "manual-episode": "manual",
         }
         assert detail["trigger_type"] == "doorbell"
     finally:

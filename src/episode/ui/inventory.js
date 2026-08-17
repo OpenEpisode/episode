@@ -166,7 +166,7 @@ export function openDeviceEditor(device, areas, onSaved) {
       <div class="form-section"><h3>Device</h3><div class="form-grid">
         <label class="field"><span>Name</span><input name="name" required maxlength="80" value="${safeValue(device?.name || "")}" placeholder="Front door camera"></label>
         <label class="field"><span>Area</span><select name="area_id" required><option value="">Choose an Area</option>${areaOptions}</select></label>
-        <label class="field"><span>Network address</span><input name="ip_address" required inputmode="decimal" value="${safeValue(device?.ip_address || "")}" placeholder="192.168.1.100"></label>
+        <label class="field"><span>Network address</span><input name="ip_address" inputmode="decimal" value="${safeValue(device?.ip_address || "")}" placeholder="Optional for externally driven sensors"><small>Required only when Episode connects directly to this Device.</small></label>
         <label class="field"><span>Device type</span><select name="device_type" data-device-type>
           ${physicalTypes.map(type => `<option value="${type}"${selected(deviceType === type)}>${titleCase(type)}</option>`).join("")}
         </select><small>Physical role only. Manufacturer and vendor integrations are kept separate.</small></label>
@@ -257,6 +257,14 @@ export function openDeviceEditor(device, areas, onSaved) {
   const sdkToggle = sdkOption.querySelector(".integration-toggle input");
   const sdkWasConfigured = values.sdk.enabled;
   const updateDeviceRole = () => {
+    if (!editing && !["camera", "doorbell"].includes(typeSelect.value)) {
+      for (const integration of ["video", "onvif", "isapi", "hikvision_sdk"]) {
+        const option = overlay.querySelector(`[data-integration="${integration}"]`);
+        const toggle = option.querySelector(".integration-toggle input");
+        toggle.checked = false;
+        updateIntegration(option);
+      }
+    }
     const roleAvailable = typeSelect.value === "doorbell" || sdkWasConfigured;
     const supported = validationResults.hikvision_sdk?.status !== "unsupported";
     const available = roleAvailable && supported;

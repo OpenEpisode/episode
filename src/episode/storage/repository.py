@@ -329,6 +329,7 @@ class Repository:
         observed_at: datetime | None,
         device_id: str,
         area_id: str,
+        external_id: str | None,
         metadata: dict,
     ) -> None:
         if self._provenance is None:
@@ -339,6 +340,7 @@ class Repository:
             observed_at=observed_at,
             device_id=device_id,
             area_id=area_id,
+            external_id=external_id,
             metadata=metadata,
         )
 
@@ -1048,6 +1050,41 @@ class Repository:
             episode.last_activity_at if episode else None,
         )
         return episode
+
+    async def find_recent_closed_episode_for_inactive(
+        self,
+        event: Event,
+        grace_seconds: int,
+    ) -> Episode | None:
+        """Find the Episode whose matching active transition a late inactive closes."""
+        cutoff = _utc_iso(datetime.now(tz=timezone.utc) - timedelta(seconds=grace_seconds))
+        event_time = _utc_iso(event.timestamp)
+        rows = await self._conn.execute_fetchall(
+            """SELECT episode.*
+               FROM episodes AS episode
+               WHERE episode.primary_area_id = ?
+                 AND episode.state = 'closed'
+                 AND julianday(episode.end_time) >= julianday(?)
+                 AND julianday(?) >= julianday(episode.start_time)
+                 AND EXISTS (
+                     SELECT 1
+                     FROM events AS active_event
+                     WHERE active_event.episode_id = episode.id
+                       AND active_event.device_id = ?
+                       AND active_event.event_type = ?
+                       AND active_event.event_state = 'active'
+                 )
+               ORDER BY julianday(episode.end_time) DESC
+               LIMIT 1""",
+            (
+                event.area_id,
+                cutoff,
+                event_time,
+                event.device_id,
+                event.event_type,
+            ),
+        )
+        return self._row_to_episode(rows[0]) if rows else None
 
     async def add_event_to_episode(
         self, event_id: str, episode_id: str, *, _defer_manifest: bool = False

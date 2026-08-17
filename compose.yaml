@@ -11,7 +11,7 @@ services:
     ports:
       # Safe by default: the UI/API is available only on this host.
       # Set EPISODE_HTTP_BIND=0.0.0.0 on a trusted network when cameras
-      # must reach the Alarm Server endpoint directly.
+      # must reach the Alarm Server or Event API endpoint directly.
       - "${EPISODE_HTTP_BIND:-127.0.0.1}:8989:8989"
       - "${EPISODE_FTP_BIND:-0.0.0.0}:2121:2121"
       - "${EPISODE_FTP_BIND:-0.0.0.0}:30000-30009:30000-30009"

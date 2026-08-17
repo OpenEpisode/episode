@@ -129,6 +129,7 @@ def _state_for_plugin(value: object) -> OperationalState:
 def _integration_capabilities(kind: str, status: Mapping[str, Any]) -> list[str]:
     return {
         "alarm_server": ["events"],
+        "event_api": ["event-input"],
         "ftp": ["evidence-upload"],
     }.get(kind, [])
 
@@ -138,6 +139,11 @@ def _connector_summary(kind: str, status: Mapping[str, Any], state: OperationalS
         return str(status.get("last_error") or "Unavailable")
     if kind == "alarm_server":
         return f"{int(status.get('requests_handled', 0))} deliveries accepted"
+    if kind == "event_api":
+        return (
+            f"{int(status.get('events_accepted', 0))} Events accepted · "
+            f"{int(status.get('duplicates', 0))} duplicates"
+        )
     if kind == "ftp":
         return (
             f"Listening on port {status.get('port', '-')} · "
@@ -149,6 +155,19 @@ def _connector_summary(kind: str, status: Mapping[str, Any], state: OperationalS
 def _connector_details(kind: str, status: Mapping[str, Any]) -> dict[str, Any]:
     keys = {
         "alarm_server": ("path", "port", "requests_handled", "requests_rejected"),
+        "event_api": (
+            "path",
+            "port",
+            "requests_handled",
+            "events_accepted",
+            "duplicates",
+            "requests_rejected",
+            "unmatched",
+            "last_event_at",
+            "handler_failures",
+            "handler_timeouts",
+            "last_error",
+        ),
         "ftp": (
             "host",
             "port",

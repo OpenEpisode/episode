@@ -13,7 +13,7 @@ flowchart LR
     Transport --> Ingress[Raw-first ingress]
     Ingress --> Artifact[Sealed raw artifact]
     Ingress --> Receipt[Ingestion receipt]
-    Ingress --> Router[Configured plugin handlers]
+    Ingress --> Router[Configured plugin or core handlers]
     Router --> Canonical[Normalized observation]
     Canonical --> Engine[Episode engine]
     Engine --> Bundle[Episode bundle]
@@ -28,9 +28,10 @@ identities, bounded payload bytes, byte length, SHA-256, seal state, and
 transport metadata. A malformed, unknown, ignored, or failed delivery therefore
 still has a durable receipt and artifact record.
 
-Handler selection is explicit. Installed files do not activate plugins, handler
-execution has a timeout, failures are isolated, and conflicting claims are
-rejected instead of being resolved by registration order.
+Handler selection is explicit. The core normalized Event contract is registered
+only when its Event API transport is configured. Installed files do not activate
+plugins, handler execution has a timeout, failures are isolated, and conflicting
+claims are rejected instead of being resolved by registration order.
 
 ## Domain language
 
@@ -92,6 +93,12 @@ the Hikvision FTP handler recognizes supported filenames and emits snapshot
 Evidence. Unknown files remain visible raw deliveries. HCNetSDK callbacks
 follow the same raw-first route; native decoding remains isolated in the SDK
 plugin.
+
+The optional Event API is the vendor-neutral exception to plugin interpretation:
+its JSON schema is already a canonical observation contract, so a core-owned
+handler validates it after raw preservation. The referenced Device's stored Area
+is authoritative. Unknown or disabled Devices remain unmatched receipts, and
+producer identifiers provide idempotency without bypassing canonicalization.
 
 ISAPI stream ownership, Digest authentication, reconnect behavior, bounded
 stream decoding, ignored-Event policy, and XML interpretation live in its lazily
@@ -206,8 +213,9 @@ device id + observed timestamp + normalized event type + event state
 ```
 
 This intentionally handles duplicate ISAPI and Alarm Server deliveries from the
-same configured device. Future connectors may provide a stronger vendor event
-identifier through receipt metadata without changing the Event API.
+same configured device. The Event API can provide a stronger producer identifier.
+It scopes an external identifier by producer and Device, stores it on every
+receipt, and derives the canonical key without changing the Event representation.
 
 ## Integrity and immutability
 
@@ -275,6 +283,7 @@ reconfiguration is intentionally deferred to process startup in alpha.6.
 ## Known alpha constraints
 
 - Correlation is restricted to time-proximate Events within the same Area.
+- The generic Event API is a trusted-LAN input, not an authenticated public webhook.
 - `on_event` video devices record their own active Events; `on_episode` video
   devices record active Episodes in their Area, including Episodes opened by
   non-video sources.

@@ -47,7 +47,7 @@ class _HandlerMetrics:
 
 
 class IngressRouter:
-    """Dispatch preserved deliveries to explicitly registered plugin handlers."""
+    """Dispatch preserved deliveries to explicitly registered ingress handlers."""
 
     def __init__(self) -> None:
         self._registrations: dict[str, IngressHandlerRegistration] = {}

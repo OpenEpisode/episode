@@ -39,6 +39,9 @@ function episodeTriggerBadge(triggerType) {
   if (triggerType === "motion") {
     return '<span class="badge badge-motion episode-trigger" title="Triggered by a motion Event">Motion</span>';
   }
+  if (triggerType === "manual") {
+    return '<span class="badge badge-manual episode-trigger" title="Triggered by a manual Event">Manual</span>';
+  }
   return "";
 }
 function sourceBadges(sources) {
@@ -200,7 +203,9 @@ async function episodes(page = 1) {
       <div class="card-grid">
         ${list.map(e => `
           <a href="#episode/${e.id}" class="card episode-card" style="text-decoration:none;color:inherit;display:block">
-            ${covers[e.id] ? `<div class="episode-cover"><img src="${API}/evidence/${covers[e.id]}/file" loading="lazy"></div>` : ""}
+            ${covers[e.id]
+              ? `<div class="episode-cover"><img src="${API}/evidence/${covers[e.id]}/file" loading="lazy" alt=""></div>`
+              : `<div class="episode-cover episode-cover-placeholder"><img src="/logo.svg" alt=""><span>No snapshot captured</span></div>`}
             <div class="episode-card-body">
               <div class="episode-card-heading">
                 <h3>${trunc(e.primary_area_id || "?", 24)}</h3>

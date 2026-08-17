@@ -35,6 +35,8 @@ self-hosters who want local, portable evidence.
   configured Hikvision plugin interpret supported snapshot filenames.
 - Preserves and checksums raw XML, snapshots, and recordings locally.
 - Records every ingress delivery and deduplicates matching observations.
+- Accepts normalized Events from trusted local automations through an optional
+  raw-first HTTP Event API.
 - Correlates observations from multiple cameras into Episodes.
 - Starts and stops configured recordings around Episode activity.
 - Reviews each Episode through a chronological Event timeline linked to its recordings and snapshots.
@@ -129,14 +131,17 @@ The UI/API binds to `127.0.0.1:8989` by default. FTP listens on port `2121` so
 cameras on the local network can upload snapshots; passive FTP uses ports
 `30000-30009`.
 
-If cameras must push Alarm Server events to Episode, set the HTTP bind address in
-a local `.env` file:
+If cameras or local automation systems must push Alarm Server or Event API
+deliveries to Episode, set the HTTP bind address in a local `.env` file:
 
 ```dotenv
 EPISODE_HTTP_BIND=0.0.0.0
 ```
 
 Only do this on a trusted network. There is no API authentication in the alpha.
+
+The [Event API guide](docs/EVENT_API.md) shows how Home Assistant, scripts, alarm
+panels, and other local systems can trigger the same Area-scoped recording flow.
 
 Start with the [ONVIF setup guide](docs/ONVIF_SETUP.md). Hikvision users can also
 enable the [vendor-specific enhancements](docs/HIKVISION_SETUP.md).
@@ -207,6 +212,7 @@ artwork, light and dark organization avatars, and GitHub social previews.
 ## Documentation
 
 - [Architecture and domain model](docs/ARCHITECTURE.md)
+- [Generic Event API](docs/EVENT_API.md)
 - [ONVIF camera setup](docs/ONVIF_SETUP.md)
 - [Hikvision setup and troubleshooting](docs/HIKVISION_SETUP.md)
 - [Contributing](docs/CONTRIBUTING.md)

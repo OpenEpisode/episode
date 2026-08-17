@@ -100,7 +100,7 @@ class IngestionService:
             },
         )
 
-        # This durable boundary always completes before a plugin sees the payload.
+        # This durable boundary always completes before a handler sees the payload.
         artifact, receipt = await self._repository.persist_delivery(artifact, receipt)
         return await self._interpret(delivery, artifact, receipt, delivery.payload)
 
@@ -146,7 +146,7 @@ class IngestionService:
         )
         artifact, receipt = await self._repository.persist_delivery(artifact, receipt)
 
-        # Reading happens after persistence: plugin code can never observe an
+        # Reading happens after persistence: handler code can never observe an
         # upload that has not crossed the raw evidence durability boundary.
         payload = await asyncio.to_thread(Path(path).read_bytes)
         return await self._interpret(delivery, artifact, receipt, payload)
@@ -220,6 +220,7 @@ class IngestionService:
             diagnostic_metadata["reason"] = "ingress_handler_failed"
         if handler_result:
             diagnostic_metadata.update(dict(handler_result.metadata))
+            receipt.external_id = handler_result.external_id
 
         canonical = None
         evidence = None
@@ -234,7 +235,12 @@ class IngestionService:
             if device:
                 device_id = device.id
                 area_id = device.area_id
-            if not device_id or not area_id:
+            receipt.device_id = device_id
+            receipt.area_id = area_id
+            if device and not device.enabled:
+                status = ReceiptStatus.UNMATCHED
+                diagnostic_metadata["reason"] = "device_disabled"
+            elif device is None or not device_id or not area_id:
                 status = ReceiptStatus.UNMATCHED
                 diagnostic_metadata["reason"] = "device_not_resolved"
             else:
@@ -252,9 +258,11 @@ class IngestionService:
                         "ingress_handler": claimed.handler_id,
                     },
                 )
-                receipt.device_id = device_id
-                receipt.area_id = area_id
                 canonical = await self._engine.ingest_event(event, receipt=receipt)
+                if canonical.conflict:
+                    canonical = None
+                    status = ReceiptStatus.REJECTED
+                    diagnostic_metadata["reason"] = "event_identity_conflict"
         elif handler_result and handler_result.evidence:
             observation = handler_result.evidence
             receipt.observed_at = observation.timestamp
@@ -266,7 +274,12 @@ class IngestionService:
             if device:
                 device_id = device.id
                 area_id = device.area_id
-            if not device_id or not area_id:
+            receipt.device_id = device_id
+            receipt.area_id = area_id
+            if device and not device.enabled:
+                status = ReceiptStatus.UNMATCHED
+                diagnostic_metadata["reason"] = "device_disabled"
+            elif device is None or not device_id or not area_id:
                 status = ReceiptStatus.UNMATCHED
                 diagnostic_metadata["reason"] = "device_not_resolved"
             else:
@@ -287,8 +300,6 @@ class IngestionService:
                         "ingress_handler": claimed.handler_id,
                     },
                 )
-                receipt.device_id = device_id
-                receipt.area_id = area_id
                 await self._engine.ingest_evidence(evidence, receipt=receipt)
 
         receipt.status = status
@@ -299,6 +310,7 @@ class IngestionService:
             observed_at=receipt.observed_at,
             device_id=receipt.device_id,
             area_id=receipt.area_id,
+            external_id=receipt.external_id,
             metadata=diagnostic_metadata,
         )
         return IngestionOutcome(

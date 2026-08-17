@@ -14,6 +14,7 @@ from episode.api.routes import create_api
 from episode.api.runtime import OperationalView
 from episode.config import EpisodeConfig, load_config
 from episode.connectors.base import ManagedConnector
+from episode.connectors.event_api import EventAPIConnector
 from episode.connectors.ftp import FTPConnector
 from episode.connectors.http_ingress import HTTPIngressConnector
 from episode.engine.bus import EventBus
@@ -201,7 +202,7 @@ class Application:
                 continue
             conn = self._build_connector(conn_cfg)
             if conn:
-                if isinstance(conn, HTTPIngressConnector):
+                if isinstance(conn, (EventAPIConnector, HTTPIngressConnector)):
                     conn.mount(self._fastapi_app)
                 self._connectors.append(conn)
                 await self._lifecycle.start(
@@ -245,6 +246,14 @@ class Application:
                 cfg.settings,
                 self._config.api_port,
                 connector_type=t,
+            )
+        if t == "event_api":
+            return EventAPIConnector(
+                cfg.settings.get("name", "Event API"),
+                self._ingestion,
+                self._ingress_router,
+                cfg.settings,
+                self._config.api_port,
             )
         if t == "ftp":
             return FTPConnector(

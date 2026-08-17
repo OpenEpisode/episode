@@ -111,6 +111,7 @@ class IngressHandlerResult:
     status: ReceiptStatus = ReceiptStatus.ACCEPTED
     event: EventObservation | None = None
     evidence: EvidenceObservation | None = None
+    external_id: str | None = None
     metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 class CanonicalEventResult:
     event: Event
     created: bool
+    conflict: bool = False
 
 
 class EpisodeEngine:
@@ -116,19 +117,34 @@ class EpisodeEngine:
                 candidate.area_id,
             )
             event, created = await self._repo.canonicalize_event(candidate)
+            conflict = bool(
+                not created
+                and candidate.dedup_key
+                and (
+                    event.device_id != candidate.device_id
+                    or event.event_type != candidate.event_type
+                    or event.event_state != candidate.event_state
+                )
+            )
             logger.debug(
-                "Canonicalize: event=%s, created=%s, episode_id=%s",
+                "Canonicalize: event=%s, created=%s, conflict=%s, episode_id=%s",
                 event.id,
                 created,
+                conflict,
                 event.episode_id,
             )
-            if receipt:
+            if receipt and not conflict:
                 await self._repo.link_ingestion_receipt(
                     receipt.id,
                     event_id=event.id,
                     episode_id=event.episode_id if not created else None,
                 )
-            if created:
+            if conflict:
+                logger.warning(
+                    "Rejected conflicting delivery for canonical key %s",
+                    candidate.dedup_key,
+                )
+            elif created:
                 logger.info("Persisted canonical event %s (%s)", event.id, event.event_type)
                 async with self._lifecycle_lock:
                     await self._correlate(event)
@@ -140,15 +156,16 @@ class EpisodeEngine:
                 )
 
         # After lock: refresh the portable bundle and match any earlier evidence.
-        if created and event.episode_id:
+        if created and event.episode_id and not conflict:
             await self._repo.refresh_episode_manifest(event.episode_id)
 
             orphan = await self._repo.find_orphan_evidence_by_device(event.device_id)
             for ev in orphan:
                 await self._match_orphan_evidence(ev)
 
-        result = CanonicalEventResult(event=event, created=created)
-        await self._bus.publish(Message(type="event.canonicalized", data={"result": result}))
+        result = CanonicalEventResult(event=event, created=created, conflict=conflict)
+        if not conflict:
+            await self._bus.publish(Message(type="event.canonicalized", data={"result": result}))
         return result
 
     async def _on_evidence_received(self, msg: Message):
@@ -212,9 +229,29 @@ class EpisodeEngine:
 
         if event.event_state == EventState.INACTIVE:
             if not episode:
-                logger.debug(
-                    "Stored inactive event %s without opening an episode",
+                episode = await self._repo.find_recent_closed_episode_for_inactive(
+                    event,
+                    self._timeout,
+                )
+                if not episode:
+                    logger.debug(
+                        "Stored inactive event %s without opening an episode",
+                        event.id,
+                    )
+                    return
+                await self._repo.add_event_to_episode(
                     event.id,
+                    episode.id,
+                    _defer_manifest=True,
+                )
+                event.episode_id = episode.id
+                logger.info(
+                    "Attached late inactive event %s to closed episode %s",
+                    event.id,
+                    episode.id,
+                )
+                await self._bus.publish(
+                    Message(type="episode.updated", data={"episode_id": episode.id})
                 )
                 return
             await self._repo.update_episode_times(

@@ -148,13 +148,14 @@ class ProvenanceStore:
         observed_at: datetime | None,
         device_id: str,
         area_id: str,
+        external_id: str | None,
         metadata: dict,
     ) -> None:
         if self._legacy_identity_schema:
             await self._conn.execute(
                 """UPDATE ingestion_receipts
                    SET status = ?, observed_at = ?, device_id = ?, area_id = ?,
-                       sensor_id = ?, asset_id = ?, metadata = ?
+                       sensor_id = ?, asset_id = ?, external_id = ?, metadata = ?
                    WHERE id = ?""",
                 (
                     status.value,
@@ -163,6 +164,7 @@ class ProvenanceStore:
                     area_id,
                     device_id,
                     area_id,
+                    external_id,
                     json.dumps(metadata),
                     receipt_id,
                 ),
@@ -170,13 +172,15 @@ class ProvenanceStore:
         else:
             await self._conn.execute(
                 """UPDATE ingestion_receipts
-                   SET status = ?, observed_at = ?, device_id = ?, area_id = ?, metadata = ?
+                   SET status = ?, observed_at = ?, device_id = ?, area_id = ?,
+                       external_id = ?, metadata = ?
                    WHERE id = ?""",
                 (
                     status.value,
                     observed_at.isoformat() if observed_at else None,
                     device_id,
                     area_id,
+                    external_id,
                     json.dumps(metadata),
                     receipt_id,
                 ),

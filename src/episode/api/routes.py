@@ -150,6 +150,8 @@ def _episode_trigger_type(event_type: str | None) -> str | None:
     normalized = (event_type or "").lower()
     if normalized == "doorbell":
         return "doorbell"
+    if normalized in {"manual", "manual_trigger"}:
+        return "manual"
     if "motion" in normalized or normalized in {
         "human_detection",
         "vehicle_detection",

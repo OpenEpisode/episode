@@ -177,6 +177,24 @@ main {
   height: 100%;
   object-fit: cover;
 }
+.episode-card .episode-cover-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  background:
+    radial-gradient(circle at 28% 20%, color-mix(in srgb, var(--brand-cyan) 12%, transparent), transparent 42%),
+    linear-gradient(135deg, var(--surface-hover), var(--surface));
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+}
+.episode-card .episode-cover-placeholder img {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+  opacity: 0.42;
+}
 .episode-card .episode-card-body { padding: 0.75rem 1rem 1rem; }
 .episode-card .episode-card-body h3 { margin-bottom: 0.25rem; }
 .episode-card-heading {

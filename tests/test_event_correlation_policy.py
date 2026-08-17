@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from episode.config import EpisodeConfig
-from episode.domain.models import Area, Device, EventState
+from episode.domain.models import Area, Device, EpisodeState, Event, EventState
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
 from episode.plugins.onvif.events import ONVIFNotification, ONVIFStateTracker
@@ -169,6 +169,60 @@ async def test_inactive_event_does_not_open_episode(tmp_path):
         events = await repo.list_events()
         assert len(events) == 1
         assert events[0].episode_id is None
+    finally:
+        await engine.stop()
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_late_inactive_attaches_to_matching_closed_episode_without_reopening(tmp_path):
+    config = EpisodeConfig(
+        data_dir=str(tmp_path),
+        db_path=str(tmp_path / "episode.db"),
+        episode_timeout=30,
+    )
+    repo = Repository(config)
+    bus = EventBus()
+    engine = EpisodeEngine(repo, bus, timeout=30)
+    await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(id="doorbell", name="Doorbell", device_type="doorbell", area_id="entrance")
+    )
+    await engine.start()
+    try:
+        timestamp = datetime.now(timezone.utc)
+        active = await engine.ingest_event(
+            Event(
+                device_id="doorbell",
+                area_id="entrance",
+                timestamp=timestamp,
+                event_type="doorbell",
+                event_state=EventState.ACTIVE,
+                source="test",
+            )
+        )
+        episode_id = active.event.episode_id
+        await repo.update_episode_state(episode_id, EpisodeState.CLOSED)
+        closed_before = await repo.get_episode(episode_id)
+
+        inactive = await engine.ingest_event(
+            Event(
+                device_id="doorbell",
+                area_id="entrance",
+                timestamp=timestamp + timedelta(seconds=2),
+                event_type="doorbell",
+                event_state=EventState.INACTIVE,
+                source="test",
+            )
+        )
+
+        closed_after = await repo.get_episode(episode_id)
+        assert inactive.event.episode_id == episode_id
+        assert closed_after.state == EpisodeState.CLOSED
+        assert closed_after.end_time == closed_before.end_time
+        assert closed_after.last_activity_at == closed_before.last_activity_at
+        assert closed_after.event_count == 2
     finally:
         await engine.stop()
         await repo.close()
