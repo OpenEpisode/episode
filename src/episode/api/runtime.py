@@ -363,19 +363,28 @@ class OperationalView:
             if not isinstance(metadata, Mapping) or not metadata.get("device_scoped"):
                 continue
             capability = str(metadata.get("activation_capability") or "")
-            integration_type = str(metadata.get("type") or "")
-            if capability not in device.capabilities or integration_type in present:
+            configured_device_ids = set(metadata.get("configured_device_ids") or [])
+            integration_type = str(metadata.get("type") or "").replace("-", "_")
+            explicitly_assigned = device.id in configured_device_ids
+            configured = capability in device.capabilities or explicitly_assigned
+            if not configured or integration_type in present:
                 continue
+            state = _state_for_plugin(plugin.get("state")) if explicitly_assigned else "unavailable"
+            summary = (
+                str(plugin.get("error") or plugin.get("summary") or "Configured")
+                if explicitly_assigned
+                else "Configured but unavailable"
+            )
             integrations.append(
                 {
                     "id": f"{integration_type}:{device.id}",
                     "name": str(metadata.get("name") or plugin.get("name") or integration_type),
                     "type": integration_type,
                     "kind": "device",
-                    "state": "unavailable",
+                    "state": state,
                     "device_id": device.id,
                     "capabilities": list(metadata.get("capabilities") or []),
-                    "summary": "Configured but unavailable",
+                    "summary": summary,
                     "details": {},
                 }
             )
@@ -459,7 +468,11 @@ class OperationalView:
         capabilities = list(metadata.get("capabilities") or [])
         state = _state_for_plugin(plugin.get("state"))
         instances = list(plugin.get("instances", []))
-        summary = str(plugin.get("error") or str(plugin.get("state", "")).replace("_", " ").title())
+        summary = str(
+            plugin.get("error")
+            or plugin.get("summary")
+            or str(plugin.get("state", "")).replace("_", " ").title()
+        )
         if instances:
             running = sum(_state_for_plugin(item.get("state")) == "healthy" for item in instances)
             summary = f"{running}/{len(instances)} instances running"

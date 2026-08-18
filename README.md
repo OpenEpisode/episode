@@ -153,6 +153,13 @@ supplied by the user and never included in Episode's image.
 Installed runtime files remain inactive until a device explicitly declares the
 matching plugin capability.
 
+Alpha.12 also supports explicitly configured third-party Device and ingress
+plugins through a small versioned public contract. The
+[plugin authoring guide](docs/PLUGINS.md) documents manifests, lifecycle,
+raw-first ingestion, scoped Device access, compatibility, and the included
+dependency-free example. Third-party plugins are trusted code and are not
+sandboxed.
+
 ### Troubleshooting
 
 - If `./data` is not writable, set `EPISODE_UID` and `EPISODE_GID` in `.env` to
@@ -193,9 +200,11 @@ IP cameras and Docker. Hikvision integrations provide optional enrichment. The
 current priorities are reliable preservation, correct
 correlation, simple installation, and an uncluttered Episode-first interface.
 
-Authentication, general-purpose plugin APIs, AI processing, high availability,
-and guaranteed compatibility with every ONVIF implementation are not part of the
-current release. Device capabilities are detected rather than assumed.
+Authentication, action and processor plugins, AI processing, high availability,
+and guaranteed compatibility with every ONVIF implementation are not part of
+the current release. The third-party Device and ingress plugin API remains
+experimental throughout alpha. Device capabilities are detected rather than
+assumed.
 
 See [the contribution guide](docs/CONTRIBUTING.md) before proposing broader
 feature work.
@@ -213,6 +222,7 @@ artwork, light and dark organization avatars, and GitHub social previews.
 
 - [Architecture and domain model](docs/ARCHITECTURE.md)
 - [Generic Event API](docs/EVENT_API.md)
+- [Plugin authoring and example](docs/PLUGINS.md)
 - [ONVIF camera setup](docs/ONVIF_SETUP.md)
 - [Hikvision setup and troubleshooting](docs/HIKVISION_SETUP.md)
 - [Contributing](docs/CONTRIBUTING.md)

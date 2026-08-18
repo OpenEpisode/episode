@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 
 
@@ -10,6 +11,28 @@ class ConnectorConfig:
     type: str = ""
     enabled: bool = True
     settings: dict = field(default_factory=dict)
+
+
+@dataclass
+class ExternalPluginConfig:
+    """Explicit activation and scoped configuration for an installed plugin."""
+
+    id: str = ""
+    enabled: bool = True
+    device_ids: list[str] = field(default_factory=list)
+    settings: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", self.id):
+            raise ValueError("plugin id must use lowercase letters, numbers, dots, _ or -")
+        if not isinstance(self.device_ids, list) or not all(
+            isinstance(device_id, str) and device_id for device_id in self.device_ids
+        ):
+            raise ValueError(f"plugin {self.id!r} device_ids must be non-empty strings")
+        if len(set(self.device_ids)) != len(self.device_ids):
+            raise ValueError(f"plugin {self.id!r} contains duplicate device_ids")
+        if not isinstance(self.settings, dict):
+            raise ValueError(f"plugin {self.id!r} settings must be an object")
 
 
 @dataclass
@@ -47,6 +70,7 @@ class EpisodeConfig:
     log_level: str = "INFO"
     actions: ActionsConfig = field(default_factory=ActionsConfig)
     connectors: list[ConnectorConfig] = field(default_factory=list)
+    plugins: list[ExternalPluginConfig] = field(default_factory=list)
     devices: list[dict] = field(default_factory=list)
     areas: list[dict] = field(default_factory=list)
 
@@ -70,6 +94,14 @@ class EpisodeConfig:
                 if isinstance(recording, dict)
                 else recording,
             )
+        if self.plugins and isinstance(self.plugins[0], dict):
+            self.plugins = [
+                ExternalPluginConfig(**plugin) if isinstance(plugin, dict) else plugin
+                for plugin in self.plugins
+            ]
+        plugin_ids = [plugin.id for plugin in self.plugins]
+        if len(set(plugin_ids)) != len(plugin_ids):
+            raise ValueError("plugin configuration contains duplicate ids")
 
 
 def load_config(path: str | None = None) -> EpisodeConfig:
@@ -80,5 +112,6 @@ def load_config(path: str | None = None) -> EpisodeConfig:
             raw = json.load(f)
         raw.pop("recording", None)
         raw["connectors"] = [ConnectorConfig(**c) for c in raw.pop("connectors", [])]
+        raw["plugins"] = [ExternalPluginConfig(**p) for p in raw.pop("plugins", [])]
         return EpisodeConfig(**raw)
     return EpisodeConfig()

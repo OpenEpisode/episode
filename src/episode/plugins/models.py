@@ -62,6 +62,7 @@ class PluginStatus:
     version: str | None = None
     architecture: str | None = None
     error: str | None = None
+    summary: str | None = None
     instances: tuple[PluginInstanceStatus, ...] = ()
     metrics: Mapping[str, object] = field(default_factory=dict)
 
@@ -113,6 +114,8 @@ class PluginMediaRegistry(Protocol):
 
     def get(self, device_id: str) -> CameraMedia | None: ...
 
+    def unregister(self, device_id: str, *, source: str | None = None) -> None: ...
+
 
 @dataclass(frozen=True)
 class PluginContext:
@@ -157,11 +160,18 @@ class PluginRegistration:
     validation_capability: str = ""
     validator: PluginDeviceValidator | None = None
     integration: PluginIntegration | None = None
+    explicitly_enabled: bool = False
+    configured_device_ids: tuple[str, ...] = ()
+    installed_version: str | None = None
+    unavailable_state: PluginState | None = None
+    unavailable_error: str | None = None
 
     def validating_status(self) -> PluginStatus:
         return PluginStatus(
             id=self.id,
             name=self.name,
             kind=self.kind,
-            state=PluginState.VALIDATING,
+            state=self.unavailable_state or PluginState.VALIDATING,
+            version=self.installed_version,
+            error=self.unavailable_error,
         )

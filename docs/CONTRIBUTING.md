@@ -33,6 +33,9 @@ If not, it is probably better suited for a future release.
 - Keep vendor interpretation inside plugins; shared connectors remain vendor-neutral.
 - Preserve raw deliveries before interpretation.
 - Write code that is easy to understand and test.
+- Out-of-tree plugins must import only from the documented `episode.plugin_api`
+  facade; internal plugin, storage, engine, and ingestion modules are not public
+  contracts.
 
 ## Development setup
 

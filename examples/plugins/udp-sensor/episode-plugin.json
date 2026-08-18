@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "example-udp-sensor",
+  "name": "Example UDP Sensor",
+  "version": "0.1.0",
+  "plugin_api": "1",
+  "kind": "device",
+  "entrypoint": "plugin.py:create_plugin",
+  "capabilities": [
+    "events"
+  ],
+  "configuration_schema": {
+    "type": "object",
+    "properties": {
+      "host": {
+        "type": "string",
+        "default": "0.0.0.0"
+      },
+      "port": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535,
+        "default": 9876
+      }
+    },
+    "additionalProperties": false
+  }
+}

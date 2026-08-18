@@ -117,6 +117,21 @@ catalog instead of maintaining vendor-specific maps. Public plugin status is
 validated as JSON-safe data; a broken status implementation degrades only that
 plugin.
 
+Third-party plugins use the separate, versioned `episode.plugin_api` facade.
+Direct children of the mounted plugin directory may declare an
+`episode-plugin.json`; manifests are inspected without importing their code and
+only explicit top-level plugin configuration activates an entrypoint. The
+adapter scopes Device configuration to declared Device IDs, namespaces ingress
+handlers, supplies authoritative Area identity, and translates public
+observations back into the core raw-first pipeline. Built-in integrations retain
+their internal contract while this public boundary is validated during alpha.
+
+Plugin API version 1 supports Device and ingress plugins. Action and processor
+kinds are reserved, not implemented. Third-party Python executes in the Episode
+process and is trusted rather than sandboxed; ordinary lifecycle and handler
+failures are isolated, while native integrations should use supervised workers
+when process-level crash containment matters.
+
 Runtime resources are entered through one application lifecycle and released in
 reverse order. Shared transports stop accepting deliveries before plugin
 handlers, actions, the Episode engine, and storage are stopped. A failure in one

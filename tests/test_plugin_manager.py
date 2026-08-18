@@ -202,6 +202,33 @@ async def test_plugin_startup_failure_does_not_block_other_plugins(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_partially_started_plugin_is_stopped_and_remains_failed(tmp_path):
+    events: list[str] = []
+
+    class PartialPlugin(FakePlugin):
+        async def start(self) -> None:
+            events.append("start:partial")
+            raise RuntimeError("failed after allocating resources")
+
+    registration = PluginRegistration(
+        "partial",
+        "Partial",
+        "test",
+        "partial",
+        lambda _context: PartialPlugin("partial", "Partial", "test", events),
+    )
+    manager = PluginManager([registration], PluginContext(tmp_path))
+
+    await manager.start()
+    first = manager.statuses()[0]
+    second = manager.statuses()[0]
+
+    assert events == ["start:partial", "stop:partial"]
+    assert first["state"] == PluginState.FAILED
+    assert second["state"] == PluginState.FAILED
+
+
+@pytest.mark.asyncio
 async def test_plugin_status_failure_is_isolated_from_other_plugins(tmp_path):
     events: list[str] = []
 

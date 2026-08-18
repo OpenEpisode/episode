@@ -24,6 +24,18 @@ class PluginInstanceResponse(BaseModel):
     last_message_at: datetime | None = None
     error: str | None = None
     device_info: PluginDeviceInfoResponse | None = None
+    summary: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class PluginIntegrationResponse(BaseModel):
+    type: str
+    name: str
+    device_scoped: bool = False
+    activation_capability: str = ""
+    configured_device_ids: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class PluginResponse(BaseModel):
@@ -34,8 +46,10 @@ class PluginResponse(BaseModel):
     version: str | None = None
     architecture: str | None = None
     error: str | None = None
+    summary: str | None = None
     instances: list[PluginInstanceResponse] = Field(default_factory=list)
     metrics: dict[str, object] = Field(default_factory=dict)
+    integration: PluginIntegrationResponse | None = None
 
 
 def register_plugins_api(app: FastAPI, manager: PluginManager) -> None:

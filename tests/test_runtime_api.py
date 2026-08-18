@@ -145,6 +145,49 @@ def _operations() -> OperationalView:
     )
 
 
+def test_external_plugin_assignment_is_visible_on_its_device():
+    operations = OperationalView(
+        version=__version__,
+        engine_status=lambda: {"running": True},
+        recorder_status=lambda: {"running": True},
+        snapshot_status=lambda: {"running": False},
+        connector_statuses=lambda: [],
+        plugin_statuses=lambda: [
+            {
+                "id": "acme-tripwire",
+                "name": "Acme Tripwire",
+                "kind": "device",
+                "state": "ready",
+                "summary": "Listening for Events",
+                "integration": {
+                    "type": "acme-tripwire",
+                    "name": "Acme Tripwire",
+                    "device_scoped": True,
+                    "activation_capability": "",
+                    "configured_device_ids": ["garden-sensor"],
+                    "capabilities": ["events"],
+                },
+                "instances": [],
+            }
+        ],
+        snapshots_enabled=False,
+    )
+    device = Device(
+        id="garden-sensor",
+        name="Garden sensor",
+        device_type="sensor",
+        area_id="garden",
+    )
+
+    summary = operations.device_summary(device)
+    integration = summary["integrations"][0]
+
+    assert summary["state"] == "healthy"
+    assert integration["type"] == "acme_tripwire"
+    assert integration["state"] == "healthy"
+    assert integration["capabilities"] == ["events"]
+
+
 @pytest.mark.asyncio
 async def test_status_is_compact_and_diagnostics_are_separate():
     app = create_api(object(), operations=_operations())

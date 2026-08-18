@@ -34,7 +34,8 @@ class PluginRegistry:
             registration
             for registration in self._registrations.values()
             if (
-                registration.activation_capability in configured
+                registration.explicitly_enabled
+                or registration.activation_capability in configured
                 or (
                     registration.activation_connector_type
                     and registration.activation_connector_type in configured_connectors

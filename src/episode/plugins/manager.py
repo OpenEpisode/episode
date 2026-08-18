@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime
 from enum import Enum
 
+from episode.plugin_api import PluginConfigurationError
 from episode.plugins.models import (
     ManagedPlugin,
     PluginContext,
@@ -98,18 +99,41 @@ class PluginManager:
             return
         self._started = True
         for registration in self._registrations:
+            if registration.unavailable_state is not None:
+                logger.warning(
+                    "Configured plugin %s is %s: %s",
+                    registration.id,
+                    registration.unavailable_state,
+                    registration.unavailable_error,
+                )
+                continue
             logger.info("Starting configured plugin %s", registration.id)
+            plugin: ManagedPlugin | None = None
             try:
                 plugin = registration.factory(self._context)
-                self._plugins.append((registration, plugin))
                 await plugin.start()
                 status = plugin.status()
                 self._validate_status(registration, status)
+                self._plugins.append((registration, plugin))
                 self._statuses[registration.id] = status
             except asyncio.CancelledError:
+                await self._stop_partial(registration, plugin)
                 await self.stop()
                 raise
+            except PluginConfigurationError as error:
+                await self._stop_partial(registration, plugin)
+                logger.warning("Plugin %s configuration is invalid: %s", registration.id, error)
+                self._statuses[registration.id] = PluginStatus(
+                    id=registration.id,
+                    name=registration.name,
+                    kind=registration.kind,
+                    state=PluginState.FAILED,
+                    version=registration.installed_version,
+                    error=str(error),
+                )
+                continue
             except Exception:
+                await self._stop_partial(registration, plugin)
                 logger.exception("Plugin %s failed during startup", registration.id)
                 self._statuses[registration.id] = PluginStatus(
                     id=registration.id,
@@ -135,6 +159,18 @@ class PluginManager:
                     status.state,
                     status.error,
                 )
+
+    @staticmethod
+    async def _stop_partial(
+        registration: PluginRegistration,
+        plugin: ManagedPlugin | None,
+    ) -> None:
+        if plugin is None:
+            return
+        try:
+            await plugin.stop()
+        except Exception:
+            logger.exception("Plugin %s failed while cleaning up startup", registration.id)
 
     async def stop(self) -> None:
         plugins = list(reversed(self._plugins))
@@ -170,6 +206,7 @@ class PluginManager:
                 "name": registration.integration.name,
                 "device_scoped": registration.integration.device_scoped,
                 "activation_capability": registration.activation_capability,
+                "configured_device_ids": list(registration.configured_device_ids),
                 "capabilities": list(registration.integration.capabilities),
             }
         public = _json_safe(result)

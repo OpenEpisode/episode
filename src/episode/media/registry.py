@@ -40,6 +40,11 @@ class MediaRegistry:
     def get(self, device_id: str) -> CameraMedia | None:
         return self._sources.get(device_id)
 
+    def unregister(self, device_id: str, *, source: str | None = None) -> None:
+        current = self._sources.get(device_id)
+        if current is not None and (source is None or current.source == source):
+            self._sources.pop(device_id, None)
+
     async def fetch_snapshot(self, device_id: str) -> tuple[bytes, str]:
         source = self.get(device_id)
         if not source or not source.snapshot_uri:

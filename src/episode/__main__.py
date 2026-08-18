@@ -28,6 +28,7 @@ from episode.media.timelapse import TimelapseService
 from episode.plugins import PluginContext, PluginManager, builtin_plugin_registry
 from episode.plugins.api import register_plugins_api
 from episode.plugins.deliveries import RawPluginDeliveryStore
+from episode.plugins.external import discover_external_plugins
 from episode.recording.engine import RecordingEngine
 from episode.storage.repository import Repository
 
@@ -66,6 +67,14 @@ class Application:
             connector.type for connector in config.connectors if connector.enabled
         }
         self._plugin_registry = builtin_plugin_registry()
+        for registration in discover_external_plugins(
+            Path(config.plugins_dir),
+            config.plugins,
+        ):
+            try:
+                self._plugin_registry.register(registration)
+            except ValueError as error:
+                logger.warning("External plugin %s was not registered: %s", registration.id, error)
         self._plugins = PluginManager(
             self._plugin_registry.for_configuration(
                 configured_capabilities,
