@@ -45,7 +45,7 @@ def _load_entrypoint(manifest: ExternalPluginManifest):
     sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
-    except Exception:
+    except BaseException:
         sys.modules.pop(module_name, None)
         raise
     factory = getattr(module, manifest.entrypoint_symbol, None)
@@ -311,25 +311,35 @@ class ExternalManagedPlugin(ManagedPlugin):
         self._manifest = manifest
         self._ingress = _ExternalIngress(manifest.id, manifest.kind, context, devices)
         self._media = _ExternalMedia(manifest.id, context, devices)
-        factory = _load_entrypoint(manifest)
-        self._plugin = factory(
-            plugin_api.PluginContext(
-                plugin_id=manifest.id,
-                plugin_dir=manifest.root,
-                settings=configured.settings,
-                devices=devices,
-                ingress=self._ingress,
-                media=self._media,
-            )
-        )
-        for method in ("status", "start", "stop"):
-            if not callable(getattr(self._plugin, method, None)):
-                raise plugin_api.PluginConfigurationError(
-                    f"Plugin does not implement required {method}()."
+        try:
+            factory = _load_entrypoint(manifest)
+            self._plugin = factory(
+                plugin_api.PluginContext(
+                    plugin_id=manifest.id,
+                    plugin_dir=manifest.root,
+                    settings=configured.settings,
+                    devices=devices,
+                    ingress=self._ingress,
+                    media=self._media,
                 )
+            )
+            for method in ("status", "start", "stop"):
+                if not callable(getattr(self._plugin, method, None)):
+                    raise plugin_api.PluginConfigurationError(
+                        f"Plugin does not implement required {method}()."
+                    )
+        except BaseException as error:
+            self._ingress.close()
+            self._media.close()
+            if isinstance(error, SystemExit):
+                raise RuntimeError("Plugin attempted to terminate the Episode process") from error
+            raise
 
     def status(self) -> PluginStatus:
-        value = self._plugin.status()
+        try:
+            value = self._plugin.status()
+        except SystemExit as error:
+            raise RuntimeError("Plugin attempted to terminate the Episode process") from error
         if not isinstance(value, plugin_api.PluginStatus):
             raise TypeError("Plugin status() must return episode.plugin_api.PluginStatus")
         return PluginStatus(
@@ -345,11 +355,17 @@ class ExternalManagedPlugin(ManagedPlugin):
         )
 
     async def start(self) -> None:
-        await self._plugin.start()
+        try:
+            await self._plugin.start()
+        except SystemExit as error:
+            raise RuntimeError("Plugin attempted to terminate the Episode process") from error
 
     async def stop(self) -> None:
         try:
-            await self._plugin.stop()
+            try:
+                await self._plugin.stop()
+            except SystemExit as error:
+                raise RuntimeError("Plugin attempted to terminate the Episode process") from error
         finally:
             self._ingress.close()
             self._media.close()

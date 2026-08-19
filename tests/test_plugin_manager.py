@@ -202,6 +202,167 @@ async def test_plugin_startup_failure_does_not_block_other_plugins(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_plugin_startup_timeout_cleans_up_and_does_not_block_other_plugins(tmp_path):
+    events: list[str] = []
+
+    class HangingPlugin(FakePlugin):
+        async def start(self) -> None:
+            events.append("start:hanging")
+            await asyncio.Event().wait()
+
+        async def stop(self) -> None:
+            events.append("stop:hanging")
+
+    hanging = PluginRegistration(
+        "hanging",
+        "Hanging",
+        "test",
+        "hanging",
+        lambda _context: HangingPlugin("hanging", "Hanging", "test", events),
+    )
+    healthy = _registration("healthy", "healthy", events)
+    manager = PluginManager(
+        [hanging, healthy],
+        PluginContext(tmp_path),
+        startup_timeout=0.01,
+    )
+
+    await manager.start()
+
+    statuses = manager.statuses()
+    assert statuses[0]["state"] == PluginState.FAILED
+    assert statuses[0]["error"] == "Plugin startup timed out after 0.01s."
+    assert statuses[1]["state"] == PluginState.READY
+    assert events == [
+        "start:hanging",
+        "stop:hanging",
+        "load:healthy",
+        "start:healthy",
+    ]
+
+    await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_plugin_internal_timeout_is_not_misreported_as_lifecycle_timeout(tmp_path):
+    events: list[str] = []
+
+    class InternalTimeoutPlugin(FakePlugin):
+        async def start(self) -> None:
+            raise TimeoutError("plugin operation timed out")
+
+    registration = PluginRegistration(
+        "internal-timeout",
+        "Internal timeout",
+        "test",
+        "internal-timeout",
+        lambda _context: InternalTimeoutPlugin(
+            "internal-timeout", "Internal timeout", "test", events
+        ),
+    )
+    manager = PluginManager([registration], PluginContext(tmp_path), startup_timeout=1)
+
+    await manager.start()
+
+    status = manager.statuses()[0]
+    assert status["state"] == PluginState.FAILED
+    assert status["error"] == "Plugin startup failed. See the Episode log for details."
+
+
+@pytest.mark.asyncio
+async def test_plugin_cancellation_is_isolated_from_other_plugins(tmp_path):
+    events: list[str] = []
+
+    class CancellingPlugin(FakePlugin):
+        async def start(self) -> None:
+            raise asyncio.CancelledError
+
+    cancelling = PluginRegistration(
+        "cancelling",
+        "Cancelling",
+        "test",
+        "cancelling",
+        lambda _context: CancellingPlugin("cancelling", "Cancelling", "test", events),
+    )
+    healthy = _registration("healthy", "healthy", events)
+    manager = PluginManager([cancelling, healthy], PluginContext(tmp_path))
+
+    await manager.start()
+
+    statuses = manager.statuses()
+    assert statuses[0]["state"] == PluginState.FAILED
+    assert statuses[1]["state"] == PluginState.READY
+    assert "start:healthy" in events
+
+    await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_plugin_shutdown_timeout_does_not_skip_remaining_plugins(tmp_path):
+    events: list[str] = []
+
+    class HangingStopPlugin(FakePlugin):
+        async def stop(self) -> None:
+            events.append("stop:hanging")
+            await asyncio.Event().wait()
+
+    healthy = _registration("healthy", "healthy", events)
+    hanging = PluginRegistration(
+        "hanging",
+        "Hanging",
+        "test",
+        "hanging",
+        lambda _context: HangingStopPlugin("hanging", "Hanging", "test", events),
+    )
+    manager = PluginManager(
+        [healthy, hanging],
+        PluginContext(tmp_path),
+        shutdown_timeout=0.01,
+    )
+    await manager.start()
+
+    await manager.stop()
+
+    assert events[-2:] == ["stop:hanging", "stop:healthy"]
+
+
+@pytest.mark.asyncio
+async def test_non_cooperative_plugin_cannot_block_shutdown_timeout(tmp_path):
+    events: list[str] = []
+    release = asyncio.Event()
+
+    class NonCooperativePlugin(FakePlugin):
+        async def stop(self) -> None:
+            events.append("stop:non-cooperative")
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+
+    healthy = _registration("healthy", "healthy", events)
+    non_cooperative = PluginRegistration(
+        "non-cooperative",
+        "Non-cooperative",
+        "test",
+        "non-cooperative",
+        lambda _context: NonCooperativePlugin("non-cooperative", "Non-cooperative", "test", events),
+    )
+    manager = PluginManager(
+        [healthy, non_cooperative],
+        PluginContext(tmp_path),
+        shutdown_timeout=0.01,
+    )
+    await manager.start()
+
+    await asyncio.wait_for(manager.stop(), timeout=0.2)
+
+    assert events[-2:] == ["stop:non-cooperative", "stop:healthy"]
+    release.set()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
 async def test_partially_started_plugin_is_stopped_and_remains_failed(tmp_path):
     events: list[str] = []
 
@@ -359,3 +520,49 @@ async def test_invalid_public_status_is_replaced_with_failure(tmp_path):
 
     assert status["state"] == PluginState.FAILED
     assert status["metrics"] == {}
+
+
+@pytest.mark.asyncio
+async def test_plugin_status_redacts_common_secret_fields(tmp_path):
+    events: list[str] = []
+
+    class SensitiveStatusPlugin(FakePlugin):
+        def status(self) -> PluginStatus:
+            return PluginStatus(
+                "sensitive",
+                "Sensitive",
+                "test",
+                PluginState.READY,
+                metrics={
+                    "password": "camera-password",
+                    "nested": {
+                        "api-key": "service-key",
+                        "auth_token": "service-token",
+                        "password_configured": True,
+                        "token": "Profile_1",
+                    },
+                },
+            )
+
+    registration = PluginRegistration(
+        "sensitive",
+        "Sensitive",
+        "test",
+        "sensitive",
+        lambda _context: SensitiveStatusPlugin("sensitive", "Sensitive", "test", events),
+    )
+    manager = PluginManager([registration], PluginContext(tmp_path))
+
+    await manager.start()
+    status = manager.statuses()[0]
+    await manager.stop()
+
+    assert status["metrics"] == {
+        "password": "[redacted]",
+        "nested": {
+            "api-key": "[redacted]",
+            "auth_token": "[redacted]",
+            "password_configured": True,
+            "token": "Profile_1",
+        },
+    }

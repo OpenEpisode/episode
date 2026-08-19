@@ -70,7 +70,7 @@ class IngressRouter:
             try:
                 if registration.matcher(envelope):
                     matched.append(registration)
-            except Exception:
+            except (Exception, SystemExit):
                 logger.exception(
                     "Ingress matcher %s failed for receipt %s",
                     registration.id,
@@ -107,6 +107,8 @@ class IngressRouter:
                 registration.handler(envelope),
                 timeout=registration.timeout,
             )
+            if not isinstance(result, IngressHandlerResult):
+                raise TypeError("Ingress handler must return IngressHandlerResult")
         except TimeoutError:
             metrics.timeouts += 1
             metrics.last_error = "Handler timed out."
@@ -120,7 +122,23 @@ class IngressRouter:
                 state="timed_out",
                 error="Handler timed out.",
             )
-        except Exception:
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
+            metrics.failures += 1
+            metrics.last_error = "Handler cancelled itself."
+            logger.warning(
+                "Ingress handler %s cancelled itself for receipt %s",
+                registration.id,
+                envelope.receipt_id,
+            )
+            return IngressDispatchResult(
+                handler_id=registration.id,
+                state="failed",
+                error="Handler cancelled itself.",
+            )
+        except (Exception, SystemExit):
             metrics.failures += 1
             metrics.last_error = "Handler failed."
             logger.exception(

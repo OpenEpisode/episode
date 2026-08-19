@@ -78,6 +78,8 @@ class IngestionReceiptResponse(ApiModel):
     evidence_id: str | None
     episode_id: str | None
     has_artifact: bool = False
+    transport: str | None = None
+    reason: str | None = None
 
 
 class ClosestSnapshotResponse(ApiModel):

@@ -321,11 +321,29 @@ class EpisodeEngine:
         if evidence.episode_id:
             return
         if evidence.area_id:
-            episode = await self._repo.find_open_episode_for_area(evidence.area_id, self._timeout)
+            # FTP and similar transports may deliver queued media after an
+            # Episode closes. Prefer the source observation time so delayed
+            # Evidence joins the Episode during which it was captured.
+            episode = await self._repo.find_episode_for_area_at(
+                evidence.area_id,
+                evidence.timestamp,
+            )
+            if episode is None:
+                # Preserve the established behavior for sources whose clocks
+                # are slightly ahead of or behind the Event source.
+                episode = await self._repo.find_open_episode_for_area(
+                    evidence.area_id,
+                    self._timeout,
+                )
             if episode:
                 evidence.episode_id = episode.id
                 await self._repo.add_evidence_to_episode(evidence.id, episode.id)
-                logger.debug("Linked evidence %s to episode %s", evidence.id, episode.id)
+                logger.debug(
+                    "Linked evidence %s to %s episode %s",
+                    evidence.id,
+                    episode.state.value,
+                    episode.id,
+                )
                 await self._bus.publish(
                     Message(
                         type="episode.updated",

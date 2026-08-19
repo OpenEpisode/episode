@@ -35,7 +35,7 @@ from episode.api.schemas import (
     EvidenceResponse,
     IngestionReceiptResponse,
 )
-from episode.domain.models import Area, EpisodeState
+from episode.domain.models import Area, EpisodeState, ReceiptStatus
 from episode.inventory import (
     DeviceValidationService,
     InventoryConflictError,
@@ -64,6 +64,10 @@ def _public_event(event, receipt_sources: list[str] | None = None) -> EventRespo
 def _public_receipt(receipt) -> IngestionReceiptResponse:
     data = asdict(receipt) if not isinstance(receipt, dict) else dict(receipt)
     data["has_artifact"] = bool(data.get("artifact_id"))
+    metadata = data.get("metadata", {})
+    if isinstance(metadata, dict):
+        data["transport"] = metadata.get("transport")
+        data["reason"] = metadata.get("reason")
     return IngestionReceiptResponse.model_validate(data)
 
 
@@ -643,15 +647,28 @@ def create_api(
         episode_id: str | None = None,
         event_id: str | None = None,
         evidence_id: str | None = None,
+        source: str | None = None,
+        status: ReceiptStatus | None = None,
         limit: int = Query(200, ge=1, le=1000),
+        offset: int = Query(0, ge=0),
     ):
         receipts = await repo.list_ingestion_receipts(
             episode_id=episode_id,
             event_id=event_id,
             evidence_id=evidence_id,
+            source=source,
+            status=status,
             limit=limit,
+            offset=offset,
         )
         return [_public_receipt(receipt) for receipt in receipts]
+
+    @app.get("/api/v1/receipts/{receipt_id}", response_model=IngestionReceiptResponse)
+    async def get_receipt(receipt_id: str):
+        receipt = await repo.get_ingestion_receipt(receipt_id)
+        if receipt is None:
+            raise HTTPException(404, "Receipt not found")
+        return _public_receipt(receipt)
 
     @app.get("/api/v1/receipts/{receipt_id}/artifact")
     async def receipt_artifact(receipt_id: str):

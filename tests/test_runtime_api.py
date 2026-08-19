@@ -300,6 +300,8 @@ async def test_growing_collections_reject_unbounded_queries():
             await client.get("/api/v1/events?limit=501"),
             await client.get("/api/v1/evidence?limit=501"),
             await client.get("/api/v1/receipts?limit=1001"),
+            await client.get("/api/v1/receipts?offset=-1"),
+            await client.get("/api/v1/receipts?status=not-a-status"),
         ]
 
     assert all(response.status_code == 422 for response in responses)

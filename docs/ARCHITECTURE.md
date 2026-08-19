@@ -100,9 +100,11 @@ handler validates it after raw preservation. The referenced Device's stored Area
 is authoritative. Unknown or disabled Devices remain unmatched receipts, and
 producer identifiers provide idempotency without bypassing canonicalization.
 
-ISAPI stream ownership, Digest authentication, reconnect behavior, bounded
-stream decoding, ignored-Event policy, and XML interpretation live in its lazily
-activated Device plugin. ONVIF discovery, media registration, validation,
+ISAPI stream ownership, Digest authentication, idle-stream detection, reconnect
+behavior, bounded stream decoding, ignored-Event policy, and XML interpretation
+live in its lazily activated Device plugin. A 60-second byte-level watchdog
+breaks half-open connections and exposes stream activity and reconnect counters
+through plugin diagnostics. ONVIF discovery, media registration, validation,
 snapshot endpoints, pull-point subscriptions, and notification interpretation
 follow the same lifecycle. Complete SOAP pull responses are preserved before
 derived notifications are interpreted. The application core sees only generic
@@ -132,10 +134,18 @@ process and is trusted rather than sandboxed; ordinary lifecycle and handler
 failures are isolated, while native integrations should use supervised workers
 when process-level crash containment matters.
 
+External-plugin directories and entrypoints must resolve inside the mounted
+plugin root. Factory and partial-startup failures release namespaced ingress and
+media registrations. Public status projection rejects unsupported values and
+redacts common secret field names; because plugins are trusted code, this only
+prevents accidental disclosure and is not a sandbox.
+
 Runtime resources are entered through one application lifecycle and released in
 reverse order. Shared transports stop accepting deliveries before plugin
 handlers, actions, the Episode engine, and storage are stopped. A failure in one
 cleanup is logged without preventing the remaining resources from closing.
+Asynchronous plugin startup and shutdown are bounded independently, so a hung
+plugin cannot indefinitely block later integrations or application cleanup.
 
 
 ## Persistence model
@@ -217,7 +227,17 @@ raw artifacts.
 Recordings remain active for the Episode lifecycle and are stored as sequential,
 immutable segments. A shared `recording_session_id` and ordered `segment_index`
 identify chunks from one continuous recording action without relying on filename
-interpretation.
+interpretation. Graceful application shutdown terminates ffmpeg, validates and
+publishes the active segment, and removes its working `.part` path. An abrupt
+host or power failure can leave only the current incomplete segment unpublished;
+segments finalized before the interruption remain durable Episode Evidence.
+
+Evidence correlation uses the source observation timestamp and Area. Delayed
+uploads can therefore join an already-closed Episode when they were captured
+inside its recorded lifespan; this updates provenance and the portable bundle
+without reopening the Episode or restarting actions. If no lifespan contains
+the timestamp, an active same-Area Episode remains the fallback for small clock
+differences between independent sources.
 
 ## Canonical event identity
 
@@ -294,6 +314,12 @@ probes provide evidence without activating connectors, and transient failures
 are never presented as proof of unsupported hardware. Device changes are durable
 immediately but set a visible restart-required state because connector lifecycle
 reconfiguration is intentionally deferred to process startup in alpha.6.
+
+Receipt collection queries support deterministic offset pagination and filters
+for source, outcome status, Episode, Event, and Evidence. A single-receipt route
+provides direct traceability, while artifact bytes remain on the separate
+artifact download route. Transport and concise outcome reason are projected as
+first-class fields without removing the underlying diagnostic metadata.
 
 ## Known alpha constraints
 

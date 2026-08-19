@@ -58,6 +58,7 @@ def _installed_manifests(
         return manifests, failures
     try:
         roots = sorted(path for path in plugins_dir.iterdir() if path.is_dir())
+        resolved_plugins_dir = plugins_dir.resolve(strict=True)
     except OSError as error:
         logger.warning("Configured plugin directory %s cannot be read: %s", plugins_dir, error)
         return [
@@ -70,6 +71,12 @@ def _installed_manifests(
         ]
     for root in roots:
         if not (root / MANIFEST_FILENAME).is_file():
+            continue
+        try:
+            root.resolve(strict=True).relative_to(resolved_plugins_dir)
+        except (OSError, ValueError):
+            failures[root.name] = "plugin directory escapes the configured plugin root"
+            logger.warning("Ignoring plugin directory outside %s: %s", plugins_dir, root)
             continue
         try:
             manifest = parse_manifest(root)

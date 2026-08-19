@@ -53,6 +53,11 @@ before interpreting it. Connection and authentication failures are isolated to
 that Device and appear in the Device/System views and in
 `docker compose --env-file .env logs -f episode`.
 
+The ISAPI stream normally emits periodic status notifications. If an open
+connection produces no bytes for 60 seconds, Episode treats it as half-open,
+reports it as reconnecting, and establishes a fresh Digest-authenticated
+stream. Diagnostics include the last stream activity and reconnect count.
+
 ## Alarm Server events
 
 Alarm Server pushes require the camera or NVR to reach Episode's HTTP port.

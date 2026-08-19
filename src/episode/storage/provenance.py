@@ -193,7 +193,10 @@ class ProvenanceStore:
         episode_id: str | None = None,
         event_id: str | None = None,
         evidence_id: str | None = None,
+        source: str | None = None,
+        status: ReceiptStatus | None = None,
         limit: int = 200,
+        offset: int = 0,
     ) -> list[IngestionReceipt]:
         clauses: list[str] = []
         params: list[object] = []
@@ -201,14 +204,17 @@ class ProvenanceStore:
             ("episode_id", episode_id),
             ("event_id", event_id),
             ("evidence_id", evidence_id),
+            ("source", source),
+            ("status", status.value if status else None),
         ):
             if value:
                 clauses.append(f"{column} = ?")
                 params.append(value)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = await self._conn.execute_fetchall(
-            f"SELECT * FROM ingestion_receipts{where} ORDER BY received_at ASC LIMIT ?",
-            [*params, limit],
+            f"""SELECT * FROM ingestion_receipts{where}
+                ORDER BY received_at ASC, id ASC LIMIT ? OFFSET ?""",
+            [*params, limit, offset],
         )
         return [self._row_to_receipt(row) for row in rows]
 

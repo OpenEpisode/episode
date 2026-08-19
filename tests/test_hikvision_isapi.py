@@ -284,9 +284,111 @@ async def test_device_connection_preserves_fragmented_stream_and_stops_cleanly()
     assert deliveries[0].source == "hikvision:isapi"
     assert connection.status().state == PluginInstanceState.RUNNING
     assert connection.status().messages_received == 1
+    assert connection.status().details["connected"] is True
+    assert connection.status().details["connection_count"] == 1
+    assert connection.status().details["reconnects"] == 0
+    assert connection.status().details["last_stream_activity_at"]
 
     await connection.stop()
     assert connection.status().state == PluginInstanceState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_device_connection_reconnects_when_open_stream_becomes_idle():
+    deliveries = []
+    requests = 0
+
+    async def sink(delivery):
+        deliveries.append(delivery)
+
+    def client_factory(auth):
+        async def handler(request):
+            nonlocal requests
+            requests += 1
+            return httpx.Response(200, stream=_HangingStream([_xml()]))
+
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            auth=auth,
+            timeout=None,
+        )
+
+    connection = ISAPIDeviceConnection(
+        ISAPIDeviceConfig(
+            id="gate-camera",
+            name="Gate camera",
+            area_id="gate",
+            address="192.0.2.10",
+            username="admin",
+            password="secret",
+        ),
+        sink,
+        client_factory=client_factory,
+        reconnect_delay=0.01,
+        stream_idle_timeout=0.02,
+    )
+
+    await connection.start()
+    for _attempt in range(100):
+        if len(deliveries) >= 2:
+            break
+        await asyncio.sleep(0.01)
+
+    status = connection.status()
+    assert len(deliveries) >= 2
+    assert requests >= 2
+    assert status.state == PluginInstanceState.RUNNING
+    assert status.details["connected"] is True
+    assert status.details["connection_count"] >= 2
+    assert status.details["reconnects"] >= 1
+
+    await connection.stop()
+
+
+@pytest.mark.asyncio
+async def test_device_connection_reports_idle_stream_while_waiting_to_reconnect():
+    async def sink(_delivery):
+        raise AssertionError("an idle stream must not create a delivery")
+
+    def client_factory(auth):
+        async def handler(request):
+            return httpx.Response(200, stream=_HangingStream([]))
+
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            auth=auth,
+            timeout=None,
+        )
+
+    connection = ISAPIDeviceConnection(
+        ISAPIDeviceConfig(
+            id="gate-camera",
+            name="Gate camera",
+            area_id="gate",
+            address="192.0.2.10",
+            username="admin",
+            password="secret",
+        ),
+        sink,
+        client_factory=client_factory,
+        reconnect_delay=60,
+        stream_idle_timeout=0.01,
+    )
+
+    await connection.start()
+    for _attempt in range(100):
+        if connection.status().state == PluginInstanceState.STARTING:
+            if connection.status().error:
+                break
+        await asyncio.sleep(0.01)
+
+    status = connection.status()
+    assert status.state == PluginInstanceState.STARTING
+    assert status.error == "ISAPI event stream was idle for 0.01s; reconnecting."
+    assert status.details["connected"] is False
+    assert status.details["last_disconnect_at"]
+
+    await connection.stop()
 
 
 @pytest.mark.asyncio
@@ -343,10 +445,8 @@ async def test_device_connection_preserves_ignored_state_transitions_not_heartbe
         "inactive",
     ]
     assert connection.status().messages_received == 5
-    assert connection.status().details == {
-        "deliveries_preserved": 3,
-        "deliveries_suppressed": 2,
-    }
+    assert connection.status().details["deliveries_preserved"] == 3
+    assert connection.status().details["deliveries_suppressed"] == 2
 
     await connection.stop()
 

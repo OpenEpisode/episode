@@ -69,6 +69,23 @@ def test_missing_and_incompatible_plugins_report_safe_states(tmp_path):
     assert not any(name.startswith("_episode_external_example_udp_sensor") for name in sys.modules)
 
 
+def test_external_plugin_directory_cannot_escape_plugins_root(tmp_path):
+    outside = tmp_path / "outside"
+    shutil.copytree(EXAMPLE_PLUGIN, outside)
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    (plugins_dir / "example-udp-sensor").symlink_to(outside, target_is_directory=True)
+
+    registration = discover_external_plugins(
+        plugins_dir,
+        [ExternalPluginConfig(id="example-udp-sensor", device_ids=["sensor"])],
+    )[0]
+
+    assert registration.unavailable_state == PluginState.INCOMPLETE
+    assert "escapes the configured plugin root" in registration.unavailable_error
+    assert not any(name.startswith("_episode_external_example_udp_sensor") for name in sys.modules)
+
+
 def test_external_plugin_configuration_rejects_duplicate_ids():
     with pytest.raises(ValueError, match="duplicate ids"):
         EpisodeConfig(
@@ -285,3 +302,224 @@ def create_plugin(context):
         await manager.stop()
         await engine.stop()
         await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_external_plugin_missing_dependency_fails_without_remaining_imported(tmp_path):
+    plugin_root = tmp_path / "plugins" / "missing-dependency"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "episode-plugin.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "id": "missing-dependency",
+                "name": "Missing dependency",
+                "version": "1.0.0",
+                "plugin_api": "1",
+                "kind": "ingress",
+                "entrypoint": "plugin.py:create_plugin",
+            }
+        )
+    )
+    (plugin_root / "plugin.py").write_text(
+        "import dependency_that_episode_does_not_install\n\n"
+        "def create_plugin(context):\n    raise AssertionError('unreachable')\n"
+    )
+    registrations = discover_external_plugins(
+        tmp_path / "plugins",
+        [ExternalPluginConfig(id="missing-dependency")],
+    )
+
+    async def raw_delivery_sink(_delivery):
+        raise AssertionError("unreachable")
+
+    manager = PluginManager(
+        registrations,
+        PluginContext(
+            tmp_path / "plugins",
+            raw_delivery_sink=raw_delivery_sink,
+            ingress_router=IngressRouter(),
+        ),
+    )
+
+    await manager.start()
+
+    status = manager.statuses()[0]
+    assert status["state"] == PluginState.FAILED
+    assert status["error"] == "Plugin startup failed. See the Episode log for details."
+    assert not any(name.startswith("_episode_external_missing_dependency") for name in sys.modules)
+
+
+@pytest.mark.asyncio
+async def test_external_plugin_startup_timeout_removes_registered_resources(tmp_path):
+    plugin_root = tmp_path / "plugins" / "partial-external"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "episode-plugin.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "id": "partial-external",
+                "name": "Partial external",
+                "version": "1.0.0",
+                "plugin_api": "1",
+                "kind": "device",
+                "entrypoint": "plugin.py:create_plugin",
+            }
+        )
+    )
+    (plugin_root / "plugin.py").write_text(
+        """import asyncio
+from episode.plugin_api import (
+    HandlerRegistration, HandlerResult, MediaSource, PluginState, PluginStatus,
+)
+
+async def handle(delivery):
+    return HandlerResult()
+
+class Plugin:
+    def __init__(self, context):
+        self.context = context
+    async def start(self):
+        self.context.ingress.register(HandlerRegistration(
+            id="events", matcher=lambda delivery: True,
+            handler=handle))
+        self.context.media.register(MediaSource(
+            device_id=self.context.devices[0].id,
+            stream_uri="rtsp://192.0.2.10/live"))
+        await asyncio.Event().wait()
+    async def stop(self):
+        pass
+    def status(self):
+        return PluginStatus(state=PluginState.READY)
+
+def create_plugin(context):
+    return Plugin(context)
+"""
+    )
+    camera = Device(id="camera", name="Camera", device_type="camera", area_id="garden")
+    router = IngressRouter()
+    media = MediaRegistry()
+    registrations = discover_external_plugins(
+        tmp_path / "plugins",
+        [ExternalPluginConfig(id="partial-external", device_ids=[camera.id])],
+    )
+    manager = PluginManager(
+        registrations,
+        PluginContext(
+            tmp_path / "plugins",
+            configured_devices=(asdict(camera),),
+            raw_delivery_sink=lambda _delivery: None,
+            ingress_router=router,
+            media_registry=media,
+        ),
+        startup_timeout=0.01,
+    )
+
+    await manager.start()
+
+    status = manager.statuses()[0]
+    assert status["state"] == PluginState.FAILED
+    assert status["error"] == "Plugin startup timed out after 0.01s."
+    assert router.status("external:partial-external:events") is None
+    assert media.get(camera.id) is None
+
+
+@pytest.mark.asyncio
+async def test_external_plugin_factory_failure_removes_registered_resources(tmp_path):
+    plugin_root = tmp_path / "plugins" / "failed-factory"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "episode-plugin.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "id": "failed-factory",
+                "name": "Failed factory",
+                "version": "1.0.0",
+                "plugin_api": "1",
+                "kind": "device",
+                "entrypoint": "plugin.py:create_plugin",
+            }
+        )
+    )
+    (plugin_root / "plugin.py").write_text(
+        """from episode.plugin_api import HandlerRegistration, MediaSource
+
+async def handle(delivery):
+    raise AssertionError("unreachable")
+
+def create_plugin(context):
+    context.ingress.register(HandlerRegistration(
+        id="events", matcher=lambda delivery: True, handler=handle))
+    context.media.register(MediaSource(
+        device_id=context.devices[0].id, stream_uri="rtsp://192.0.2.10/live"))
+    raise RuntimeError("factory failed")
+"""
+    )
+    camera = Device(id="camera", name="Camera", device_type="camera", area_id="garden")
+    router = IngressRouter()
+    media = MediaRegistry()
+    registrations = discover_external_plugins(
+        tmp_path / "plugins",
+        [ExternalPluginConfig(id="failed-factory", device_ids=[camera.id])],
+    )
+
+    async def raw_delivery_sink(_delivery):
+        raise AssertionError("unreachable")
+
+    manager = PluginManager(
+        registrations,
+        PluginContext(
+            tmp_path / "plugins",
+            configured_devices=(asdict(camera),),
+            raw_delivery_sink=raw_delivery_sink,
+            ingress_router=router,
+            media_registry=media,
+        ),
+    )
+
+    await manager.start()
+
+    assert manager.statuses()[0]["state"] == PluginState.FAILED
+    assert router.status("external:failed-factory:events") is None
+    assert media.get(camera.id) is None
+
+
+@pytest.mark.asyncio
+async def test_external_plugin_system_exit_is_isolated_and_module_removed(tmp_path):
+    plugin_root = tmp_path / "plugins" / "terminating-plugin"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "episode-plugin.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "id": "terminating-plugin",
+                "name": "Terminating plugin",
+                "version": "1.0.0",
+                "plugin_api": "1",
+                "kind": "ingress",
+                "entrypoint": "plugin.py:create_plugin",
+            }
+        )
+    )
+    (plugin_root / "plugin.py").write_text("raise SystemExit(12)\n")
+    registrations = discover_external_plugins(
+        tmp_path / "plugins",
+        [ExternalPluginConfig(id="terminating-plugin")],
+    )
+
+    async def raw_delivery_sink(_delivery):
+        raise AssertionError("unreachable")
+
+    manager = PluginManager(
+        registrations,
+        PluginContext(
+            tmp_path / "plugins",
+            raw_delivery_sink=raw_delivery_sink,
+            ingress_router=IngressRouter(),
+        ),
+    )
+
+    await manager.start()
+
+    assert manager.statuses()[0]["state"] == PluginState.FAILED
+    assert not any(name.startswith("_episode_external_terminating_plugin") for name in sys.modules)

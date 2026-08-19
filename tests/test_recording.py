@@ -432,6 +432,65 @@ async def test_completed_segments_are_published_while_latest_remains_active(
 
 
 @pytest.mark.asyncio
+async def test_graceful_stop_finalizes_active_recording_segment(repo, bus, config, monkeypatch):
+    recorder = RecordingEngine(repo, bus, config.evidence_dir, segment_seconds=60)
+    process_started = asyncio.Event()
+    process_finished = asyncio.Event()
+    published = []
+
+    class ActiveProcess:
+        returncode = None
+
+        def terminate(self):
+            self.returncode = 0
+            process_finished.set()
+
+        def kill(self):
+            self.returncode = -9
+            process_finished.set()
+
+        async def wait(self):
+            await process_finished.wait()
+            return self.returncode
+
+    async def start_ffmpeg(*args, **kwargs):
+        working_path = args[-1].replace("%06d", "000000")
+        os.makedirs(os.path.dirname(working_path), exist_ok=True)
+        with open(working_path, "wb") as segment:
+            segment.write(b"video" * 1024)
+        process_started.set()
+        return ActiveProcess()
+
+    async def valid_video(path):
+        return True
+
+    async def capture_evidence(message):
+        published.append(message.data["evidence"])
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start_ffmpeg)
+    monkeypatch.setattr(recorder, "_has_video_stream", valid_video)
+    bus.subscribe("evidence.received", capture_evidence)
+    await recorder.start()
+
+    await recorder._start_recording(
+        "episode-1",
+        _video_device("camera-x", "area-1", "on_episode"),
+        "rtsp://camera-x/stream",
+    )
+    await process_started.wait()
+    await recorder.stop()
+
+    assert recorder._recordings == {}
+    assert len(published) == 1
+    output_path = published[0]["file_path"]
+    assert os.path.exists(output_path)
+    assert output_path.endswith("_000000.mp4")
+    assert not os.path.exists(f"{output_path}.part")
+    assert published[0]["metadata"]["recording_session_id"]
+    assert published[0]["metadata"]["segment_index"] == 0
+
+
+@pytest.mark.asyncio
 async def test_failed_recording_does_not_retry_after_episode_closes(repo, bus, config, monkeypatch):
     await repo.initialize()
     await _add_areas(repo, "garagem")

@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EVENT_PATH = "/ISAPI/Event/notification/alertStream"
 DEFAULT_MAX_BUFFER_BYTES = 4 * 1024 * 1024
+DEFAULT_STREAM_IDLE_TIMEOUT = 60.0
 _XML_END = b"</EventNotificationAlert>"
 _XML_STARTS = (b"<?xml", b"<EventNotificationAlert")
 
@@ -87,7 +88,11 @@ ClientFactory = Callable[[httpx.DigestAuth], httpx.AsyncClient]
 
 
 def _default_client_factory(auth: httpx.DigestAuth) -> httpx.AsyncClient:
-    return httpx.AsyncClient(auth=auth, timeout=None, follow_redirects=False)
+    return httpx.AsyncClient(
+        auth=auth,
+        timeout=httpx.Timeout(DEFAULT_STREAM_IDLE_TIMEOUT, connect=10.0),
+        follow_redirects=False,
+    )
 
 
 class ISAPIDeviceConnection:
@@ -101,15 +106,20 @@ class ISAPIDeviceConnection:
         client_factory: ClientFactory = _default_client_factory,
         reconnect_delay: float = 5.0,
         max_buffer_bytes: int = DEFAULT_MAX_BUFFER_BYTES,
+        stream_idle_timeout: float = DEFAULT_STREAM_IDLE_TIMEOUT,
     ):
+        if stream_idle_timeout <= 0:
+            raise ValueError("ISAPI stream idle timeout must be greater than zero")
         self.config = config
         self._delivery_sink = delivery_sink
         self._client_factory = client_factory
         self._reconnect_delay = reconnect_delay
         self._max_buffer_bytes = max_buffer_bytes
+        self._stream_idle_timeout = stream_idle_timeout
         self._client: httpx.AsyncClient | None = None
         self._task: asyncio.Task | None = None
         self._running = False
+        self._connection_count = 0
         self._ignored_states: dict[tuple[str, str], str] = {}
         self._status = PluginInstanceStatus(
             id=config.id,
@@ -118,6 +128,19 @@ class ISAPIDeviceConnection:
         )
 
     def status(self) -> PluginInstanceStatus:
+        if (
+            self._running
+            and self._task is not None
+            and self._task.done()
+            and self._status.state != PluginInstanceState.FAILED
+        ):
+            details = {**self._status.details, "connected": False}
+            return replace(
+                self._status,
+                state=PluginInstanceState.FAILED,
+                error="ISAPI connection worker stopped unexpectedly.",
+                details=details,
+            )
         return self._status
 
     async def start(self) -> None:
@@ -150,18 +173,13 @@ class ISAPIDeviceConnection:
             try:
                 async with self._client.stream("GET", self.config.url) as response:
                     response.raise_for_status()
-                    self._status = replace(
-                        self._status,
-                        state=PluginInstanceState.RUNNING,
-                        connected_at=datetime.now(tz=timezone.utc),
-                        error=None,
-                    )
+                    self._set_connected()
                     logger.info(
                         "Hikvision ISAPI connected for device %s (%s)",
                         self.config.id,
                         self.config.url,
                     )
-                    async for chunk in response.aiter_bytes():
+                    async for chunk in self._chunks(response):
                         for payload in decoder.feed(chunk):
                             await self._preserve(payload)
                 if self._running:
@@ -175,6 +193,10 @@ class ISAPIDeviceConnection:
                     self._set_failed(error)
                 else:
                     self._set_reconnecting(error)
+            except TimeoutError:
+                self._set_reconnecting(
+                    f"ISAPI event stream was idle for {self._stream_idle_timeout:g}s; reconnecting."
+                )
             except (httpx.RequestError, ValueError) as exc:
                 self._set_reconnecting(f"ISAPI connection failed ({exc.__class__.__name__}).")
             except Exception:
@@ -183,6 +205,44 @@ class ISAPIDeviceConnection:
 
             if self._running:
                 await asyncio.sleep(self._reconnect_delay)
+
+    async def _chunks(self, response: httpx.Response):
+        iterator = response.aiter_bytes().__aiter__()
+        while True:
+            try:
+                async with asyncio.timeout(self._stream_idle_timeout):
+                    chunk = await anext(iterator)
+            except StopAsyncIteration:
+                return
+            self._record_stream_activity(datetime.now(tz=timezone.utc))
+            yield chunk
+
+    def _set_connected(self) -> None:
+        connected_at = datetime.now(tz=timezone.utc)
+        self._connection_count += 1
+        details = {
+            **self._status.details,
+            "connected": True,
+            "connection_count": self._connection_count,
+            "reconnects": max(self._connection_count - 1, 0),
+            "stream_idle_timeout_seconds": self._stream_idle_timeout,
+        }
+        self._status = replace(
+            self._status,
+            state=PluginInstanceState.RUNNING,
+            connected_at=connected_at,
+            error=None,
+            details=details,
+        )
+
+    def _record_stream_activity(self, received_at: datetime) -> None:
+        self._status = replace(
+            self._status,
+            details={
+                **self._status.details,
+                "last_stream_activity_at": received_at.isoformat(),
+            },
+        )
 
     async def _preserve(self, payload: bytes) -> None:
         received_at = datetime.now(tz=timezone.utc)
@@ -238,6 +298,11 @@ class ISAPIDeviceConnection:
             self._status,
             state=PluginInstanceState.STARTING,
             error=error,
+            details={
+                **self._status.details,
+                "connected": False,
+                "last_disconnect_at": datetime.now(tz=timezone.utc).isoformat(),
+            },
         )
 
     def _set_failed(self, error: str) -> None:
@@ -246,6 +311,7 @@ class ISAPIDeviceConnection:
             self._status,
             state=PluginInstanceState.FAILED,
             error=error,
+            details={**self._status.details, "connected": False},
         )
 
 

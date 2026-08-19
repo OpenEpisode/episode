@@ -11,7 +11,15 @@ import pytest
 import pytest_asyncio
 
 from episode.config import EpisodeConfig
-from episode.domain.models import Area, Device, EpisodeState, Event, EventState
+from episode.domain.models import (
+    Area,
+    Device,
+    EpisodeState,
+    Event,
+    EventState,
+    Evidence,
+    IngestionReceipt,
+)
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
 from episode.storage import projection as projection_module
@@ -380,6 +388,127 @@ async def test_orphan_evidence_matches_event(engine, repo, bus):
     assert len(evidence_list) == 1
     ev = evidence_list[0]
     assert ev.episode_id is not None
+
+
+@pytest.mark.asyncio
+async def test_delayed_evidence_uses_capture_time_to_join_closed_episode(
+    engine,
+    repo,
+    bus,
+    config,
+):
+    event_time = datetime.now(tz=timezone.utc) - timedelta(seconds=2)
+    await bus.publish(
+        Message(
+            type="event.received",
+            data={
+                "event": {
+                    "device_id": "device-1",
+                    "area_id": "area-1",
+                    "timestamp": event_time,
+                    "event_type": "human_detection",
+                    "event_state": EventState.ACTIVE.value,
+                    "source": "hikvision:isapi",
+                }
+            },
+        )
+    )
+    episode = (await repo.list_episodes())[0]
+    await repo.update_episode_state(episode.id, EpisodeState.CLOSED)
+
+    source_path = os.path.join(config.data_dir, "delayed-snapshot.jpg")
+    with open(source_path, "wb") as snapshot:
+        snapshot.write(b"delayed snapshot")
+    observed_at = event_time + timedelta(seconds=1)
+    receipt = IngestionReceipt(
+        source="ftp:upload",
+        received_at=datetime.now(tz=timezone.utc),
+        observed_at=observed_at,
+        device_id="device-1",
+        area_id="area-1",
+    )
+    await repo.create_ingestion_receipt(receipt)
+
+    evidence = await engine.ingest_evidence(
+        Evidence(
+            device_id="device-1",
+            area_id="area-1",
+            timestamp=observed_at,
+            evidence_type="snapshot",
+            file_path=source_path,
+            mime_type="image/jpeg",
+        ),
+        receipt=receipt,
+    )
+
+    stored_receipt = await repo.get_ingestion_receipt(receipt.id)
+    stored_evidence = await repo.get_evidence(evidence.id)
+    updated_episode = await repo.get_episode(episode.id)
+    assert evidence.episode_id == episode.id
+    assert stored_receipt.episode_id == episode.id
+    assert stored_receipt.evidence_id == evidence.id
+    assert updated_episode.state == EpisodeState.CLOSED
+    assert updated_episode.evidence_count == 1
+    assert stored_evidence.file_path.startswith(
+        os.path.join(config.data_dir, "episodes", episode.id, "snapshots")
+    )
+
+
+@pytest.mark.asyncio
+async def test_delayed_evidence_prefers_containing_closed_episode_over_new_open_episode(
+    engine,
+    repo,
+    bus,
+    config,
+):
+    first_event_time = datetime.now(tz=timezone.utc) - timedelta(seconds=10)
+    event_template = {
+        "device_id": "device-1",
+        "area_id": "area-1",
+        "event_type": "human_detection",
+        "event_state": EventState.ACTIVE.value,
+        "source": "hikvision:isapi",
+    }
+    await bus.publish(
+        Message(
+            type="event.received",
+            data={"event": {**event_template, "timestamp": first_event_time}},
+        )
+    )
+    first_episode = (await repo.list_episodes())[0]
+    await repo.update_episode_state(first_episode.id, EpisodeState.CLOSED)
+
+    await bus.publish(
+        Message(
+            type="event.received",
+            data={
+                "event": {
+                    **event_template,
+                    "timestamp": datetime.now(tz=timezone.utc),
+                }
+            },
+        )
+    )
+    episodes = await repo.list_episodes()
+    open_episode = next(item for item in episodes if item.state == EpisodeState.ACTIVE)
+
+    source_path = os.path.join(config.data_dir, "queued-snapshot.jpg")
+    with open(source_path, "wb") as snapshot:
+        snapshot.write(b"queued snapshot")
+    evidence = await engine.ingest_evidence(
+        Evidence(
+            device_id="device-1",
+            area_id="area-1",
+            timestamp=first_event_time + timedelta(seconds=1),
+            evidence_type="snapshot",
+            file_path=source_path,
+            mime_type="image/jpeg",
+        )
+    )
+
+    assert evidence.episode_id == first_episode.id
+    assert (await repo.get_episode(first_episode.id)).evidence_count == 1
+    assert (await repo.get_episode(open_episode.id)).evidence_count == 0
 
 
 @pytest.mark.asyncio

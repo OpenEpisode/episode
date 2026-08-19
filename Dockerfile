@@ -16,7 +16,7 @@ RUN apt-get update \
     && groupadd -r episode \
     && useradd -r -g episode -d /var/episode -s /bin/false episode
 
-ARG EPISODE_VERSION=0.1.0-alpha.12
+ARG EPISODE_VERSION=0.1.0-alpha.13
 ARG EPISODE_REVISION=unknown
 
 LABEL org.opencontainers.image.title="Episode" \

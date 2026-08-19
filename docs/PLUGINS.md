@@ -67,7 +67,9 @@ relative `.py` file inside the plugin directory followed by a callable name. A
 larger plugin may use `package/__init__.py:create_plugin`; normal relative
 imports inside that package are supported. `configuration_schema` documents the
 settings contract for tooling and a future generated configuration UI. In this
-alpha the plugin remains responsible for validating its setting values.
+alpha the plugin remains responsible for validating its setting values. Plugin
+directories and entrypoints that resolve outside the mounted plugin root are
+rejected.
 
 Episode reads manifests at startup but imports code only for plugins explicitly
 enabled in `episode.json`. Unrelated files—including native SDK libraries—are
@@ -134,7 +136,11 @@ def create_plugin(context: PluginContext) -> MyPlugin:
 Do not open connections, start threads, or perform network I/O at module import
 time. Validate configuration and allocate runtime resources in the factory or
 `start()`. `stop()` must close connections, cancel owned tasks, and return
-promptly.
+promptly. Episode bounds asynchronous startup to 60 seconds and shutdown to 15
+seconds; a timeout fails only that plugin and does not prevent other configured
+plugins from starting or stopping. These bounds cannot protect Episode from
+synchronous blocking code, which is another reason to install only reviewed
+plugins.
 
 ## Preserve before interpreting
 
@@ -264,7 +270,12 @@ Devices. Install only reviewed plugins and keep the `plugins/` mount read-only.
 
 Episode isolates ordinary startup, status, handler, timeout, and shutdown
 exceptions so one failing plugin does not prevent other configured integrations
-from operating. Native code that requires stronger crash isolation should use a
-supervised worker process, as the built-in Hikvision HCNetSDK integration does.
-Process-level sandboxing and third-party dependency installation are outside the
-Alpha.12 contract.
+from operating. Resource registrations made by a plugin are removed even when
+its factory or startup fails. Common secret fields in status output are redacted,
+but this is a guard against accidental exposure rather than a security boundary;
+generic identifier fields such as `token` remain visible because some protocols
+use them for non-secret profile identity, and trusted code can still disclose
+data under arbitrary names. Native code that requires stronger crash isolation
+should use a supervised worker process, as the built-in Hikvision HCNetSDK
+integration does. Process-level sandboxing and third-party dependency
+installation are outside the version-1 contract.

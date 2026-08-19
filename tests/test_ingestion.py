@@ -181,6 +181,38 @@ async def test_router_isolates_failure_and_timeout():
 
 
 @pytest.mark.asyncio
+async def test_router_isolates_malformed_result_and_self_cancellation():
+    router = IngressRouter()
+
+    async def malformed(_envelope):
+        return {"claimed": True}
+
+    async def cancel_itself(_envelope):
+        raise asyncio.CancelledError
+
+    router.register(IngressHandlerRegistration("malformed", malformed, lambda _item: True))
+    router.register(IngressHandlerRegistration("cancelled", cancel_itself, lambda _item: True))
+    envelope = StoredIngressEnvelope(
+        receipt_id="receipt",
+        artifact_id="artifact",
+        source="test",
+        transport="test",
+        received_at=datetime.now(tz=timezone.utc),
+        payload=b"payload",
+        media_type="application/octet-stream",
+    )
+
+    results = await router.dispatch(envelope)
+
+    assert [(result.handler_id, result.state, result.error) for result in results] == [
+        ("malformed", "failed", "Handler failed."),
+        ("cancelled", "failed", "Handler cancelled itself."),
+    ]
+    assert router.status("malformed")["failures"] == 1
+    assert router.status("cancelled")["failures"] == 1
+
+
+@pytest.mark.asyncio
 async def test_multiple_handler_claims_are_rejected_without_ordering_side_effects(tmp_path):
     _config, repository, engine, router, ingestion = await _pipeline(tmp_path)
     timestamp = datetime.now(tz=timezone.utc)

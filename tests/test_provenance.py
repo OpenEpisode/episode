@@ -109,6 +109,20 @@ async def test_duplicate_deliveries_share_canonical_event_and_bundle(tmp_path):
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             event_body = (await client.get(f"/api/v1/events/{events[0].id}")).json()
             receipt_body = (await client.get(f"/api/v1/receipts?event_id={events[0].id}")).json()
+            first_page = (
+                await client.get(f"/api/v1/receipts?event_id={events[0].id}&limit=1")
+            ).json()
+            second_page = (
+                await client.get(f"/api/v1/receipts?event_id={events[0].id}&limit=1&offset=1")
+            ).json()
+            filtered = (
+                await client.get(
+                    "/api/v1/receipts",
+                    params={"source": receipts[0].source, "status": "accepted"},
+                )
+            ).json()
+            receipt_detail = (await client.get(f"/api/v1/receipts/{receipts[0].id}")).json()
+            missing_receipt = await client.get("/api/v1/receipts/not-found")
             artifact_response = await client.get(f"/api/v1/receipts/{receipts[0].id}/artifact")
 
         assert set(event_body["sources"]) == {
@@ -117,6 +131,12 @@ async def test_duplicate_deliveries_share_canonical_event_and_bundle(tmp_path):
         }
         assert len(receipt_body) == 2
         assert all("file_path" not in item for item in receipt_body)
+        assert [*first_page, *second_page] == receipt_body
+        assert [item["id"] for item in filtered] == [receipts[0].id]
+        assert receipt_detail["id"] == receipts[0].id
+        assert receipt_detail["transport"] is None
+        assert receipt_detail["reason"] is None
+        assert missing_receipt.status_code == 404
         assert artifact_response.content in {
             b"<isapi>original one</isapi>",
             b"<alarm>original two</alarm>",

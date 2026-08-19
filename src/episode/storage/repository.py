@@ -305,7 +305,10 @@ class Repository:
         episode_id: str | None = None,
         event_id: str | None = None,
         evidence_id: str | None = None,
+        source: str | None = None,
+        status: ReceiptStatus | None = None,
         limit: int = 200,
+        offset: int = 0,
     ) -> list[IngestionReceipt]:
         if self._provenance is None:
             raise RuntimeError("Repository is not initialized")
@@ -313,7 +316,10 @@ class Repository:
             episode_id=episode_id,
             event_id=event_id,
             evidence_id=evidence_id,
+            source=source,
+            status=status,
             limit=limit,
+            offset=offset,
         )
 
     async def get_ingestion_receipt(self, receipt_id: str) -> IngestionReceipt | None:
@@ -1050,6 +1056,28 @@ class Repository:
             episode.last_activity_at if episode else None,
         )
         return episode
+
+    async def find_episode_for_area_at(
+        self,
+        area_id: str,
+        timestamp: datetime,
+    ) -> Episode | None:
+        """Find a mutable Episode whose recorded lifespan contains an observation."""
+        observed_at = _utc_iso(timestamp)
+        rows = await self._conn.execute_fetchall(
+            """SELECT * FROM episodes
+               WHERE primary_area_id = ?
+                 AND state IN ('active', 'quiescent', 'closed')
+                 AND julianday(start_time) <= julianday(?)
+                 AND (
+                     end_time IS NULL
+                     OR julianday(?) <= julianday(end_time)
+                 )
+               ORDER BY julianday(start_time) DESC
+               LIMIT 1""",
+            (area_id, observed_at, observed_at),
+        )
+        return self._row_to_episode(rows[0]) if rows else None
 
     async def find_recent_closed_episode_for_inactive(
         self,
