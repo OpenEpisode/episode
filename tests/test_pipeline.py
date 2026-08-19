@@ -584,9 +584,13 @@ async def test_episode_closes_after_timeout(engine, repo, bus):
         )
     )
 
-    await asyncio.sleep(3.0)
+    async with asyncio.timeout(5):
+        while True:
+            episodes = await repo.list_episodes()
+            if episodes[0].state == EpisodeState.CLOSED:
+                break
+            await asyncio.sleep(0.05)
 
-    episodes = await repo.list_episodes()
     assert len(episodes) == 1
     assert episodes[0].state == EpisodeState.CLOSED
 
