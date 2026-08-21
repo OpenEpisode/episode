@@ -18,7 +18,6 @@ async def inventory_api(tmp_path):
     repository = Repository(EpisodeConfig(data_dir=str(tmp_path)))
     await repository.initialize()
     inventory = InventoryService(repository)
-    await inventory.bootstrap([], [])
     app = create_api(repository, str(tmp_path), inventory=inventory)
     transport = httpx.ASGITransport(app=app)
     client = httpx.AsyncClient(transport=transport, base_url="http://test")
@@ -58,12 +57,11 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
     assert body["configuration"]["password_configured"] is True
     assert "top-secret" not in json.dumps(body)
     assert "admin" not in json.dumps(body)
-    assert inventory.restart_required is True
-
     stored = await repository.get_device("door-camera")
     assert stored.username == "admin"
     assert stored.password == "top-secret"
-    assert {"video", "onvif", "isapi"}.issubset(stored.capabilities)
+    assert {"video", "onvif", "isapi"}.issubset(stored.configs)
+    assert not stored.capabilities
 
     update = await client.put(
         "/api/v1/devices/door-camera",
@@ -81,8 +79,61 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
     stored = await repository.get_device("door-camera")
     assert stored.username == "admin"
     assert stored.password == "top-secret"
-    assert "isapi" not in stored.capabilities
+    assert "isapi" not in stored.configs
     assert stored.get_config("onvif").settings["events_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_device_writes_reconcile_runtime_integrations_automatically(tmp_path):
+    repository = Repository(EpisodeConfig(data_dir=str(tmp_path)))
+    await repository.initialize()
+    reconciliations = 0
+
+    async def reconcile_device_integrations():
+        nonlocal reconciliations
+        reconciliations += 1
+
+    inventory = InventoryService(
+        repository,
+        on_device_configuration_changed=reconcile_device_integrations,
+    )
+    app = create_api(repository, str(tmp_path), inventory=inventory)
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/v1/areas", json={"id": "gate", "name": "Gate"})
+            created = await client.post(
+                "/api/v1/devices",
+                json={
+                    "id": "sensor",
+                    "name": "Sensor",
+                    "device_type": "sensor",
+                    "area_id": "gate",
+                    "video": {"enabled": False},
+                    "onvif": {"enabled": False},
+                },
+            )
+            assert created.status_code == 201
+            assert reconciliations == 1
+
+            updated = await client.put(
+                "/api/v1/devices/sensor",
+                json={
+                    "name": "Sensor renamed",
+                    "device_type": "sensor",
+                    "area_id": "gate",
+                    "video": {"enabled": False},
+                    "onvif": {"enabled": False},
+                },
+            )
+            assert updated.status_code == 200
+            assert reconciliations == 2
+
+            deleted = await client.delete("/api/v1/devices/sensor")
+            assert deleted.status_code == 204
+            assert reconciliations == 3
+    finally:
+        await repository.close()
 
 
 @pytest.mark.asyncio
@@ -147,8 +198,8 @@ async def test_device_type_controls_doorbell_capability_and_rejects_vendor_as_ty
     )
     assert created.status_code == 201
     assert created.json()["device_type"] == "doorbell"
-    assert created.json()["configuration"]["doorbell"] is True
-    assert "doorbell" in (await repository.get_device("entry-intercom")).capabilities
+    assert "doorbell" not in created.json()["capabilities"]
+    assert (await repository.get_device("entry-intercom")).device_type == "doorbell"
 
     changed_role = await client.put(
         "/api/v1/devices/entry-intercom",
@@ -161,7 +212,7 @@ async def test_device_type_controls_doorbell_capability_and_rejects_vendor_as_ty
     )
     assert changed_role.status_code == 200
     assert changed_role.json()["device_type"] == "camera"
-    assert changed_role.json()["configuration"]["doorbell"] is False
+    assert "doorbell" not in changed_role.json()["capabilities"]
 
     invalid = await client.post(
         "/api/v1/devices",

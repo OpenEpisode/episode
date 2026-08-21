@@ -21,32 +21,8 @@ async def inventory(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_file_inventory_is_bootstrapped_only_once(inventory):
-    repository, service = inventory
-    areas = [{"id": "gate", "name": "Gate"}]
-    devices = [
-        {
-            "id": "gate-camera",
-            "name": "Gate camera",
-            "device_type": "camera",
-            "area_id": "gate",
-            "ip_address": "192.0.2.10",
-        }
-    ]
-
-    assert await service.bootstrap(areas, devices) is True
-    stored = await repository.get_device("gate-camera")
-    stored.name = "Edited in UI"
-    await repository.upsert_device(stored)
-
-    assert await service.bootstrap(areas, devices) is False
-    assert (await repository.get_device("gate-camera")).name == "Edited in UI"
-
-
-@pytest.mark.asyncio
 async def test_archived_inventory_is_retained_but_excluded_from_runtime_lists(inventory):
     repository, service = inventory
-    await service.bootstrap([], [])
     await service.save_area(Area(id="gate", name="Gate"), create=True)
     await service.save_device(
         Device(id="camera", name="Camera", device_type="camera", area_id="gate"),
@@ -60,13 +36,11 @@ async def test_archived_inventory_is_retained_but_excluded_from_runtime_lists(in
     assert await repository.list_devices() == []
     assert [item.id for item in await repository.list_devices(include_disabled=True)] == ["camera"]
     assert (await repository.get_device("camera")).enabled is False
-    assert service.restart_required is True
 
 
 @pytest.mark.asyncio
 async def test_inventory_prevents_unsafe_deletion_and_duplicate_addresses(inventory):
     repository, service = inventory
-    await service.bootstrap([], [])
     await service.save_area(Area(id="gate", name="Gate"), create=True)
     await service.save_device(
         Device(
@@ -96,29 +70,3 @@ async def test_inventory_prevents_unsafe_deletion_and_duplicate_addresses(invent
         await service.delete_device("camera")
     with pytest.raises(InventoryConflictError, match="Devices or incident history"):
         await service.delete_area("gate")
-
-
-@pytest.mark.asyncio
-async def test_legacy_vendor_device_types_are_normalized_to_physical_roles(inventory):
-    repository, service = inventory
-    await service.bootstrap(
-        [{"id": "entrance", "name": "Entrance"}],
-        [
-            {
-                "id": "camera",
-                "name": "Camera",
-                "device_type": "hikvision",
-                "area_id": "entrance",
-            },
-            {
-                "id": "doorbell",
-                "name": "Doorbell",
-                "device_type": "hikvision",
-                "area_id": "entrance",
-                "capabilities": ["doorbell"],
-            },
-        ],
-    )
-
-    assert (await repository.get_device("camera")).device_type == "camera"
-    assert (await repository.get_device("doorbell")).device_type == "doorbell"

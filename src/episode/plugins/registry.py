@@ -25,26 +25,23 @@ class PluginRegistry:
 
     def for_configuration(
         self,
-        capabilities: Iterable[str],
+        device_config_types: Iterable[str],
         connector_types: Iterable[str] = (),
     ) -> list[PluginRegistration]:
-        configured = set(capabilities)
+        configured = set(device_config_types)
         configured_connectors = set(connector_types)
         return [
             registration
             for registration in self._registrations.values()
             if (
                 registration.explicitly_enabled
-                or registration.activation_capability in configured
+                or registration.activation_config_type in configured
                 or (
                     registration.activation_connector_type
                     and registration.activation_connector_type in configured_connectors
                 )
             )
         ]
-
-    def for_capabilities(self, capabilities: Iterable[str]) -> list[PluginRegistration]:
-        return self.for_configuration(capabilities)
 
     def validators(self) -> Mapping[str, PluginDeviceValidator]:
         return {
@@ -88,7 +85,7 @@ def builtin_plugin_registry() -> PluginRegistry:
                 id="onvif",
                 name="ONVIF",
                 kind="device-integration",
-                activation_capability="onvif",
+                activation_config_type="onvif",
                 factory=module_plugin_factory("episode.plugins.onvif"),
                 validation_capability="onvif",
                 validator=module_plugin_validator("episode.plugins.onvif.validation"),
@@ -103,7 +100,7 @@ def builtin_plugin_registry() -> PluginRegistry:
                 id="hikvision-sdk",
                 name="Hikvision HCNetSDK",
                 kind="native-sdk",
-                activation_capability="hikvision_sdk",
+                activation_config_type="hikvision_sdk",
                 factory=module_plugin_factory("episode.plugins.hikvision.sdk"),
                 validation_capability="hikvision_sdk",
                 integration=PluginIntegration(
@@ -117,7 +114,7 @@ def builtin_plugin_registry() -> PluginRegistry:
                 id="hikvision-isapi",
                 name="Hikvision ISAPI",
                 kind="device-integration",
-                activation_capability="isapi",
+                activation_config_type="isapi",
                 factory=module_plugin_factory("episode.plugins.hikvision.isapi"),
                 validation_capability="isapi",
                 validator=module_plugin_validator("episode.plugins.hikvision.isapi.validation"),
@@ -132,7 +129,7 @@ def builtin_plugin_registry() -> PluginRegistry:
                 id="hikvision-alarm-server",
                 name="Hikvision Alarm Server",
                 kind="ingress-handler",
-                activation_capability="",
+                activation_config_type="",
                 activation_connector_type="alarm_server",
                 factory=module_plugin_factory("episode.plugins.hikvision.alarm_server"),
                 integration=PluginIntegration(
@@ -145,7 +142,7 @@ def builtin_plugin_registry() -> PluginRegistry:
                 id="hikvision-ftp",
                 name="Hikvision FTP snapshots",
                 kind="file-ingress-handler",
-                activation_capability="",
+                activation_config_type="",
                 activation_connector_type="ftp",
                 factory=module_plugin_factory("episode.plugins.hikvision.ftp"),
                 integration=PluginIntegration(

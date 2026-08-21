@@ -1,15 +1,39 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from episode.api.inventory import DeviceConfigurationResponse, IntegrationSupportResponse
 from episode.domain.models import EpisodeState, EventState, ReceiptStatus
+
+OperationalState = Literal["healthy", "degraded", "unavailable", "disabled", "unknown"]
 
 
 class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+class HealthResponse(ApiModel):
+    status: Literal["ok"]
+    version: str
+
+
+class ApiErrorDetail(ApiModel):
+    location: list[str | int] = Field(default_factory=list)
+    message: str
+    type: str
+
+
+class ApiError(ApiModel):
+    code: str
+    message: str
+    details: list[ApiErrorDetail] = Field(default_factory=list)
+
+
+class ApiErrorResponse(ApiModel):
+    error: ApiError
 
 
 class AreaResponse(ApiModel):
@@ -18,6 +42,92 @@ class AreaResponse(ApiModel):
     location: str
     enabled: bool = True
     device_count: int = 0
+
+
+class IntegrationResponse(ApiModel):
+    id: str
+    name: str
+    type: str
+    kind: Literal["device", "shared", "plugin"]
+    state: OperationalState
+    device_id: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    summary: str = ""
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeviceIdentityResponse(ApiModel):
+    manufacturer: str | None = None
+    model: str | None = None
+    firmware_version: str | None = None
+
+
+class CapturePolicyResponse(ApiModel):
+    recording: str
+    automatic_snapshots: bool
+    onvif_events: bool | None = None
+
+
+class DeviceSummaryResponse(ApiModel):
+    id: str
+    name: str
+    device_type: str
+    area_id: str
+    capabilities: list[str]
+    state: OperationalState
+    identity: DeviceIdentityResponse
+    enabled: bool
+    integrations: list[IntegrationResponse] = Field(default_factory=list)
+
+
+class DeviceDetailResponse(DeviceSummaryResponse):
+    ip_address: str
+    capture_policy: CapturePolicyResponse
+    configuration: DeviceConfigurationResponse
+    integration_support: dict[str, IntegrationSupportResponse] = Field(default_factory=dict)
+    can_delete: bool = False
+
+
+class ServiceResponse(ApiModel):
+    id: str
+    name: str
+    state: OperationalState
+    summary: str
+    metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class IntegrationCountsResponse(ApiModel):
+    total: int = 0
+    healthy: int = 0
+    degraded: int = 0
+    unavailable: int = 0
+
+
+class SystemStatusResponse(ApiModel):
+    version: str
+    state: OperationalState
+    active_recordings: int = 0
+    services: dict[str, OperationalState]
+    integrations: IntegrationCountsResponse
+
+
+class StorageResponse(ApiModel):
+    data_bytes: int = 0
+    filesystem_total_bytes: int | None = None
+    filesystem_free_bytes: int | None = None
+
+
+class DiagnosticsResponse(ApiModel):
+    status: SystemStatusResponse
+    services: list[ServiceResponse]
+    integrations: list[IntegrationResponse]
+    storage: StorageResponse = Field(default_factory=StorageResponse)
+
+
+class DiagnosticsExportResponse(ApiModel):
+    schema_version: Literal[1] = 1
+    generated_at: datetime
+    diagnostics: DiagnosticsResponse
 
 
 class EpisodeResponse(ApiModel):
@@ -34,6 +144,22 @@ class EpisodeResponse(ApiModel):
     trigger_type: str | None = None
 
 
+class CurrentViewResponse(ApiModel):
+    device_id: str
+    device_name: str
+    mode: Literal["snapshot", "unavailable"]
+    refresh_interval_seconds: int
+    image_url: str | None = None
+    summary: str
+
+
+class EventOriginResponse(ApiModel):
+    kind: Literal["plugin", "connector", "core", "external", "unknown"]
+    id: str
+    name: str
+    source: str
+
+
 class EventResponse(ApiModel):
     id: str
     device_id: str
@@ -42,6 +168,7 @@ class EventResponse(ApiModel):
     event_type: str
     event_state: EventState | str
     sources: list[str] = Field(default_factory=list)
+    origins: list[EventOriginResponse] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     episode_id: str | None
     has_raw_payload: bool = False

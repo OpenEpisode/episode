@@ -104,6 +104,7 @@ test("keeps unmatched snapshots and inactive events visible", () => {
   );
 
   assert.deepEqual(result.entries.map(entry => entry.kind), ["event", "snapshot"]);
+  assert.equal(result.entries[0].title, "Motion detection ended");
   assert.equal(result.entries[1].relatedEvent, null);
 });
 

@@ -86,7 +86,7 @@ async def test_plugin_starts_one_worker_per_explicit_sdk_device(tmp_path):
             "ip_address": "192.0.2.10",
             "username": "user",
             "password": "secret-one",
-            "capabilities": ["hikvision_sdk"],
+            "configs": {"hikvision_sdk": {}},
         },
         {
             "id": "unavailable",
@@ -95,10 +95,9 @@ async def test_plugin_starts_one_worker_per_explicit_sdk_device(tmp_path):
             "ip_address": "192.0.2.11",
             "username": "user",
             "password": "secret-two",
-            "capabilities": ["hikvision_sdk"],
             "configs": {"hikvision_sdk": {"port": 9000}},
         },
-        {"id": "ordinary-camera", "capabilities": ["video"]},
+        {"id": "ordinary-camera", "configs": {"video": {}}},
     )
     plugin = HikvisionSDKPlugin(
         PluginContext(tmp_path, devices, preserve),

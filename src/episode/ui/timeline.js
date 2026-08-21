@@ -14,6 +14,7 @@ function titleCase(value) {
 export function eventTitle(event) {
   const type = String(event.event_type || "").toLowerCase();
   const phase = String(event.metadata?.phase || "").toLowerCase();
+  const inactive = String(event.event_state || "").toLowerCase() === "inactive";
   if (type === "doorbell" && phase === "ringing") return "Doorbell rang";
   if (type === "doorbell" && phase === "dismissed") return "Doorbell call ended";
   if (type === "door_access" && event.metadata?.sdk_event_name === "unlock_record") {
@@ -25,10 +26,13 @@ export function eventTitle(event) {
   if (type.includes("door") && ["locked", "lock", "closed", "close"].includes(phase)) {
     return "Door locked";
   }
-  if (type.includes("human") || type.includes("person")) return "Human detected";
-  if (type.includes("vehicle")) return "Vehicle detected";
-  if (type.includes("motion")) return "Motion detected";
-  return titleCase(event.event_type || "Event");
+  if (type.includes("human") || type.includes("person")) {
+    return inactive ? "Human detection ended" : "Human detected";
+  }
+  if (type.includes("vehicle")) return inactive ? "Vehicle detection ended" : "Vehicle detected";
+  if (type.includes("motion")) return inactive ? "Motion detection ended" : "Motion detected";
+  const title = titleCase(event.event_type || "Event");
+  return inactive ? `${title} ended` : title;
 }
 
 export function recordingBounds(recording) {

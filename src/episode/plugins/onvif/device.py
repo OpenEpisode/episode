@@ -175,18 +175,14 @@ class ONVIFDeviceConnection:
                 device.capabilities.append("tamper")
 
         existing = device.get_config("video")
-        recording_mode = (
-            existing.settings.get("recording_mode", "on_event") if existing else "on_event"
-        )
-        if existing and existing.settings.get("origin") != "onvif":
+        if existing:
+            recording_mode = existing.settings.get("recording_mode", "on_event")
             device.configs["video"] = CapabilityConfig(
                 protocol=existing.protocol,
                 port=existing.port,
                 path=existing.path,
                 settings={**existing.settings, "recording_mode": recording_mode},
             )
-        else:
-            device.configs["video"] = CapabilityConfig(settings={"recording_mode": recording_mode})
         device.metadata["onvif"] = {
             "manufacturer": self._discovered.manufacturer,
             "model": self._discovered.model,

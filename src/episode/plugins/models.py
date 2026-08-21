@@ -154,7 +154,7 @@ class PluginRegistration:
     id: str
     name: str
     kind: str
-    activation_capability: str
+    activation_config_type: str
     factory: PluginFactory
     activation_connector_type: str = ""
     validation_capability: str = ""

@@ -56,7 +56,7 @@ def _operations() -> OperationalView:
                 "type": "onvif",
                 "name": "ONVIF",
                 "device_scoped": True,
-                "activation_capability": "onvif",
+                "activation_config_type": "onvif",
                 "capabilities": ["discovery", "media"],
             },
             "instances": [
@@ -101,7 +101,7 @@ def _operations() -> OperationalView:
                 "type": "hikvision_sdk",
                 "name": "Hikvision HCNetSDK",
                 "device_scoped": True,
-                "activation_capability": "hikvision_sdk",
+                "activation_config_type": "hikvision_sdk",
                 "capabilities": ["events", "device-information"],
             },
             "version": "6.1.9.48",
@@ -141,7 +141,6 @@ def _operations() -> OperationalView:
         connector_statuses=lambda: connectors,
         plugin_statuses=lambda: plugins,
         snapshots_enabled=False,
-        restart_required=lambda: False,
     )
 
 
@@ -163,7 +162,7 @@ def test_external_plugin_assignment_is_visible_on_its_device():
                     "type": "acme-tripwire",
                     "name": "Acme Tripwire",
                     "device_scoped": True,
-                    "activation_capability": "",
+                    "activation_config_type": "",
                     "configured_device_ids": ["garden-sensor"],
                     "capabilities": ["events"],
                 },
@@ -202,7 +201,6 @@ async def test_status_is_compact_and_diagnostics_are_separate():
         "version": __version__,
         "state": "healthy",
         "active_recordings": 1,
-        "restart_required": False,
         "services": {
             "engine": "healthy",
             "recorder": "healthy",
@@ -218,12 +216,61 @@ async def test_status_is_compact_and_diagnostics_are_separate():
     assert len(status_response.content) < 500
     diagnostics = diagnostics_response.json()
     assert len(diagnostics["integrations"]) == 5
+    assert diagnostics["storage"] == {
+        "data_bytes": 0,
+        "filesystem_total_bytes": None,
+        "filesystem_free_bytes": None,
+    }
     onvif = next(item for item in diagnostics["integrations"] if item["type"] == "onvif")
     assert len(onvif["details"]["instances"][0]["details"]["event_topics"]) == 200
     event_api = next(item for item in diagnostics["integrations"] if item["type"] == "event_api")
     assert event_api["capabilities"] == ["event-input"]
     assert event_api["summary"] == "2 Events accepted · 1 duplicates"
     assert event_api["details"]["requests_handled"] == 4
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_export_reports_storage_and_redacts_private_values(tmp_path):
+    (tmp_path / "evidence.bin").write_bytes(b"preserved")
+    operations = _operations()
+
+    class UnsafeDiagnostics:
+        def status(self):
+            return operations.status()
+
+        def diagnostics(self):
+            result = operations.diagnostics()
+            result["integrations"][0]["details"].update(
+                password="must-not-leak",
+                **{
+                    "api-key": "also-secret",
+                    "service_credentials": "still-secret",
+                    "private-key": "private-secret",
+                },
+                artifact_path=str(tmp_path / "evidence.bin"),
+            )
+            return result
+
+    app = create_api(object(), str(tmp_path), operations=UnsafeDiagnostics())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/v1/diagnostics/export")
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="episode-diagnostics.json"'
+    )
+    export = response.json()
+    diagnostics = export["diagnostics"]
+    assert export["schema_version"] == 1
+    assert diagnostics["storage"]["data_bytes"] == len(b"preserved")
+    details = diagnostics["integrations"][0]["details"]
+    assert details["password"] == "[redacted]"
+    assert details["api-key"] == "[redacted]"
+    assert details["service_credentials"] == "[redacted]"
+    assert details["private-key"] == "[redacted]"
+    assert details["artifact_path"] == "<data-dir>/evidence.bin"
+    assert "must-not-leak" not in response.text
 
 
 @pytest.mark.asyncio
@@ -294,12 +341,12 @@ async def test_growing_collections_reject_unbounded_queries():
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         responses = [
-            await client.get("/api/v1/episodes?limit=201"),
+            await client.get("/api/v1/episodes?limit=501"),
             await client.get("/api/v1/episodes?offset=-1"),
             await client.get("/api/v1/episodes?state=not-a-state"),
             await client.get("/api/v1/events?limit=501"),
             await client.get("/api/v1/evidence?limit=501"),
-            await client.get("/api/v1/receipts?limit=1001"),
+            await client.get("/api/v1/receipts?limit=501"),
             await client.get("/api/v1/receipts?offset=-1"),
             await client.get("/api/v1/receipts?status=not-a-status"),
         ]

@@ -42,6 +42,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=alpha,enable=${{ contains(github.ref_name, '-alpha.') }}
+            type=raw,value=beta,enable=${{ contains(github.ref_name, '-beta.') }}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
       - name: Build and publish image

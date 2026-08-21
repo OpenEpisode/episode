@@ -24,6 +24,7 @@ from episode.ingestion.service import IngestionService
 from episode.inventory import DeviceValidationService, InventoryService
 from episode.lifecycle import Lifecycle
 from episode.media import MediaRegistry
+from episode.media.previews import CurrentViewService
 from episode.media.timelapse import TimelapseService
 from episode.plugins import PluginContext, PluginManager, builtin_plugin_registry
 from episode.plugins.api import register_plugins_api
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 class Application:
     def __init__(self, config: EpisodeConfig):
         self._config = config
+        self._plugin_reload_lock = asyncio.Lock()
         self._lifecycle = Lifecycle()
         self._bus = EventBus()
         self._repo = Repository(config)
@@ -59,10 +61,8 @@ class Application:
             segment_seconds=config.actions.recording.segment_seconds,
             media=self._media,
         )
-        self._snapshotter = SnapshotEngine(self._bus, self._media, config)
-        configured_capabilities = {
-            capability for device in config.devices for capability in device.get("capabilities", [])
-        }
+        self._snapshotter = SnapshotEngine(self._bus, self._media, config.data_dir)
+        self._current_views = CurrentViewService(self._media, self._recorder)
         self._configured_connector_types = {
             connector.type for connector in config.connectors if connector.enabled
         }
@@ -75,21 +75,11 @@ class Application:
                 self._plugin_registry.register(registration)
             except ValueError as error:
                 logger.warning("External plugin %s was not registered: %s", registration.id, error)
-        self._plugins = PluginManager(
-            self._plugin_registry.for_configuration(
-                configured_capabilities,
-                self._configured_connector_types,
-            ),
-            PluginContext(
-                plugins_dir=Path(config.plugins_dir),
-                configured_devices=tuple(config.devices),
-                raw_delivery_sink=self._raw_plugin_deliveries,
-                ingress_router=self._ingress_router,
-                media_registry=self._media,
-                device_update_sink=self._repo.upsert_device,
-            ),
+        self._plugins = PluginManager((), self._plugin_context(()))
+        self._inventory = InventoryService(
+            self._repo,
+            on_device_configuration_changed=self.reload_configured_plugins,
         )
-        self._inventory = InventoryService(self._repo)
         self._connectors: list[ManagedConnector] = []
         self._operations = OperationalView(
             version=__version__,
@@ -99,7 +89,6 @@ class Application:
             connector_statuses=lambda: [connector.status() for connector in self._connectors],
             plugin_statuses=self._plugins.statuses,
             snapshots_enabled=config.actions.snapshot.enabled,
-            restart_required=lambda: self._inventory.restart_required,
         )
         self._validation = DeviceValidationService(
             runtime_integrations=lambda device: self._operations.device_detail(device)[
@@ -116,6 +105,7 @@ class Application:
             operations=self._operations,
             inventory=self._inventory,
             validator=self._validation,
+            current_views=self._current_views,
         )
         register_plugins_api(self._fastapi_app, self._plugins)
 
@@ -137,32 +127,18 @@ class Application:
         )
 
         logger.info("Loading persistent Area and Device inventory...")
-        imported = await self._inventory.bootstrap(
-            self._config.areas,
-            self._config.devices,
-        )
-        if imported:
-            logger.info("Imported legacy file inventory into persistent storage")
-
         configured_devices = await self._inventory.configured_devices()
-        configured_capabilities = {
-            capability
+        configured_device_types = {
+            config_type
             for device in configured_devices
-            for capability in device.get("capabilities", [])
+            for config_type in device.get("configs", {})
         }
         self._plugins.configure(
             self._plugin_registry.for_configuration(
-                configured_capabilities,
+                configured_device_types,
                 self._configured_connector_types,
             ),
-            PluginContext(
-                plugins_dir=Path(self._config.plugins_dir),
-                configured_devices=configured_devices,
-                raw_delivery_sink=self._raw_plugin_deliveries,
-                ingress_router=self._ingress_router,
-                media_registry=self._media,
-                device_update_sink=self._repo.upsert_device,
-            ),
+            self._plugin_context(configured_devices),
         )
 
         logger.info("Starting Episode Engine...")
@@ -220,8 +196,6 @@ class Application:
                     conn.stop,
                 )
 
-        self._inventory.mark_runtime_current()
-
         # Mount static UI last so connector routes take precedence
         ui_dir = Path(__file__).resolve().parent / "ui"
         if ui_dir.is_dir():
@@ -245,6 +219,36 @@ class Application:
     async def shutdown(self):
         logger.info("Shutting down...")
         await self._lifecycle.shutdown()
+
+    async def reload_configured_plugins(self) -> None:
+        async with self._plugin_reload_lock:
+            configured_devices = await self._inventory.configured_devices()
+            configured_device_types = {
+                config_type
+                for device in configured_devices
+                for config_type in device.get("configs", {})
+            }
+            logger.info("Reloading plugins from saved Device configuration...")
+            await self._plugins.stop()
+            self._plugins.configure(
+                self._plugin_registry.for_configuration(
+                    configured_device_types,
+                    self._configured_connector_types,
+                ),
+                self._plugin_context(configured_devices),
+            )
+            await self._plugins.start()
+            logger.info("Configured plugins reloaded")
+
+    def _plugin_context(self, configured_devices) -> PluginContext:
+        return PluginContext(
+            plugins_dir=Path(self._config.plugins_dir),
+            configured_devices=tuple(configured_devices),
+            raw_delivery_sink=self._raw_plugin_deliveries,
+            ingress_router=self._ingress_router,
+            media_registry=self._media,
+            device_update_sink=self._repo.upsert_device,
+        )
 
     def _build_connector(self, cfg):
         t = cfg.type

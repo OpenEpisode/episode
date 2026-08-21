@@ -80,7 +80,6 @@ class DeviceWriteRequest(BaseModel):
     username: str | None = Field(default=None, max_length=128)
     password: str | None = Field(default=None, max_length=256)
     clear_credentials: bool = False
-    doorbell: bool | None = None
     video: VideoConfigurationRequest = Field(default_factory=VideoConfigurationRequest)
     onvif: ONVIFConfigurationRequest = Field(default_factory=ONVIFConfigurationRequest)
     isapi: ISAPIConfigurationRequest = Field(default_factory=ISAPIConfigurationRequest)
@@ -146,7 +145,6 @@ class DeviceValidationResponse(BaseModel):
 class DeviceConfigurationResponse(BaseModel):
     username_configured: bool
     password_configured: bool
-    doorbell: bool
     video: VideoConfigurationRequest
     onvif: ONVIFConfigurationRequest
     isapi: ISAPIConfigurationRequest
@@ -163,7 +161,6 @@ def editable_device_configuration(device: Device) -> dict:
     return DeviceConfigurationResponse(
         username_configured=bool(device.username),
         password_configured=bool(device.password),
-        doorbell="doorbell" in device.capabilities,
         video=VideoConfigurationRequest(
             enabled=video is not None,
             manual_endpoint=manual_video,
@@ -175,7 +172,7 @@ def editable_device_configuration(device: Device) -> dict:
             ),
         ),
         onvif=ONVIFConfigurationRequest(
-            enabled="onvif" in device.capabilities,
+            enabled=onvif is not None,
             protocol=onvif.protocol if onvif else "http",
             port=onvif.port if onvif else 80,
             path=onvif.path if onvif else "/onvif/device_service",
@@ -183,14 +180,14 @@ def editable_device_configuration(device: Device) -> dict:
             events_enabled=bool(onvif.settings.get("events_enabled", False)) if onvif else False,
         ),
         isapi=ISAPIConfigurationRequest(
-            enabled="isapi" in device.capabilities,
+            enabled=isapi is not None,
             protocol=isapi.protocol if isapi else "http",
             port=isapi.port if isapi else 80,
             path=isapi.path if isapi else "/ISAPI/Event/notification/alertStream",
             ignore_events=list(isapi.settings.get("ignore_events", [])) if isapi else [],
         ),
         hikvision_sdk=SDKConfigurationRequest(
-            enabled="hikvision_sdk" in device.capabilities,
+            enabled=sdk is not None,
             port=sdk.port if sdk and sdk.port else 8000,
         ),
     ).model_dump()
@@ -201,18 +198,8 @@ def device_from_request(
     request: DeviceWriteRequest,
     existing: Device | None = None,
 ) -> Device:
-    managed_capabilities = {"doorbell", "video", "onvif", "isapi", "hikvision_sdk"}
+    managed_capabilities = {"doorbell", "onvif", "isapi", "hikvision_sdk"}
     capabilities = set(existing.capabilities if existing else ()) - managed_capabilities
-    if request.device_type == "doorbell" or request.doorbell is True:
-        capabilities.add("doorbell")
-    if request.video.enabled:
-        capabilities.add("video")
-    if request.onvif.enabled:
-        capabilities.add("onvif")
-    if request.isapi.enabled:
-        capabilities.add("isapi")
-    if request.hikvision_sdk.enabled:
-        capabilities.add("hikvision_sdk")
 
     configs = {
         key: value

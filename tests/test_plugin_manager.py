@@ -10,6 +10,7 @@ from fastapi import FastAPI
 
 from episode.__main__ import Application
 from episode.config import EpisodeConfig
+from episode.domain.models import Area, CapabilityConfig, Device
 from episode.plugins.api import register_plugins_api
 from episode.plugins.manager import PluginManager
 from episode.plugins.models import (
@@ -65,7 +66,7 @@ async def test_only_configured_plugin_is_loaded_from_large_registry(tmp_path):
         _registration(f"plugin-{index}", f"capability-{index}", events) for index in range(3000)
     ]
     registry = PluginRegistry(registrations)
-    selected = registry.for_capabilities({"capability-1729"})
+    selected = registry.for_configuration({"capability-1729"})
 
     assert [registration.id for registration in selected] == ["plugin-1729"]
     assert events == []
@@ -90,11 +91,11 @@ def test_builtin_plugin_module_is_not_imported_during_registration(monkeypatch):
     validators = registry.validators()
     assert set(validators) == {"onvif", "isapi"}
     assert imported == []
-    selected = registry.for_capabilities({"onvif", "video"})
+    selected = registry.for_configuration({"onvif", "video"})
     assert [registration.id for registration in selected] == ["onvif"]
-    selected = registry.for_capabilities({"isapi"})
+    selected = registry.for_configuration({"isapi"})
     assert [registration.id for registration in selected] == ["hikvision-isapi"]
-    selected = registry.for_capabilities({"hikvision_sdk"})
+    selected = registry.for_configuration({"hikvision_sdk"})
     assert [registration.id for registration in selected] == ["hikvision-sdk"]
     assert imported == []
 
@@ -136,7 +137,6 @@ def test_application_ignores_installed_plugin_without_device_capability(tmp_path
     config = EpisodeConfig(
         data_dir=str(tmp_path / "data"),
         plugins_dir=str(tmp_path / "plugins"),
-        devices=[{"id": "camera", "capabilities": ["video"]}],
     )
 
     application = Application(config)
@@ -152,25 +152,74 @@ def test_device_capability_configures_plugin_without_importing_it(tmp_path, monk
         raise AssertionError("plugin should not be imported during application construction")
 
     monkeypatch.setattr("episode.plugins.registry.importlib.import_module", track_import)
-    config = EpisodeConfig(
-        data_dir=str(tmp_path / "data"),
-        plugins_dir=str(tmp_path / "plugins"),
-        devices=[{"id": "doorbell", "capabilities": ["hikvision_sdk"]}],
+    manager = PluginManager(
+        builtin_plugin_registry().for_configuration({"hikvision_sdk"}),
+        PluginContext(tmp_path),
     )
 
-    application = Application(config)
-
-    assert application._plugins.statuses()[0]["id"] == "hikvision-sdk"
-    assert application._plugins.statuses()[0]["state"] == PluginState.VALIDATING
-    assert application._plugins.statuses()[0]["integration"]["type"] == "hikvision_sdk"
+    assert manager.statuses()[0]["id"] == "hikvision-sdk"
+    assert manager.statuses()[0]["state"] == PluginState.VALIDATING
+    assert manager.statuses()[0]["integration"]["type"] == "hikvision_sdk"
     assert imported == []
 
 
 def test_plugin_context_can_carry_device_configuration_without_manager_coupling(tmp_path):
-    device = {"id": "doorbell", "capabilities": ["hikvision_sdk"]}
+    device = {"id": "doorbell", "configs": {"hikvision_sdk": {}}}
     context = PluginContext(tmp_path, (device,))
 
     assert context.configured_devices == (device,)
+
+
+@pytest.mark.asyncio
+async def test_application_reloads_saved_inventory_without_process_restart(tmp_path):
+    application = Application(EpisodeConfig(data_dir=str(tmp_path)))
+    events: list[str] = []
+    application._plugin_registry.register(_registration("test-device", "test-device", events))
+    await application._repo.initialize()
+    try:
+        await application._inventory.save_area(Area(id="gate", name="Gate"), create=True)
+        await application._inventory.save_device(
+            Device(
+                id="gate-camera",
+                name="Gate camera",
+                device_type="camera",
+                area_id="gate",
+                configs={"test-device": CapabilityConfig()},
+            ),
+            create=True,
+        )
+
+        assert [status["id"] for status in application._plugins.statuses()] == ["test-device"]
+        assert events == ["load:test-device", "start:test-device"]
+    finally:
+        await application._plugins.stop()
+        await application._repo.close()
+
+
+@pytest.mark.asyncio
+async def test_application_reloads_device_integrations_during_recording(tmp_path):
+    application = Application(EpisodeConfig(data_dir=str(tmp_path)))
+    events: list[str] = []
+    application._plugin_registry.register(_registration("test-device", "test-device", events))
+    await application._repo.initialize()
+    try:
+        await application._inventory.save_area(Area(id="gate", name="Gate"), create=True)
+        application._recorder.status = lambda: {"active_recordings": 1}
+        await application._inventory.save_device(
+            Device(
+                id="gate-camera",
+                name="Gate camera",
+                device_type="camera",
+                area_id="gate",
+                configs={"test-device": CapabilityConfig()},
+            ),
+            create=True,
+        )
+        assert [status["id"] for status in application._plugins.statuses()] == ["test-device"]
+        assert events == ["load:test-device", "start:test-device"]
+    finally:
+        await application._plugins.stop()
+        await application._repo.close()
 
 
 def test_duplicate_plugin_registration_is_rejected():

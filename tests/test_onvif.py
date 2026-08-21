@@ -102,7 +102,7 @@ async def test_snapshot_action_preserves_downloaded_bytes_as_episode_evidence():
 
     media.fetch_snapshot = fake_snapshot
     episode_engine = EpisodeEngine(repo, bus, timeout=10)
-    snapshot_engine = SnapshotEngine(bus, media, config)
+    snapshot_engine = SnapshotEngine(bus, media, config.data_dir)
     await repo.initialize()
     await repo.upsert_area(Area(id="entrance", name="Entrance"))
     await repo.upsert_device(

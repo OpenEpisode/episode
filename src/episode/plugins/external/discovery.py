@@ -38,7 +38,7 @@ def _unavailable_registration(
         id=configured.id,
         name=name or configured.id,
         kind="external",
-        activation_capability="",
+        activation_config_type="",
         factory=unavailable_factory,
         explicitly_enabled=True,
         configured_device_ids=tuple(configured.device_ids),
@@ -103,7 +103,7 @@ def _registration(
         id=manifest.id,
         name=manifest.name,
         kind=manifest.kind,
-        activation_capability="",
+        activation_config_type="",
         factory=factory,
         integration=PluginIntegration(
             type=manifest.id,

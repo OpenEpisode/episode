@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import asdict
 from datetime import datetime, timezone
 
@@ -201,70 +200,4 @@ async def test_rejected_delivery_is_preserved_without_creating_event(tmp_path):
     finally:
         await plugin.stop()
         await engine.stop()
-        await repo.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_database_receives_additive_provenance_columns(tmp_path):
-    database = tmp_path / "episode.db"
-    connection = sqlite3.connect(database)
-    connection.executescript(
-        """
-        CREATE TABLE assets (
-            id TEXT PRIMARY KEY, name TEXT NOT NULL, location TEXT NOT NULL DEFAULT '',
-            metadata TEXT NOT NULL DEFAULT '{}'
-        );
-        CREATE TABLE sensors (
-            id TEXT PRIMARY KEY, name TEXT NOT NULL, sensor_type TEXT NOT NULL,
-            asset_id TEXT NOT NULL, capabilities TEXT NOT NULL DEFAULT '[]',
-            ip_address TEXT NOT NULL DEFAULT '', username TEXT NOT NULL DEFAULT '',
-            password TEXT NOT NULL DEFAULT '', configs TEXT NOT NULL DEFAULT '{}',
-            metadata TEXT NOT NULL DEFAULT '{}'
-        );
-        CREATE TABLE episodes (
-            id TEXT PRIMARY KEY, primary_asset_id TEXT NOT NULL, start_time TEXT NOT NULL,
-            last_event_time TEXT, end_time TEXT, state TEXT NOT NULL DEFAULT 'new',
-            event_count INTEGER NOT NULL DEFAULT 0,
-            evidence_count INTEGER NOT NULL DEFAULT 0, summary TEXT NOT NULL DEFAULT ''
-        );
-        CREATE TABLE events (
-            id TEXT PRIMARY KEY, sensor_id TEXT NOT NULL, asset_id TEXT NOT NULL,
-            timestamp TEXT NOT NULL, event_type TEXT NOT NULL,
-            event_state TEXT NOT NULL DEFAULT 'active', source TEXT NOT NULL DEFAULT '',
-            raw_payload_path TEXT, metadata TEXT NOT NULL DEFAULT '{}', episode_id TEXT
-        );
-        CREATE TABLE evidence (
-            id TEXT PRIMARY KEY, sensor_id TEXT NOT NULL, asset_id TEXT NOT NULL,
-            timestamp TEXT NOT NULL, evidence_type TEXT NOT NULL, file_path TEXT NOT NULL,
-            mime_type TEXT NOT NULL DEFAULT '', original_filename TEXT,
-            metadata TEXT NOT NULL DEFAULT '{}', event_id TEXT, episode_id TEXT
-        );
-        """
-    )
-    connection.close()
-
-    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(database))
-    repo = Repository(config)
-    await repo.initialize()
-    try:
-        episode_columns = {
-            row["name"] for row in await repo._conn.execute_fetchall("PRAGMA table_info(episodes)")
-        }
-        event_columns = {
-            row["name"] for row in await repo._conn.execute_fetchall("PRAGMA table_info(events)")
-        }
-        evidence_columns = {
-            row["name"] for row in await repo._conn.execute_fetchall("PRAGMA table_info(evidence)")
-        }
-        tables = {
-            row["name"]
-            for row in await repo._conn.execute_fetchall(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
-        assert "last_activity_at" in episode_columns
-        assert {"device_id", "area_id", "dedup_key"} <= event_columns
-        assert {"device_id", "area_id", "artifact_id", "byte_size", "sha256"} <= (evidence_columns)
-        assert {"areas", "devices", "raw_artifacts", "ingestion_receipts"} <= tables
-    finally:
         await repo.close()

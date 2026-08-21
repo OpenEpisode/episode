@@ -61,7 +61,6 @@ def config():
     return EpisodeConfig(
         data_dir=tmpdir,
         db_path=os.path.join(tmpdir, "test.db"),
-        evidence_dir=os.path.join(tmpdir, "evidence"),
         episode_timeout=2,
     )
 
@@ -99,7 +98,7 @@ async def test_recording_skips_non_video_device(repo, bus, config):
     await repo.upsert_device(device)
 
     engine = EpisodeEngine(repo, bus, timeout=config.episode_timeout)
-    recorder = RecordingEngine(repo, bus, config.evidence_dir)
+    recorder = RecordingEngine(repo, bus, config.data_dir)
     await engine.start()
     await recorder.start()
 
@@ -144,7 +143,7 @@ async def test_recording_skips_video_device_without_url(repo, bus, config):
     await repo.upsert_device(device)
 
     engine = EpisodeEngine(repo, bus, timeout=config.episode_timeout)
-    recorder = RecordingEngine(repo, bus, config.evidence_dir)
+    recorder = RecordingEngine(repo, bus, config.data_dir)
     await engine.start()
     await recorder.start()
 
@@ -199,7 +198,7 @@ async def test_non_video_event_starts_area_episode_recordings(repo, bus, config)
     await repo.upsert_device(_video_device("camera-other", "area-2", "on_episode"))
 
     engine = EpisodeEngine(repo, bus, timeout=config.episode_timeout)
-    recorder = RecordingEngine(repo, bus, config.evidence_dir)
+    recorder = RecordingEngine(repo, bus, config.data_dir)
     started, stopped = _replace_recording_processes(recorder)
     await engine.start()
     await recorder.start()
@@ -262,7 +261,7 @@ async def test_doorbell_and_area_camera_share_episode_recording_lifecycle(repo, 
     await repo.upsert_device(camera)
 
     engine = EpisodeEngine(repo, bus, timeout=config.episode_timeout)
-    recorder = RecordingEngine(repo, bus, config.evidence_dir)
+    recorder = RecordingEngine(repo, bus, config.data_dir)
     started, stopped = _replace_recording_processes(recorder)
     await engine.start()
     await recorder.start()
@@ -336,7 +335,7 @@ async def test_doorbell_and_area_camera_share_episode_recording_lifecycle(repo, 
 
 @pytest.mark.asyncio
 async def test_same_prefix_devices_get_distinct_recording_paths(repo, bus, config):
-    recorder = RecordingEngine(repo, bus, config.evidence_dir)
+    recorder = RecordingEngine(repo, bus, config.data_dir)
     release = asyncio.Event()
 
     async def hold_recording(recording, rtsp_url):
@@ -375,7 +374,7 @@ async def test_same_prefix_devices_get_distinct_recording_paths(repo, bus, confi
 async def test_completed_segments_are_published_while_latest_remains_active(
     repo, bus, config, monkeypatch
 ):
-    recorder = RecordingEngine(repo, bus, config.evidence_dir, segment_seconds=60)
+    recorder = RecordingEngine(repo, bus, config.data_dir, segment_seconds=60)
     release = asyncio.Event()
     published = []
 
@@ -433,7 +432,7 @@ async def test_completed_segments_are_published_while_latest_remains_active(
 
 @pytest.mark.asyncio
 async def test_graceful_stop_finalizes_active_recording_segment(repo, bus, config, monkeypatch):
-    recorder = RecordingEngine(repo, bus, config.evidence_dir, segment_seconds=60)
+    recorder = RecordingEngine(repo, bus, config.data_dir, segment_seconds=60)
     process_started = asyncio.Event()
     process_finished = asyncio.Event()
     published = []
@@ -500,7 +499,7 @@ async def test_failed_recording_does_not_retry_after_episode_closes(repo, bus, c
         state=EpisodeState.ACTIVE,
     )
     await repo.create_episode(episode)
-    recorder = RecordingEngine(repo, bus, config.evidence_dir)
+    recorder = RecordingEngine(repo, bus, config.data_dir)
     attempts = 0
     commands = []
 
@@ -543,7 +542,7 @@ async def test_failed_recording_does_not_retry_after_episode_closes(repo, bus, c
 
 @pytest.mark.asyncio
 async def test_timed_out_recording_probe_is_reaped(repo, bus, config, monkeypatch):
-    recorder = RecordingEngine(repo, bus, config.evidence_dir)
+    recorder = RecordingEngine(repo, bus, config.data_dir)
 
     class HungProcess:
         returncode = None
@@ -585,7 +584,7 @@ async def test_event_without_area_does_not_activate_all_cameras(repo, bus, confi
     await repo.upsert_device(_video_device("camera-x", "area-1", "on_episode"))
 
     engine = EpisodeEngine(repo, bus, timeout=config.episode_timeout)
-    recorder = RecordingEngine(repo, bus, config.evidence_dir)
+    recorder = RecordingEngine(repo, bus, config.data_dir)
     started, _ = _replace_recording_processes(recorder)
     await engine.start()
     await recorder.start()

@@ -299,6 +299,7 @@ async def test_alarm_server_preserves_full_request_then_plugin_creates_event(tmp
         }
         assert receipts[0].status == ReceiptStatus.ACCEPTED
         assert receipts[0].event_id == events[0].id
+        assert receipts[0].metadata["interpretation_source"] == "hikvision:alarm_server"
         artifact = await repository.get_raw_artifact(receipts[0].artifact_id)
         assert artifact is not None
         assert Path(artifact.file_path).read_bytes() == payload

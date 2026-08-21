@@ -2,7 +2,7 @@
 
 Thank you for your interest in Episode.
 
-Episode is currently in active public-alpha development.
+Episode is currently in active pre-1.0 development.
 
 The primary goal at this stage is to validate the Episode model rather than expand the feature set.
 

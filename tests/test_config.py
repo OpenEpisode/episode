@@ -1,6 +1,8 @@
+import json
+
 import pytest
 
-from episode.config import EpisodeConfig
+from episode.config import EpisodeConfig, load_config
 
 
 def test_onvif_snapshot_action_is_disabled_by_default():
@@ -26,3 +28,11 @@ def test_recording_segment_duration_can_be_configured():
 def test_recording_segment_duration_must_be_positive():
     with pytest.raises(ValueError, match="segment_seconds must be greater than zero"):
         EpisodeConfig(actions={"recording": {"segment_seconds": 0}})
+
+
+def test_obsolete_inventory_configuration_is_rejected(tmp_path):
+    path = tmp_path / "episode.json"
+    path.write_text(json.dumps({"areas": []}))
+
+    with pytest.raises(ValueError, match="unexpected keyword argument 'areas'"):
+        load_config(str(path))

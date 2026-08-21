@@ -62,6 +62,16 @@ class RecordingEngine:
     def _rec_key(self, episode_id: str, device_id: str) -> tuple[str, str]:
         return (episode_id, device_id)
 
+    def active_device_ids(self, episode_id: str) -> tuple[str, ...]:
+        """Return Devices currently recording one Episode without exposing stream details."""
+        return tuple(
+            sorted(
+                recording.device_id
+                for recording in self._recordings.values()
+                if recording.episode_id == episode_id
+            )
+        )
+
     async def start(self):
         self._running = True
         self._bus.subscribe("event.canonicalized", self._on_event)

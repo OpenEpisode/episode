@@ -5,7 +5,7 @@ name: episode
 # `docker compose --env-file .env` so that the source is unambiguous.
 services:
   episode:
-    image: "${EPISODE_IMAGE:-ghcr.io/openepisode/episode:alpha}"
+    image: "${EPISODE_IMAGE:-ghcr.io/openepisode/episode:beta}"
     init: true
     user: "${EPISODE_UID:-1000}:${EPISODE_GID:-1000}"
     ports:

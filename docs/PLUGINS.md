@@ -1,13 +1,14 @@
 # Plugin authoring
 
-Episode `0.1.0-alpha.12` introduces the first versioned contract for
-out-of-tree Device and ingress plugins. A plugin can be copied into the mounted
-`plugins/` directory and activated through configuration without changing,
-rebuilding, or importing from Episode's internal source tree.
+Episode Beta.1 establishes plugin API v1 as the supported contract for
+out-of-tree Device and ingress plugins throughout the beta cycle. A plugin can
+be copied into the mounted `plugins/` directory and activated through
+configuration without changing, rebuilding, or importing from Episode's
+internal source tree.
 
-The contract is intentionally small and remains experimental during alpha. A
-future incompatible contract will use a different `plugin_api` version rather
-than silently loading incompatible code.
+The contract is intentionally small. Additive capabilities may appear during
+beta, but an incompatible contract will use a different `plugin_api` version
+rather than silently loading incompatible code.
 
 ## What a plugin owns
 
@@ -66,8 +67,8 @@ Supported version-1 kinds are `device` and `ingress`. The entrypoint must be a
 relative `.py` file inside the plugin directory followed by a callable name. A
 larger plugin may use `package/__init__.py:create_plugin`; normal relative
 imports inside that package are supported. `configuration_schema` documents the
-settings contract for tooling and a future generated configuration UI. In this
-alpha the plugin remains responsible for validating its setting values. Plugin
+settings contract for tooling and a future generated configuration UI. At
+present, the plugin remains responsible for validating its setting values. Plugin
 directories and entrypoints that resolve outside the mounted plugin root are
 rejected.
 
@@ -279,3 +280,25 @@ data under arbitrary names. Native code that requires stronger crash isolation
 should use a supervised worker process, as the built-in Hikvision HCNetSDK
 integration does. Process-level sandboxing and third-party dependency
 installation are outside the version-1 contract.
+
+## Author checklist
+
+Before publishing a plugin, verify that it:
+
+- declares manifest schema version `1` and plugin API `1`;
+- imports public integration types only from `episode.plugin_api`;
+- performs no network, thread, or process work during module import;
+- is not imported when it is installed but unconfigured;
+- accepts only explicitly assigned Devices and cannot claim another Device's
+  credentials or media registration;
+- submits exact source bytes before parsing and preserves rejected deliveries;
+- reports useful lifecycle and instance health without credentials or private
+  paths;
+- closes connections, tasks, registrations, and media during `stop()`;
+- contains tests for valid input, malformed input, duplicate delivery, startup
+  failure, timeout, and cleanup.
+
+The included UDP sensor is both the minimal repository layout and the CI-backed
+reference implementation. Episode's test suite loads its real manifest and
+entrypoint, submits a datagram, verifies raw preservation and Episode creation,
+and exercises plugin failure isolation.

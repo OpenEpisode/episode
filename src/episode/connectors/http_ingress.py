@@ -4,11 +4,17 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 
 from episode.ingestion.models import IngressDelivery
 from episode.ingestion.service import IngestionService
 
 logger = logging.getLogger(__name__)
+
+
+class HTTPIngressResponse(BaseModel):
+    status: str
+    receipt_id: str
 
 
 class HTTPIngressConnector:
@@ -73,7 +79,7 @@ class HTTPIngressConnector:
     def mount(self, app: FastAPI) -> None:
         path = self._path
 
-        @app.post(path)
+        @app.post(path, response_model=HTTPIngressResponse)
         async def handle_delivery(request: Request):
             self._request_count += 1
             try:

@@ -13,26 +13,6 @@ class ProvenanceStore:
 
     def __init__(self, connection: aiosqlite.Connection):
         self._conn = connection
-        self._legacy_identity_schema = False
-
-    async def migrate_schema(self) -> None:
-        await self._add_column("events", "dedup_key", "TEXT")
-        await self._add_column("evidence", "artifact_id", "TEXT REFERENCES raw_artifacts(id)")
-        await self._add_column("evidence", "byte_size", "INTEGER")
-        await self._add_column("evidence", "sha256", "TEXT")
-        await self._conn.execute(
-            """CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup_key
-               ON events(dedup_key)
-               WHERE dedup_key IS NOT NULL AND dedup_key != ''"""
-        )
-        receipt_columns = await self._conn.execute_fetchall("PRAGMA table_info(ingestion_receipts)")
-        self._legacy_identity_schema = "sensor_id" in {row["name"] for row in receipt_columns}
-        await self._conn.commit()
-
-    async def _add_column(self, table: str, name: str, definition: str) -> None:
-        rows = await self._conn.execute_fetchall(f"PRAGMA table_info({table})")
-        if name not in {row["name"] for row in rows}:
-            await self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
     async def create_artifact(self, artifact: RawArtifact, *, commit: bool = True) -> RawArtifact:
         existing = await self.find_artifact_by_path(artifact.file_path)
@@ -82,54 +62,28 @@ class ProvenanceStore:
     async def create_receipt(
         self, receipt: IngestionReceipt, *, commit: bool = True
     ) -> IngestionReceipt:
-        if self._legacy_identity_schema:
-            await self._conn.execute(
-                """INSERT OR IGNORE INTO ingestion_receipts (
-                    id, source, received_at, observed_at, status, artifact_id,
-                    device_id, area_id, sensor_id, asset_id, external_id, metadata,
-                    event_id, evidence_id, episode_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    receipt.id,
-                    receipt.source,
-                    receipt.received_at.isoformat(),
-                    receipt.observed_at.isoformat() if receipt.observed_at else None,
-                    receipt.status.value,
-                    receipt.artifact_id,
-                    receipt.device_id,
-                    receipt.area_id,
-                    receipt.device_id or "",
-                    receipt.area_id or "",
-                    receipt.external_id,
-                    json.dumps(receipt.metadata),
-                    receipt.event_id,
-                    receipt.evidence_id,
-                    receipt.episode_id,
-                ),
-            )
-        else:
-            await self._conn.execute(
-                """INSERT OR IGNORE INTO ingestion_receipts (
-                    id, source, received_at, observed_at, status, artifact_id,
-                    device_id, area_id, external_id, metadata, event_id,
-                    evidence_id, episode_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    receipt.id,
-                    receipt.source,
-                    receipt.received_at.isoformat(),
-                    receipt.observed_at.isoformat() if receipt.observed_at else None,
-                    receipt.status.value,
-                    receipt.artifact_id,
-                    receipt.device_id,
-                    receipt.area_id,
-                    receipt.external_id,
-                    json.dumps(receipt.metadata),
-                    receipt.event_id,
-                    receipt.evidence_id,
-                    receipt.episode_id,
-                ),
-            )
+        await self._conn.execute(
+            """INSERT OR IGNORE INTO ingestion_receipts (
+                id, source, received_at, observed_at, status, artifact_id,
+                device_id, area_id, external_id, metadata, event_id,
+                evidence_id, episode_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                receipt.id,
+                receipt.source,
+                receipt.received_at.isoformat(),
+                receipt.observed_at.isoformat() if receipt.observed_at else None,
+                receipt.status.value,
+                receipt.artifact_id,
+                receipt.device_id,
+                receipt.area_id,
+                receipt.external_id,
+                json.dumps(receipt.metadata),
+                receipt.event_id,
+                receipt.evidence_id,
+                receipt.episode_id,
+            ),
+        )
         if commit:
             await self._conn.commit()
         return receipt
@@ -151,40 +105,21 @@ class ProvenanceStore:
         external_id: str | None,
         metadata: dict,
     ) -> None:
-        if self._legacy_identity_schema:
-            await self._conn.execute(
-                """UPDATE ingestion_receipts
-                   SET status = ?, observed_at = ?, device_id = ?, area_id = ?,
-                       sensor_id = ?, asset_id = ?, external_id = ?, metadata = ?
-                   WHERE id = ?""",
-                (
-                    status.value,
-                    observed_at.isoformat() if observed_at else None,
-                    device_id,
-                    area_id,
-                    device_id,
-                    area_id,
-                    external_id,
-                    json.dumps(metadata),
-                    receipt_id,
-                ),
-            )
-        else:
-            await self._conn.execute(
-                """UPDATE ingestion_receipts
-                   SET status = ?, observed_at = ?, device_id = ?, area_id = ?,
-                       external_id = ?, metadata = ?
-                   WHERE id = ?""",
-                (
-                    status.value,
-                    observed_at.isoformat() if observed_at else None,
-                    device_id,
-                    area_id,
-                    external_id,
-                    json.dumps(metadata),
-                    receipt_id,
-                ),
-            )
+        await self._conn.execute(
+            """UPDATE ingestion_receipts
+               SET status = ?, observed_at = ?, device_id = ?, area_id = ?,
+                   external_id = ?, metadata = ?
+               WHERE id = ?""",
+            (
+                status.value,
+                observed_at.isoformat() if observed_at else None,
+                device_id,
+                area_id,
+                external_id,
+                json.dumps(metadata),
+                receipt_id,
+            ),
+        )
         await self._conn.commit()
 
     async def list_receipts(

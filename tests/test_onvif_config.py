@@ -110,3 +110,52 @@ async def test_onvif_discovery_keeps_manual_rtsp_fallback_separate():
     assert config.device.metadata["onvif"]["profile_token"] == "auto-main"
     assert saved == [config.device]
     assert media.get("camera-test").stream_uri == "rtsp://192.0.2.10/discovered"
+
+
+@pytest.mark.asyncio
+async def test_onvif_discovery_does_not_enable_disabled_recording():
+    value = _device()
+    del value["configs"]["video"]
+    config, error = device_config(value)
+    assert error is None
+    discovered = ONVIFDevice(
+        manufacturer="Example",
+        model="Camera",
+        firmware_version="1.0",
+        profiles=[
+            ONVIFProfile(
+                token="auto-main",
+                stream_uri="rtsp://192.0.2.10/discovered",
+                snapshot_uri="http://192.0.2.10/snapshot",
+            )
+        ],
+    )
+
+    class Client:
+        async def discover(self):
+            return discovered
+
+        async def close(self):
+            pass
+
+        async def unsubscribe(self, _url):
+            pass
+
+    async def sink(_delivery):
+        pass
+
+    async def save(_device):
+        pass
+
+    connection = ONVIFDeviceConnection(
+        config,
+        sink,
+        MediaRegistry(),
+        save,
+        client_factory=lambda _config: Client(),
+    )
+
+    await connection._discover()
+
+    assert config.device.get_config("video") is None
+    assert "video" in config.device.capabilities

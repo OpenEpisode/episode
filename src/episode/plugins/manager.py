@@ -311,7 +311,7 @@ class PluginManager:
                 "type": registration.integration.type,
                 "name": registration.integration.name,
                 "device_scoped": registration.integration.device_scoped,
-                "activation_capability": registration.activation_capability,
+                "activation_config_type": registration.activation_config_type,
                 "configured_device_ids": list(registration.configured_device_ids),
                 "capabilities": list(registration.integration.capabilities),
             }

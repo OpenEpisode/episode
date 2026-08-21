@@ -32,11 +32,8 @@ setting.
 7. Choose **Own Events only** to record only this camera's Events, or **Any
    Episode in this Area** when the camera should join activity opened by another
    Device.
-8. Save, then restart Episode:
-
-```bash
-docker compose --env-file .env restart episode
-```
+8. Save the Device. Episode activates its integrations without restarting the
+   container.
 
 Credentials are write-only in the API and UI: after saving, they are reported
 only as configured and are never returned to the browser. Leaving credential
@@ -90,7 +87,7 @@ recordings are checksummed and stored without overlays or modification.
 
 ### Optional Episode-requested snapshots
 
-Automatic ONVIF snapshot capture is a system-wide alpha setting and remains
+Automatic ONVIF snapshot capture is a system-wide setting and remains
 disabled by default. To enable it, set this in `episode.json` and restart:
 
 ```json
@@ -123,7 +120,7 @@ The original vendor payload remains immutable and UI overlays remain separate.
   snapshot operation. Recording can still work.
 - **Wrong stream:** inspect the profiles shown on the Device page and include
   sanitized diagnostics in an issue.
-- **Changes appear saved but are not active:** follow the restart notice in the
-  UI or run `docker compose --env-file .env restart episode`.
+- **Changes appear saved but are not active:** check the System page for the
+  ONVIF integration state and inspect the Episode logs for its Device entry.
 - **ONVIF fails but a vendor integration works:** keep both enabled and include
   the model, firmware, and sanitized System diagnostics when opening an issue.

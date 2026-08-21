@@ -160,8 +160,12 @@ def _configured_sdk_devices(
 ) -> list[Mapping[str, object]]:
     selected = []
     for device in devices:
-        capabilities = device.get("capabilities", [])
-        if isinstance(capabilities, (list, tuple, set)) and "hikvision_sdk" in capabilities:
+        configs = device.get("configs", {})
+        if (
+            isinstance(configs, Mapping)
+            and "hikvision_sdk" in configs
+            and device.get("enabled", True)
+        ):
             selected.append(device)
     return selected
 

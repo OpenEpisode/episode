@@ -529,7 +529,7 @@ async def test_plugin_starts_only_configured_isapi_devices_and_reports_each_inst
             configured_devices=(
                 _configured_device(),
                 _configured_device(id="disabled", enabled=False),
-                _configured_device(id="onvif-only", capabilities=["onvif"]),
+                _configured_device(id="onvif-only", configs={"onvif": {}}),
             ),
             raw_delivery_sink=lambda _delivery: None,
             ingress_router=router,

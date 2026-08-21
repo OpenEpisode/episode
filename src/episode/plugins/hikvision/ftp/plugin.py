@@ -96,10 +96,9 @@ class HikvisionFTPPlugin:
         timestamp = parsed.pop("timestamp", envelope.received_at)
         ip_address = str(parsed.get("ip_address", ""))
         device = self._devices_by_ip.get(ip_address)
-        capabilities = set(device.get("capabilities", ())) if device else set()
         device_type = str(device.get("device_type", "")) if device else ""
         metadata = {**parsed, "origin": "ftp"}
-        if "doorbell" in capabilities or device_type == "doorbell":
+        if device_type == "doorbell":
             metadata["evidence_role"] = "event_attachment"
             metadata["timelapse_eligible"] = False
 

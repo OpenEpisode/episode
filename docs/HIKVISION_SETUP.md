@@ -34,14 +34,14 @@ docker compose --env-file .env up -d
 
 Open <http://localhost:8989>, create an Area, and add the camera from the
 **Devices** page. The System page reports core service and Integration health.
-Restart Episode after saving Device changes so its connections become active.
+Saving Device changes activates its connections without restarting Episode.
 
 ## ISAPI event stream
 
 For enhanced vendor Event monitoring, edit the Device and select **Validate
 and discover**. Episode safely requests Hikvision device information to verify
 ISAPI independently from ONVIF. Enable **ISAPI Event stream** when supported,
-then save and restart Episode. Credentials entered for the
+then save the Device. Credentials entered for the
 Device are shared with its enabled integrations and are never returned to the
 browser.
 
@@ -168,11 +168,10 @@ same Area using **Any Episode in this Area** join the same Episode.
 ### Activate the plugin
 
 Installing SDK files alone does not activate or load the integration. HCNetSDK
-is exposed for Doorbell Devices in the alpha because that is the path validated
-so far. Edit the Doorbell, enable **HCNetSDK**, set its login port (default
-`8000`) under manual connection overrides, and restart Episode. General Camera
-use remains a later validation task; the backend plugin contract does not assume
-that future limitation.
+is currently exposed for Doorbell Devices, where its callback flow has been
+validated. Edit the Doorbell, enable **HCNetSDK**, set its login port (default
+`8000`) under manual connection overrides, then save the Device. The backend
+plugin contract does not impose that Device-type limitation.
 
 The Device name, Area, IP address, username, and password are required.
 Credentials are sent to the isolated worker over standard input; they are not
@@ -243,7 +242,7 @@ Validation runs in a disposable child process, and each configured SDK device
 runs in its own long-lived child process. A broken library or native crash
 changes plugin health but does not stop Episode. Failed login and subscription
 attempts are not automatically retried in a tight loop, avoiding accidental
-device lockouts; correct the configuration and restart Episode.
+device lockouts; correct and save the Device configuration again.
 
 Every successfully copied callback buffer is initially sealed below
 `data/orphans/plugin-deliveries/hikvision-sdk/<device-id>/` and registered as an

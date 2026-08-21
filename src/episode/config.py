@@ -59,10 +59,7 @@ class ActionsConfig:
 class EpisodeConfig:
     data_dir: str = "/var/episode/data"
     plugins_dir: str = "/opt/episode/plugins"
-    orphans_dir: str = ""
     db_path: str = ""
-    evidence_dir: str = ""
-    events_dir: str = ""
     api_host: str = "127.0.0.1"
     api_port: int = 8989
     episode_timeout: int = 30
@@ -71,18 +68,10 @@ class EpisodeConfig:
     actions: ActionsConfig = field(default_factory=ActionsConfig)
     connectors: list[ConnectorConfig] = field(default_factory=list)
     plugins: list[ExternalPluginConfig] = field(default_factory=list)
-    devices: list[dict] = field(default_factory=list)
-    areas: list[dict] = field(default_factory=list)
 
     def __post_init__(self):
-        if not self.orphans_dir:
-            self.orphans_dir = os.path.join(self.data_dir, "orphans")
         if not self.db_path:
             self.db_path = os.path.join(self.data_dir, "episode.db")
-        if not self.evidence_dir:
-            self.evidence_dir = os.path.join(self.data_dir, "orphans")
-        if not self.events_dir:
-            self.events_dir = os.path.join(self.data_dir, "orphans")
         if isinstance(self.actions, dict):
             snapshot = self.actions.get("snapshot", {})
             recording = self.actions.get("recording", {})
@@ -110,8 +99,10 @@ def load_config(path: str | None = None) -> EpisodeConfig:
     if path and os.path.exists(path):
         with open(path) as f:
             raw = json.load(f)
-        raw.pop("recording", None)
         raw["connectors"] = [ConnectorConfig(**c) for c in raw.pop("connectors", [])]
         raw["plugins"] = [ExternalPluginConfig(**p) for p in raw.pop("plugins", [])]
-        return EpisodeConfig(**raw)
+        try:
+            return EpisodeConfig(**raw)
+        except TypeError as error:
+            raise ValueError(f"Invalid Episode configuration: {error}") from error
     return EpisodeConfig()

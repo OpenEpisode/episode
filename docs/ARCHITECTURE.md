@@ -113,7 +113,7 @@ normalized observations.
 
 The plugin context exposes narrow typed services rather than concrete core
 implementations. Registration metadata is the authoritative catalog for a
-plugin's operational name, integration type, activation capability, validation,
+plugin's operational name, integration type, activation configuration, validation,
 scope, and advertised capabilities. API and inventory projections consume that
 catalog instead of maintaining vendor-specific maps. Public plugin status is
 validated as JSON-safe data; a broken status implementation degrades only that
@@ -126,7 +126,7 @@ only explicit top-level plugin configuration activates an entrypoint. The
 adapter scopes Device configuration to declared Device IDs, namespaces ingress
 handlers, supplies authoritative Area identity, and translates public
 observations back into the core raw-first pipeline. Built-in integrations retain
-their internal contract while this public boundary is validated during alpha.
+their internal contract while plugin API v1 remains supported throughout beta.
 
 Plugin API version 1 supports Device and ingress plugins. Action and processor
 kinds are reserved, not implemented. Third-party Python executes in the Episode
@@ -162,25 +162,32 @@ Raw-delivery transactions are serialized and always rolled back when interrupted
 including task cancellation, so an abandoned connector task cannot retain the
 database write lock.
 
+The storage layer keeps one stable repository façade for application callers,
+while inventory, canonical Event, and provenance SQL live in focused stores.
+Raw Artifacts describe immutable content; Receipts exclusively describe how,
+when, and from where that content arrived.
+
 Startup recovery also derives each Episode's Event and Evidence counters from
 the canonical rows before rebuilding portable manifests. Interrupted or older
 write paths therefore cannot leave collection summaries permanently stale.
 
-Area and Device inventory is persistent configuration stored in SQLite.
-`episode.json` remains responsible for system-wide services and action
-defaults. On an existing installation, legacy `areas` and `devices` arrays are
-imported once; subsequent restarts never overwrite UI-managed inventory.
-Disabling inventory preserves historical relationships, and referenced records
-cannot be deleted. Device type expresses physical role, never vendor. Vendor
-identity is discovered when possible, while optional vendor integrations remain
-separate capabilities and configurations.
+Area and Device inventory is persistent configuration stored in SQLite and
+managed through the UI. `episode.json` remains responsible only for system-wide
+services and action defaults. Disabling inventory preserves historical
+relationships, and referenced records cannot be deleted. Device type expresses
+physical role, never vendor. Vendor identity is discovered when possible, while
+optional vendor integrations remain separate configurations. A Device's
+`configs` determine which integrations are enabled; `capabilities` describe
+what the Device has actually advertised or demonstrated. Saving or deleting a
+Device immediately reloads the running plugin set from the authoritative
+inventory. Existing recording processes remain owned by the
+recording engine and continue until their Episode closes; newly added Devices
+participate in later qualifying Events.
 
 The additive tables include:
 
 - `areas` and `devices`: authoritative inventory, capability configuration,
   credentials, and active state.
-- `app_settings`: schema-independent application markers such as one-time
-  inventory bootstrap state.
 - `raw_artifacts`: location, media type, byte length, SHA-256, and seal state.
 - `ingestion_receipts`: source, timing, parse status, and links to artifacts,
   Events, Evidence, and Episodes.
@@ -188,8 +195,9 @@ The additive tables include:
 - `evidence`: incident material with artifact and integrity references.
 - `episodes`: lifecycle and summary index.
 
-Existing databases are migrated in place by adding columns and tables. Raw
-artifacts already present on disk are backfilled without rewriting their bytes.
+During the pre-release lifecycle, Episode supports only the current database
+schema. Schema migration guarantees begin when the stable storage contract is
+declared; until then, a development release may require a clean database.
 
 ## Episode bundles
 
@@ -287,6 +295,12 @@ payloads. Recording targets are currently resolved from the Event source and
 Area; this boundary can accept future target strategies without changing
 connectors or recording execution.
 
+The UI's active-Episode current views are operational previews, not capture
+actions. They are limited to Devices actively recording that Episode, fetched
+through registered media providers, cached briefly across viewers, and never
+persisted as Raw Artifacts or Evidence. A missing preview provider does not
+affect recording health.
+
 New AI, OCR, LPR, or recognition integrations should create versioned processing
 runs and append annotations. Reprocessing must never replace prior results or
 modify source evidence.
@@ -312,8 +326,9 @@ write-only credentials, and active-Area constraints. Integration support,
 configured selection, and runtime health are separate states: safe validation
 probes provide evidence without activating connectors, and transient failures
 are never presented as proof of unsupported hardware. Device changes are durable
-immediately but set a visible restart-required state because connector lifecycle
-reconfiguration is intentionally deferred to process startup in alpha.6.
+immediately and reconcile the running Device integrations before the mutation
+request completes. Recording processes already in progress remain independent
+of that integration lifecycle.
 
 Receipt collection queries support deterministic offset pagination and filters
 for source, outcome status, Episode, Event, and Evidence. A single-receipt route
@@ -321,7 +336,7 @@ provides direct traceability, while artifact bytes remain on the separate
 artifact download route. Transport and concise outcome reason are projected as
 first-class fields without removing the underlying diagnostic metadata.
 
-## Known alpha constraints
+## Known constraints
 
 - Correlation is restricted to time-proximate Events within the same Area.
 - The generic Event API is a trusted-LAN input, not an authenticated public webhook.

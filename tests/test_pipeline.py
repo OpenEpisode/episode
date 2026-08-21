@@ -14,6 +14,7 @@ from episode.config import EpisodeConfig
 from episode.domain.models import (
     Area,
     Device,
+    Episode,
     EpisodeState,
     Event,
     EventState,
@@ -32,7 +33,6 @@ def config():
     cfg = EpisodeConfig(
         data_dir=tmpdir,
         db_path=os.path.join(tmpdir, "test.db"),
-        evidence_dir=os.path.join(tmpdir, "evidence"),
         episode_timeout=2,
     )
     return cfg
@@ -47,6 +47,23 @@ def repo(config):
 @pytest.fixture
 def bus():
     return EventBus()
+
+
+@pytest_asyncio.fixture
+async def storage_repo(repo):
+    await repo.initialize()
+    for area_id in ("area-1", "area-2"):
+        await repo.upsert_area(Area(id=area_id, name=area_id))
+    for device_id, area_id in (
+        ("device-1", "area-1"),
+        ("device-2", "area-1"),
+        ("device-3", "area-2"),
+    ):
+        await repo.upsert_device(
+            Device(id=device_id, name=device_id, device_type="camera", area_id=area_id)
+        )
+    yield repo
+    await repo.close()
 
 
 @pytest_asyncio.fixture
@@ -84,6 +101,73 @@ async def test_event_persistence(engine, repo):
     assert retrieved is not None
     assert retrieved.id == event.id
     assert retrieved.event_type == "motion_detection"
+
+
+@pytest.mark.asyncio
+async def test_review_inventory_filters_events_and_evidence(storage_repo):
+    repo = storage_repo
+    timestamp = datetime.now(tz=timezone.utc)
+    episode = Episode(
+        id="review-episode",
+        primary_area_id="area-1",
+        start_time=timestamp,
+        state=EpisodeState.ACTIVE,
+    )
+    await repo.create_episode(episode)
+    linked_event = Event(
+        id="linked-event",
+        device_id="device-1",
+        area_id="area-1",
+        timestamp=timestamp,
+        event_type="doorbell",
+        event_state=EventState.ACTIVE,
+        episode_id=episode.id,
+    )
+    unassigned_event = Event(
+        id="unassigned-event",
+        device_id="device-2",
+        area_id="area-1",
+        timestamp=timestamp,
+        event_type="motion_detection",
+        event_state=EventState.INACTIVE,
+    )
+    await repo.create_event(linked_event)
+    await repo.create_event(unassigned_event)
+    await repo.create_evidence(
+        Evidence(
+            id="linked-evidence",
+            device_id="device-1",
+            area_id="area-1",
+            timestamp=timestamp,
+            evidence_type="recording",
+            file_path="/tmp/linked.mp4",
+            mime_type="video/mp4",
+            episode_id=episode.id,
+        )
+    )
+    await repo.create_evidence(
+        Evidence(
+            id="unassigned-evidence",
+            device_id="device-3",
+            area_id="area-2",
+            timestamp=timestamp,
+            evidence_type="snapshot",
+            file_path="/tmp/unassigned.jpg",
+            mime_type="image/jpeg",
+        )
+    )
+
+    assert [item.id for item in await repo.list_events(event_type="doorbell")] == [linked_event.id]
+    assert [item.id for item in await repo.list_events(has_episode=False)] == [unassigned_event.id]
+    assert [item.id for item in await repo.list_events(event_state="inactive")] == [
+        unassigned_event.id
+    ]
+    assert [
+        item.id
+        for item in await repo.list_evidence(
+            area_id="area-2", evidence_type="snapshot", has_episode=False
+        )
+    ] == ["unassigned-evidence"]
 
 
 @pytest.mark.asyncio

@@ -101,7 +101,7 @@ class DeviceValidationService:
             "not_validated",
             (
                 f"{metadata.name} is not probed automatically; enable it "
-                "explicitly and restart to validate"
+                "on the Device to validate it at runtime"
             ),
             checked_at,
         )

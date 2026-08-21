@@ -177,7 +177,7 @@ def test_worker_queries_friendly_model_and_firmware_from_sdk():
     }
 
 
-def test_worker_formats_legacy_device_config_firmware_values():
+def test_worker_formats_fallback_device_config_firmware_values():
     version = (3 << 24) | (6 << 16) | 1
     build_date = (2025 << 16) | (5 << 8) | 22
 
@@ -267,7 +267,8 @@ async def test_raw_plugin_delivery_store_seals_bytes_and_records_receipt(tmp_pat
     assert artifact is not None
     assert artifact.sealed
     assert Path(artifact.file_path).read_bytes() == b"immutable callback bytes"
-    assert artifact.metadata["command"] == 0x1133
+    assert artifact.metadata == {}
+    assert receipt.metadata["command"] == 0x1133
 
     await repository.close()
 

@@ -8,31 +8,48 @@
 <meta http-equiv="Expires" content="0">
 <title>Episode</title>
 <link rel="icon" href="logo.svg" type="image/svg+xml">
-<link rel="stylesheet" href="style.css?v=17">
+<link rel="stylesheet" href="style.css?v=27">
+<link rel="stylesheet" href="design-system.css?v=3">
 
 </head>
 <body>
-<aside id="sidebar">
+<aside id="sidebar" class="app-sidebar">
   <div class="sidebar-brand">
     <img src="logo.svg" class="logo" alt="">
-    <h1>Episode</h1>
-    <span id="app-version" class="app-version" aria-label="Episode version"></span>
+    <div class="brand-copy">
+      <h1>Episode</h1>
+      <small>Evidence workspace <span id="app-version" class="app-version" aria-label="Episode version"></span></small>
+    </div>
   </div>
-  <nav>
-    <a href="#episodes" class="active">Episodes</a>
-    <a href="#activity">Activity</a>
-    <a href="#evidence">Evidence</a>
-    <a href="#devices">Devices</a>
-    <a href="#system">System</a>
-  </nav>
-  <button id="theme-toggle" onclick="toggleTheme()"></button>
-  <div id="sidebar-status"></div>
-  <div id="recent-episodes-sidebar"></div>
+  <div class="sidebar-body">
+    <nav aria-label="Primary navigation">
+      <div class="nav-section">
+        <span class="nav-heading">Review</span>
+        <a href="#episodes" class="active"><svg class="nav-icon"><use href="icons.svg#episodes"></use></svg>Episodes</a>
+        <a href="#activity"><svg class="nav-icon"><use href="icons.svg#activity"></use></svg>Activity</a>
+        <a href="#evidence"><svg class="nav-icon"><use href="icons.svg#evidence"></use></svg>Evidence</a>
+      </div>
+      <div class="nav-section">
+        <span class="nav-heading">Configure</span>
+        <a href="#devices"><svg class="nav-icon"><use href="icons.svg#devices"></use></svg>Devices</a>
+        <a href="#areas"><svg class="nav-icon"><use href="icons.svg#areas"></use></svg>Areas</a>
+      </div>
+      <div class="nav-section">
+        <span class="nav-heading">Operations</span>
+        <a href="#system"><svg class="nav-icon"><use href="icons.svg#system"></use></svg>System</a>
+      </div>
+    </nav>
+    <div id="recent-episodes-sidebar"></div>
+  </div>
+  <div class="sidebar-footer">
+    <div id="sidebar-status"></div>
+    <button id="theme-toggle" onclick="toggleTheme()"></button>
+  </div>
 </aside>
 <div id="sidebar-overlay" onclick="toggleSidebar()" class="hidden"></div>
 <main id="content">
   <div id="mobile-header">
-    <button id="sidebar-toggle" onclick="toggleSidebar()" aria-label="Open navigation">&#9776;</button>
+    <button id="sidebar-toggle" onclick="toggleSidebar()" aria-label="Open navigation"><svg class="button-icon"><use href="icons.svg#menu"></use></svg></button>
     <span id="mobile-title">Episode</span>
   </div>
   <div id="view-loading">Loading...</div>
@@ -42,16 +59,20 @@
 
 <div id="evidence-carousel" class="carousel-overlay hidden">
   <div class="carousel-backdrop" onclick="closeCarousel()"></div>
-  <button class="carousel-close" onclick="closeCarousel()">&times;</button>
-  <button class="carousel-prev" onclick="carouselNav(-1)">&#8249;</button>
-  <button class="carousel-next" onclick="carouselNav(1)">&#8250;</button>
-  <div class="carousel-viewport">
-    <div id="carousel-slide"></div>
-    <div id="carousel-counter" class="carousel-counter">0 / 0</div>
-  </div>
-  <div id="carousel-info" class="carousel-info"></div>
+  <section class="carousel-dialog" role="dialog" aria-modal="true" aria-labelledby="carousel-title">
+    <header class="carousel-header">
+      <div><span>Evidence viewer</span><strong id="carousel-title">Evidence</strong></div>
+      <div><span id="carousel-counter" class="carousel-counter">0 of 0</span><button class="carousel-close" onclick="closeCarousel()" aria-label="Close slideshow">&times;</button></div>
+    </header>
+    <div class="carousel-viewport">
+      <button id="carousel-prev" class="carousel-prev" onclick="carouselNav(-1)" aria-label="Previous evidence">&#8249;</button>
+      <div id="carousel-slide"></div>
+      <button id="carousel-next" class="carousel-next" onclick="carouselNav(1)" aria-label="Next evidence">&#8250;</button>
+    </div>
+    <footer id="carousel-info" class="carousel-info"></footer>
+  </section>
 </div>
 
-<script type="module" src="app.js?v=21"></script>
+<script type="module" src="app.js?v=39"></script>
 </body>
 </html>

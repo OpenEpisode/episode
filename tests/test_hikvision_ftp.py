@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,6 +15,22 @@ from episode.media.timelapse import is_timelapse_eligible
 from episode.plugins.hikvision.ftp.plugin import HikvisionFTPPlugin, parse_hikvision_filename
 from episode.plugins.models import PluginContext
 from episode.storage.repository import Repository
+
+
+@pytest.mark.asyncio
+async def test_ftp_connector_stops_promptly_when_idle(tmp_path):
+    config = EpisodeConfig(data_dir=str(tmp_path / "data"))
+    connector = FTPConnector(
+        "FTP",
+        ingestion=None,
+        config={"host": "127.0.0.1", "port": 0},
+        app_config=config,
+    )
+
+    await connector.start()
+    await asyncio.wait_for(connector.stop(), timeout=2)
+
+    assert connector.status()["running"] is False
 
 
 def test_parses_video_intercom_ftp_filename():

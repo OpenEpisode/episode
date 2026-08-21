@@ -2,99 +2,16 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, Field
-
-from episode.api.inventory import (
-    DeviceConfigurationResponse,
-    IntegrationSupportResponse,
-    editable_device_configuration,
-)
+from episode.api.inventory import editable_device_configuration
+from episode.api.schemas import OperationalState
 from episode.domain.models import Device
 
-OperationalState = Literal["healthy", "degraded", "unavailable", "disabled", "unknown"]
 
-
-def product_capabilities(
-    capabilities: Sequence[str], integration_flags: Sequence[str] = ()
-) -> list[str]:
+def product_capabilities(capabilities: Sequence[str]) -> list[str]:
     """Return user-facing capabilities without integration activation flags."""
-    return sorted(set(capabilities) - set(integration_flags))
-
-
-class IntegrationResponse(BaseModel):
-    id: str
-    name: str
-    type: str
-    kind: Literal["device", "shared", "plugin"]
-    state: OperationalState
-    device_id: str | None = None
-    capabilities: list[str] = Field(default_factory=list)
-    summary: str = ""
-    details: dict[str, Any] = Field(default_factory=dict)
-
-
-class DeviceIdentityResponse(BaseModel):
-    manufacturer: str | None = None
-    model: str | None = None
-    firmware_version: str | None = None
-
-
-class CapturePolicyResponse(BaseModel):
-    recording: str
-    automatic_snapshots: bool
-    onvif_events: bool | None = None
-
-
-class DeviceSummaryResponse(BaseModel):
-    id: str
-    name: str
-    device_type: str
-    area_id: str
-    capabilities: list[str]
-    state: OperationalState
-    identity: DeviceIdentityResponse
-    enabled: bool
-    integrations: list[IntegrationResponse] = Field(default_factory=list)
-
-
-class DeviceDetailResponse(DeviceSummaryResponse):
-    ip_address: str
-    capture_policy: CapturePolicyResponse
-    configuration: DeviceConfigurationResponse
-    integration_support: dict[str, IntegrationSupportResponse] = Field(default_factory=dict)
-    can_delete: bool = False
-
-
-class ServiceResponse(BaseModel):
-    id: str
-    name: str
-    state: OperationalState
-    summary: str
-    metrics: dict[str, Any] = Field(default_factory=dict)
-
-
-class IntegrationCountsResponse(BaseModel):
-    total: int = 0
-    healthy: int = 0
-    degraded: int = 0
-    unavailable: int = 0
-
-
-class SystemStatusResponse(BaseModel):
-    version: str
-    state: OperationalState
-    active_recordings: int = 0
-    restart_required: bool = False
-    services: dict[str, OperationalState]
-    integrations: IntegrationCountsResponse
-
-
-class DiagnosticsResponse(BaseModel):
-    status: SystemStatusResponse
-    services: list[ServiceResponse]
-    integrations: list[IntegrationResponse]
+    return sorted(set(capabilities) - {"doorbell", "onvif", "isapi", "hikvision_sdk"})
 
 
 def _slug(value: object) -> str:
@@ -194,7 +111,6 @@ class OperationalView:
         connector_statuses: Callable[[], Sequence[Mapping[str, Any]]],
         plugin_statuses: Callable[[], Sequence[Mapping[str, Any]]],
         snapshots_enabled: bool,
-        restart_required: Callable[[], bool] = lambda: False,
     ) -> None:
         self._version = version
         self._engine_status = engine_status
@@ -203,7 +119,6 @@ class OperationalView:
         self._connector_statuses = connector_statuses
         self._plugin_statuses = plugin_statuses
         self._snapshots_enabled = snapshots_enabled
-        self._restart_required = restart_required
 
     def _connectors(self) -> list[dict[str, Any]]:
         return [dict(status) for status in self._connector_statuses()]
@@ -252,7 +167,6 @@ class OperationalView:
             "version": self._version,
             "state": state,
             "active_recordings": int(recorder.get("active_recordings", 0)),
-            "restart_required": self._restart_required(),
             "services": service_states,
             "integrations": counts,
         }
@@ -300,22 +214,13 @@ class OperationalView:
 
     def device_summary(self, device: Device) -> dict[str, Any]:
         integrations = self._device_integrations(device, detailed=False)
-        integration_flags = [
-            str(metadata.get("activation_capability"))
-            for plugin in self._plugins()
-            if isinstance((metadata := plugin.get("integration")), Mapping)
-            and metadata.get("activation_capability")
-        ]
-        integration_flags.extend(
-            str(integration["type"]) for integration in integrations if integration.get("type")
-        )
         return {
             "id": device.id,
             "name": device.name,
             "device_type": device.device_type,
             "area_id": device.area_id,
             "enabled": device.enabled,
-            "capabilities": product_capabilities(device.capabilities, integration_flags),
+            "capabilities": product_capabilities(device.capabilities),
             "state": "disabled" if not device.enabled else self._device_state(integrations),
             "identity": self._device_identity(device),
             "integrations": integrations,
@@ -362,11 +267,10 @@ class OperationalView:
             metadata = plugin.get("integration")
             if not isinstance(metadata, Mapping) or not metadata.get("device_scoped"):
                 continue
-            capability = str(metadata.get("activation_capability") or "")
             configured_device_ids = set(metadata.get("configured_device_ids") or [])
             integration_type = str(metadata.get("type") or "").replace("-", "_")
             explicitly_assigned = device.id in configured_device_ids
-            configured = capability in device.capabilities or explicitly_assigned
+            configured = integration_type in device.configs or explicitly_assigned
             if not configured or integration_type in present:
                 continue
             state = _state_for_plugin(plugin.get("state")) if explicitly_assigned else "unavailable"

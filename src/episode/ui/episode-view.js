@@ -1,11 +1,12 @@
-import { API } from "./api.js?v=2";
+import { API } from "./api.js?v=3";
+import { eventSourceBadges } from "./components.js?v=3";
 import { $, $$, escHtml } from "./dom.js";
 import { fmtDuration, fmtTime, titleCase, trunc } from "./format.js?v=3";
 import {
   buildEpisodeTimeline,
   detectionForMoment,
   eventTitle,
-} from "./timeline.js?v=4";
+} from "./timeline.js?v=5";
 
 function secondsLabel(milliseconds) {
   const seconds = Math.max(0, Math.round(milliseconds / 1000));
@@ -15,18 +16,19 @@ function secondsLabel(milliseconds) {
   return remainder ? minutes + "m " + remainder + "s" : minutes + "m";
 }
 
-function eventSources(event) {
-  return (event.sources || []).map(source => `<span class="label">${source}</span>`).join(" ");
+function deviceLabel(deviceId, deviceNames) {
+  return deviceNames.get(deviceId) || deviceId || "Unknown Device";
 }
 
-function recordingLabel(recording, counts) {
+function recordingLabel(recording, counts, deviceNames) {
   const count = counts.get(recording.device_id) || 0;
-  if (count <= 1) return recording.device_id || "Recording";
+  const label = deviceLabel(recording.device_id, deviceNames);
+  if (count <= 1) return label;
   const segment = Number(recording.metadata?.segment_index || 0) + 1;
-  return `${recording.device_id || "Recording"} · segment ${segment}`;
+  return `${label} · segment ${segment}`;
 }
 
-function renderRecordingCoverage(model) {
+function renderRecordingCoverage(model, deviceNames) {
   if (!model.recordings.length) {
     return '<div class="timeline-no-coverage">No recordings captured</div>';
   }
@@ -39,7 +41,7 @@ function renderRecordingCoverage(model) {
   return `<div class="recording-coverage">
     ${[...lanes.entries()].map(([deviceId, recordings]) => `
       <div class="coverage-lane">
-        <span title="${deviceId}">${trunc(deviceId || "Recording", 24)}</span>
+        <span title="${escHtml(deviceId)}">${escHtml(trunc(deviceLabel(deviceId, deviceNames), 24))}</span>
         <div class="coverage-track">
           ${recordings.map(recording => {
             const left = Math.max(0, (recording.bounds.start - model.start) / duration * 100);
@@ -72,7 +74,7 @@ function eventContext(event) {
   return [lockName, unlockMethod].filter(Boolean).join(" · ");
 }
 
-function renderTimelineEvent(entry) {
+function renderTimelineEvent(entry, deviceNames) {
   const duration = entry.end > entry.start
     ? ` · ${secondsLabel(entry.end - entry.start)}`
     : "";
@@ -88,11 +90,11 @@ function renderTimelineEvent(entry) {
     <div class="timeline-entry-content">
       <button type="button" class="timeline-moment" data-moment-id="${entry.id}">
         <strong>${entry.title}</strong>
-        <span>${trunc(entry.deviceId || "Unknown Device", 28)}${duration}${context ? ` · ${escHtml(context)}` : ""}</span>
+        <span>${escHtml(trunc(deviceLabel(entry.deviceId, deviceNames), 28))}${duration}${context ? ` · ${escHtml(context)}` : ""}</span>
       </button>
       <details class="timeline-details">
         <summary>Details</summary>
-        <div>${titleCase(entry.event.event_state)} · ${eventSources(entry.event)}</div>
+        <div>${titleCase(entry.event.event_state)} · ${eventSourceBadges(entry.event)}</div>
         ${lockName ? `<div>Lock: ${escHtml(lockName)}</div>` : ""}
         ${unlockMethod ? `<div>Method: ${escHtml(unlockMethod)}</div>` : ""}
         ${entry.event.metadata?.unlock_outcome ? `<div>Outcome: ${titleCase(entry.event.metadata.unlock_outcome)}</div>` : ""}
@@ -102,7 +104,7 @@ function renderTimelineEvent(entry) {
   </div>`;
 }
 
-function renderTimelineSnapshot(entry) {
+function renderTimelineSnapshot(entry, deviceNames) {
   const relatedTitle = entry.relatedEvent ? eventTitle(entry.relatedEvent) : "";
   return `<div class="timeline-entry timeline-entry-snapshot" data-timeline-id="${entry.id}">
     <time datetime="${new Date(entry.start).toISOString()}">${fmtTime(entry.start)}</time>
@@ -113,7 +115,7 @@ function renderTimelineSnapshot(entry) {
         <img src="${API}/evidence/${entry.item.id}/file" loading="lazy" alt="">
         <span class="timeline-snapshot-copy">
           <strong>Snapshot</strong>
-          <span>${trunc(entry.deviceId || "Unknown Device", 28)}</span>
+          <span>${escHtml(trunc(deviceLabel(entry.deviceId, deviceNames), 28))}</span>
           ${relatedTitle ? `<small>Linked to ${relatedTitle}</small>` : `<small>Uncorrelated evidence</small>`}
         </span>
       </button>
@@ -121,7 +123,7 @@ function renderTimelineSnapshot(entry) {
   </div>`;
 }
 
-function renderTimelineEntries(model) {
+function renderTimelineEntries(model, deviceNames) {
   if (!model.entries.length) return '<div class="timeline-empty">No Events or snapshots</div>';
   let previousEnd = model.start;
   const rows = [];
@@ -134,32 +136,38 @@ function renderTimelineEntries(model) {
       </div>`);
     }
     rows.push(entry.kind === "event"
-      ? renderTimelineEvent(entry)
-      : renderTimelineSnapshot(entry));
+      ? renderTimelineEvent(entry, deviceNames)
+      : renderTimelineSnapshot(entry, deviceNames));
     previousEnd = Math.max(previousEnd, entry.end);
   }
   return rows.join("");
 }
 
-function renderMediaTabs(model, timelapseDevices) {
+function renderMediaTabs(model, timelapseDevices, deviceNames) {
   const counts = new Map();
   for (const recording of model.recordings) {
     counts.set(recording.device_id, (counts.get(recording.device_id) || 0) + 1);
   }
   const recordingTabs = model.recordings.map(recording => `
     <button type="button" class="media-tab" data-media-id="${recording.id}">
-      <span class="media-tab-dot"></span>${recordingLabel(recording, counts)}
+      <span class="media-tab-dot"></span>${escHtml(recordingLabel(recording, counts, deviceNames))}
     </button>`).join("");
   const timelapseTabs = timelapseDevices.map(deviceId => `
     <button type="button" class="media-tab media-tab-secondary" data-timelapse-device="${deviceId}">
-      Timelapse · ${trunc(deviceId, 22)}
+      Timelapse · ${escHtml(trunc(deviceLabel(deviceId, deviceNames), 22))}
     </button>`).join("");
   return recordingTabs || timelapseTabs
     ? `<div class="episode-media-tabs">${recordingTabs}${timelapseTabs}</div>`
     : "";
 }
 
-export function renderEpisodeWorkspace(episode, events, evidence, timelapseDevices = []) {
+export function renderEpisodeWorkspace(
+  episode,
+  events,
+  evidence,
+  timelapseDevices = [],
+  deviceNames = new Map(),
+) {
   const model = buildEpisodeTimeline(episode, events, evidence);
   return {
     model,
@@ -167,7 +175,7 @@ export function renderEpisodeWorkspace(episode, events, evidence, timelapseDevic
       <section class="episode-media-panel">
         <div class="episode-media-header">
           <div>
-            <span>Selected media</span>
+            <span>Evidence player</span>
             <strong id="episode-media-title">Choose a timeline moment</strong>
           </div>
           <div class="episode-media-status">
@@ -182,15 +190,15 @@ export function renderEpisodeWorkspace(episode, events, evidence, timelapseDevic
         <div class="episode-media-stage" id="episode-media-stage">
           <div class="episode-media-empty">No playable media selected</div>
         </div>
-        ${renderMediaTabs(model, timelapseDevices)}
+        ${renderMediaTabs(model, timelapseDevices, deviceNames)}
       </section>
       <section class="episode-timeline-panel">
         <div class="episode-timeline-heading">
           <div><span>Episode timeline</span><strong>${fmtDuration(episode.start_time, episode.end_time || episode.last_event_time)}</strong></div>
           <small>Click an Event to inspect that moment</small>
         </div>
-        ${renderRecordingCoverage(model)}
-        <div class="episode-timeline-rail">${renderTimelineEntries(model)}</div>
+        ${renderRecordingCoverage(model, deviceNames)}
+        <div class="episode-timeline-rail">${renderTimelineEntries(model, deviceNames)}</div>
       </section>
     </div>`,
   };
@@ -206,7 +214,7 @@ function recordingForMoment(model, entry) {
     || model.recordings[0];
 }
 
-export function activateEpisodeWorkspace(model, episode) {
+export function activateEpisodeWorkspace(model, episode, deviceNames = new Map()) {
   const stage = $("#episode-media-stage");
   const title = $("#episode-media-title");
   const playhead = $("#episode-playhead-time");
@@ -251,7 +259,7 @@ export function activateEpisodeWorkspace(model, episode) {
       </svg>
       <span id="episode-video-overlay-label"></span>
     </div>`;
-    title.textContent = recording.device_id || "Recording";
+    title.textContent = deviceLabel(recording.device_id, deviceNames);
     playhead.textContent = fmtTime(targetTime || recording.bounds.start);
     setActiveMedia(recording.id);
     const player = $("#episode-recording-player");
@@ -333,7 +341,7 @@ export function activateEpisodeWorkspace(model, episode) {
         </svg>` : ""}
       </div>
     </div>`;
-    title.textContent = `${snapshot.device_id || "Snapshot"} · snapshot`;
+    title.textContent = `${deviceLabel(snapshot.device_id, deviceNames)} · snapshot`;
     playhead.textContent = fmtTime(snapshot.timestamp);
     setActiveMedia("");
   };
@@ -342,7 +350,7 @@ export function activateEpisodeWorkspace(model, episode) {
     resetMedia();
     stage.innerHTML = `<video src="${API}/episodes/${episode.id}/timelapse?device_id=${encodeURIComponent(deviceId)}"
       controls preload="metadata"></video>`;
-    title.textContent = `${deviceId} · timelapse`;
+    title.textContent = `${deviceLabel(deviceId, deviceNames)} · timelapse`;
     playhead.textContent = "Overview";
     setActiveMedia("");
   };

@@ -21,11 +21,6 @@ CREATE TABLE IF NOT EXISTS devices (
     enabled INTEGER NOT NULL DEFAULT 1
 );
 
-CREATE TABLE IF NOT EXISTS app_settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS raw_artifacts (
     id TEXT PRIMARY KEY,
     artifact_type TEXT NOT NULL,
@@ -102,6 +97,9 @@ CREATE TABLE IF NOT EXISTS ingestion_receipts (
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_device ON events(device_id);
 CREATE INDEX IF NOT EXISTS idx_events_episode ON events(episode_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup_key
+    ON events(dedup_key)
+    WHERE dedup_key IS NOT NULL AND dedup_key != '';
 CREATE INDEX IF NOT EXISTS idx_evidence_timestamp ON evidence(timestamp);
 CREATE INDEX IF NOT EXISTS idx_evidence_episode ON evidence(episode_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_event ON ingestion_receipts(event_id);

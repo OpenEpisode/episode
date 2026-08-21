@@ -13,7 +13,7 @@ from episode.storage.repository import Repository
 
 
 @pytest.mark.asyncio
-async def test_streams_embedded_event_picture_and_supports_legacy_metadata(tmp_path):
+async def test_streams_embedded_event_picture(tmp_path):
     repository = Repository(
         EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
     )
@@ -54,27 +54,11 @@ async def test_streams_embedded_event_picture_and_supports_legacy_metadata(tmp_p
                 },
             )
         )
-        legacy = await repository.create_event(
-            Event(
-                device_id="front-doorbell",
-                area_id="front-door",
-                timestamp=observed_at + timedelta(seconds=1),
-                event_type="door_access",
-                source="hikvision:sdk",
-                raw_payload_path=str(payload),
-                metadata={
-                    "picture_transport": "binary",
-                    "structure_size": len(header),
-                    "picture_byte_size": len(picture),
-                    "picture_sha256": checksum,
-                },
-            )
-        )
         invalid = await repository.create_event(
             Event(
                 device_id="front-doorbell",
                 area_id="front-door",
-                timestamp=observed_at + timedelta(seconds=2),
+                timestamp=observed_at + timedelta(seconds=1),
                 event_type="door_access",
                 source="hikvision:sdk",
                 raw_payload_path=str(payload),
@@ -91,7 +75,6 @@ async def test_streams_embedded_event_picture_and_supports_legacy_metadata(tmp_p
         transport = httpx.ASGITransport(app=create_api(repository, str(tmp_path)))
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get(f"/api/v1/events/{described.id}/picture")
-            legacy_response = await client.get(f"/api/v1/events/{legacy.id}/picture")
             invalid_response = await client.get(f"/api/v1/events/{invalid.id}/picture")
 
         assert response.status_code == 200
@@ -100,8 +83,6 @@ async def test_streams_embedded_event_picture_and_supports_legacy_metadata(tmp_p
         assert response.headers["content-length"] == str(len(picture))
         assert response.headers["content-disposition"] == 'inline; filename="door-unlock.jpg"'
         assert response.headers["etag"] == f'"{checksum}"'
-        assert legacy_response.status_code == 200
-        assert legacy_response.content == picture
         assert invalid_response.status_code == 404
     finally:
         await repository.close()

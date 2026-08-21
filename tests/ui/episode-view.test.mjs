@@ -16,12 +16,18 @@ const timeline = await import(timelineUrl);
 const apiUrl = moduleUrl(
   (await uiFile("api.js")).replace('"./dom.js"', JSON.stringify(domUrl)),
 );
+const componentsUrl = moduleUrl(
+  (await uiFile("components.js"))
+    .replace('"./dom.js"', JSON.stringify(domUrl))
+    .replace('"./format.js?v=3"', JSON.stringify(formatUrl)),
+);
 const episodeViewUrl = moduleUrl(
   (await uiFile("episode-view.js"))
-    .replace('"./api.js?v=2"', JSON.stringify(apiUrl))
+    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
+    .replace('"./components.js?v=3"', JSON.stringify(componentsUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
     .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
-    .replace('"./timeline.js?v=4"', JSON.stringify(timelineUrl)),
+    .replace('"./timeline.js?v=5"', JSON.stringify(timelineUrl)),
 );
 const { renderEpisodeWorkspace } = await import(episodeViewUrl);
 
@@ -123,6 +129,43 @@ test("renders a media-first timeline with all Doorbell states and snapshots", ()
   assert.match(html, /Uncorrelated evidence/);
   assert.match(html, /Detection overlay/);
   assert.equal(model.recordings.length, 2);
+});
+
+test("uses configured Device names while preserving Device identity in the model", () => {
+  const episode = {
+    id: "episode-1",
+    start_time: "2026-08-10T12:08:47Z",
+    last_event_time: "2026-08-10T12:08:48Z",
+    end_time: "2026-08-10T12:08:49Z",
+  };
+  const events = [{
+    id: "event-1",
+    timestamp: "2026-08-10T12:08:47Z",
+    device_id: "camera-internal-id",
+    event_type: "motion_detection",
+    event_state: "active",
+    sources: ["onvif"],
+    metadata: {},
+  }];
+  const evidence = [{
+    id: "recording-1",
+    timestamp: "2026-08-10T12:08:47Z",
+    device_id: "camera-internal-id",
+    evidence_type: "recording",
+    metadata: { duration_seconds: 2 },
+  }];
+
+  const { html, model } = renderEpisodeWorkspace(
+    episode,
+    events,
+    evidence,
+    [],
+    new Map([["camera-internal-id", "Front Camera"]]),
+  );
+
+  assert.match(html, /Front Camera/);
+  assert.doesNotMatch(html, />camera-internal-id</);
+  assert.equal(model.recordings[0].device_id, "camera-internal-id");
 });
 
 test("matches a video detection only near its timestamp and on the same Device", () => {

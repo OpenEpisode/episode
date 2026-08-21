@@ -33,7 +33,7 @@ def _configured_devices(devices: tuple[Mapping[str, object], ...]) -> list[Mappi
     return [
         device
         for device in devices
-        if "isapi" in device.get("capabilities", ()) and device.get("enabled", True)
+        if "isapi" in device.get("configs", {}) and device.get("enabled", True)
     ]
 
 

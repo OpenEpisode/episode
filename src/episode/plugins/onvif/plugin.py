@@ -32,7 +32,7 @@ def _configured_devices(devices: tuple[Mapping[str, object], ...]) -> list[Mappi
     return [
         device
         for device in devices
-        if "onvif" in device.get("capabilities", ()) and device.get("enabled", True)
+        if "onvif" in device.get("configs", {}) and device.get("enabled", True)
     ]
 
 

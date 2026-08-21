@@ -29,8 +29,8 @@ The published example configuration already includes it. Existing installations
 must add this connector explicitly. Its health and delivery counters appear on
 the **System** page.
 
-Episode has no authentication during the public alpha. Keep the API on a trusted
-network and never expose it directly to the Internet. If another machine must
+Episode currently has no authentication. Keep the API on a trusted network and
+never expose it directly to the Internet. If another machine must
 submit Events, set `EPISODE_HTTP_BIND=0.0.0.0` and restrict access with the host
 firewall or a trusted reverse proxy.
 

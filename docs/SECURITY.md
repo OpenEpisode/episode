@@ -6,9 +6,9 @@ vulnerability details in a public issue.
 
 ## Supported versions
 
-During the public alpha, only the most recent tagged alpha release receives
-security fixes. The project is not yet suitable for direct Internet exposure and
-does not provide authentication.
+During pre-1.0 development, only the most recent tagged prerelease receives
+security fixes. The project is not yet suitable for direct Internet exposure
+and does not provide authentication.
 
 ## Reporting a vulnerability
 

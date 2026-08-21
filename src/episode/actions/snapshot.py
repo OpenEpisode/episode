@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from dataclasses import asdict
 from datetime import datetime, timezone
 from time import monotonic
-from typing import TYPE_CHECKING
 
 from episode.domain.models import Event, Evidence, IngestionReceipt
 from episode.engine.bus import EventBus, Message
@@ -14,19 +14,16 @@ from episode.engine.engine import CanonicalEventResult
 from episode.media.registry import MediaRegistry
 from episode.storage.files import describe_artifact, save_bytes
 
-if TYPE_CHECKING:
-    from episode.config import EpisodeConfig
-
 logger = logging.getLogger(__name__)
 
 
 class SnapshotEngine:
     """Vendor-neutral snapshot action backed by discovered camera media."""
 
-    def __init__(self, bus: EventBus, media: MediaRegistry, config: EpisodeConfig):
+    def __init__(self, bus: EventBus, media: MediaRegistry, data_dir: str):
         self._bus = bus
         self._media = media
-        self._config = config
+        self._orphans_dir = os.path.join(data_dir, "orphans")
         self._running = False
         self._tasks: set[asyncio.Task] = set()
         self._capturing: set[str] = set()
@@ -75,7 +72,7 @@ class SnapshotEngine:
             extension = ".png" if content_type == "image/png" else ".jpg"
             path = await asyncio.to_thread(
                 save_bytes,
-                self._config.orphans_dir,
+                self._orphans_dir,
                 "snapshots",
                 data,
                 prefix=f"{provider or 'media'}_{device_id[:12]}",

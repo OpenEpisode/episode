@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import os
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,7 +13,6 @@ from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
 
-from episode.connectors.base import Connector
 from episode.ingestion.models import FileIngressDelivery
 
 if TYPE_CHECKING:
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class FTPConnector(Connector):
+class FTPConnector:
     """Generic FTP transport; file interpretation belongs to ingress plugins."""
 
     def __init__(
@@ -32,7 +32,8 @@ class FTPConnector(Connector):
         config: dict,
         app_config: EpisodeConfig,
     ):
-        super().__init__(name, config)
+        self.name = name
+        self._running = False
         self._ingestion = ingestion
         self._host = config.get("host", "0.0.0.0")
         self._port = config.get("port", 2121)
@@ -62,7 +63,9 @@ class FTPConnector(Connector):
 
     def status(self) -> dict:
         return {
-            **super().status(),
+            "name": self.name,
+            "type": "ftp",
+            "running": self._running,
             "host": self._host,
             "port": self._port,
             "upload_dir": self._upload_dir,
@@ -97,7 +100,11 @@ class FTPConnector(Connector):
 
         self._server = FTPServer((self._host, self._port), handler)
         logger.info("%s: FTP listening on %s:%s", self.name, self._host, self._port)
-        self._server_future = self._loop.run_in_executor(None, self._server.serve_forever)
+        # Give the blocking I/O loop a finite poll interval so close_all() can
+        # wake it reliably during container shutdown. Without this, an idle
+        # server may leave the executor thread blocked until Docker kills it.
+        serve = partial(self._server.serve_forever, timeout=0.5, handle_exit=False)
+        self._server_future = self._loop.run_in_executor(None, serve)
 
     async def stop(self):
         self._running = False

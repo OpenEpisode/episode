@@ -70,6 +70,17 @@ class NormalizedEventPayload(BaseModel):
         return value
 
 
+class EventSubmissionResponse(BaseModel):
+    status: ReceiptStatus
+    receipt_id: str
+    event_id: str | None = None
+    episode_id: str | None = None
+    duplicate: bool = False
+    reason: str | None = None
+    message: str | None = None
+    validation_errors: list[dict[str, object]] = Field(default_factory=list)
+
+
 def _validation_errors(exc: ValidationError) -> list[dict[str, object]]:
     return [
         {
@@ -264,8 +275,20 @@ class EventAPIConnector:
 
         @app.post(
             path,
+            response_model=EventSubmissionResponse,
+            status_code=201,
             summary="Submit a normalized Event",
             tags=["Event input"],
+            responses={
+                200: {
+                    "model": EventSubmissionResponse,
+                    "description": "Existing Event matched by idempotency identity",
+                },
+                422: {
+                    "model": EventSubmissionResponse,
+                    "description": "Delivery preserved but rejected or unmatched",
+                },
+            },
             openapi_extra={
                 "requestBody": {
                     "required": True,

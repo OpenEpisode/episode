@@ -6,6 +6,7 @@ import mimetypes
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from episode.domain.models import Event, Evidence, IngestionReceipt, RawArtifact, ReceiptStatus
 from episode.engine.engine import CanonicalEventResult, EpisodeEngine
@@ -82,11 +83,7 @@ class IngestionService:
             delivery.artifact_type,
             delivery.media_type,
             original_filename=delivery.original_filename,
-            metadata={
-                "transport": delivery.transport,
-                "source": delivery.source,
-                **dict(delivery.metadata),
-            },
+            metadata={},
         )
         receipt = IngestionReceipt(
             source=delivery.source,
@@ -127,11 +124,7 @@ class IngestionService:
             delivery.artifact_type,
             delivery.media_type,
             original_filename=original_filename,
-            metadata={
-                "transport": delivery.transport,
-                "source": delivery.source,
-                **dict(delivery.metadata),
-            },
+            metadata={},
         )
         receipt = IngestionReceipt(
             source=delivery.source,
@@ -226,15 +219,9 @@ class IngestionService:
         evidence = None
         if handler_result and handler_result.event:
             observation = handler_result.event
+            diagnostic_metadata["interpretation_source"] = observation.source
             receipt.observed_at = observation.timestamp
-            device_id = observation.device_id or delivery.device_id
-            area_id = observation.area_id or delivery.area_id
-            device = await self._repository.get_device(device_id) if device_id else None
-            if device is None and observation.device_ip:
-                device = await self._repository.find_device_by_ip(observation.device_ip)
-            if device:
-                device_id = device.id
-                area_id = device.area_id
+            device, device_id, area_id = await self._resolve_device(observation, delivery)
             receipt.device_id = device_id
             receipt.area_id = area_id
             if device and not device.enabled:
@@ -266,14 +253,7 @@ class IngestionService:
         elif handler_result and handler_result.evidence:
             observation = handler_result.evidence
             receipt.observed_at = observation.timestamp
-            device_id = observation.device_id or delivery.device_id
-            area_id = observation.area_id or delivery.area_id
-            device = await self._repository.get_device(device_id) if device_id else None
-            if device is None and observation.device_ip:
-                device = await self._repository.find_device_by_ip(observation.device_ip)
-            if device:
-                device_id = device.id
-                area_id = device.area_id
+            device, device_id, area_id = await self._resolve_device(observation, delivery)
             receipt.device_id = device_id
             receipt.area_id = area_id
             if device and not device.enabled:
@@ -319,3 +299,17 @@ class IngestionService:
             canonical_event=canonical,
             evidence=evidence,
         )
+
+    async def _resolve_device(
+        self,
+        observation: Any,
+        delivery: IngressDelivery | FileIngressDelivery,
+    ) -> tuple[Any, str, str]:
+        device_id = observation.device_id or delivery.device_id
+        area_id = observation.area_id or delivery.area_id
+        device = await self._repository.get_device(device_id) if device_id else None
+        if device is None and observation.device_ip:
+            device = await self._repository.find_device_by_ip(observation.device_ip)
+        if device:
+            return device, device.id, device.area_id
+        return None, device_id, area_id

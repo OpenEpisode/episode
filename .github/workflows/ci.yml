@@ -19,7 +19,10 @@ jobs:
       - run: uv sync --locked --all-groups
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run pytest -q
+      - name: Test external plugin contract
+        run: uv run pytest -q tests/test_external_plugins.py
+      - name: Test application
+        run: uv run pytest -q --ignore=tests/test_external_plugins.py
       - run: uv build
       - name: Check browser modules
         run: |
@@ -52,9 +55,7 @@ jobs:
             "data_dir": "/var/episode/data",
             "api_host": "0.0.0.0",
             "api_port": 8989,
-            "connectors": [],
-            "areas": [],
-            "devices": []
+            "connectors": []
           }
           EOF
           docker run --detach --name episode-ci \

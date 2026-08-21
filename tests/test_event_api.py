@@ -73,6 +73,10 @@ async def test_event_api_preserves_request_then_creates_an_episode(tmp_path):
             "application/json"
         ]["schema"]
         assert set(request_schema["required"]) == {"device_id", "event_type"}
+        response_schema = schema["paths"]["/api/v1/events"]["post"]["responses"]["201"]["content"][
+            "application/json"
+        ]["schema"]
+        assert response_schema["$ref"].endswith("/EventSubmissionResponse")
 
         event = await repository.get_event(body["event_id"])
         receipt = await repository.get_ingestion_receipt(body["receipt_id"])

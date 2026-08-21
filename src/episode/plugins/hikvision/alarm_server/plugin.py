@@ -79,7 +79,11 @@ class HikvisionAlarmPlugin:
                 device_ip=parsed.ip_address,
                 metadata=parsed.metadata,
             ),
-            metadata={"vendor": "hikvision", "interpreted": True},
+            metadata={
+                "vendor": "hikvision",
+                "interpreted": True,
+                "plugin_id": PLUGIN_ID,
+            },
         )
 
     def status(self) -> PluginStatus:

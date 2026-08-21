@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from typing import Any
 
 from episode.domain.models import Area, Device
 
-_INVENTORY_BOOTSTRAP_KEY = "inventory.bootstrap.version"
-_INVENTORY_BOOTSTRAP_VERSION = "1"
 _ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-_LEGACY_VENDOR_DEVICE_TYPES = {"hikvision", "dahua", "reolink", "tplink", "tp-link"}
 
 
 class InventoryConflictError(ValueError):
@@ -20,46 +18,14 @@ class InventoryConflictError(ValueError):
 class InventoryService:
     """Own persistent Area and Device inventory independently of file config."""
 
-    def __init__(self, repository) -> None:
-        self._repo = repository
-        self._restart_required = False
-
-    @property
-    def restart_required(self) -> bool:
-        return self._restart_required
-
-    def mark_runtime_current(self) -> None:
-        self._restart_required = False
-
-    async def bootstrap(
+    def __init__(
         self,
-        configured_areas: list[dict[str, Any]],
-        configured_devices: list[dict[str, Any]],
-    ) -> bool:
-        """Import legacy file inventory once; later restarts leave SQLite authoritative."""
-        if await self._repo.get_setting(_INVENTORY_BOOTSTRAP_KEY):
-            return False
-
-        for value in configured_areas:
-            area = Area(**value)
-            self._validate_identity(area.id, "Area")
-            await self._repo.upsert_area(area)
-
-        for value in configured_devices:
-            device = Device(**value)
-            self._normalize_device_type(device)
-            self._validate_identity(device.id, "Device")
-            if not await self._repo.get_area(device.area_id):
-                raise InventoryConflictError(
-                    f"Device {device.id!r} references unknown Area {device.area_id!r}."
-                )
-            await self._repo.upsert_device(device)
-
-        await self._repo.set_setting(
-            _INVENTORY_BOOTSTRAP_KEY,
-            _INVENTORY_BOOTSTRAP_VERSION,
-        )
-        return bool(configured_areas or configured_devices)
+        repository,
+        *,
+        on_device_configuration_changed: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        self._repo = repository
+        self._on_device_configuration_changed = on_device_configuration_changed
 
     async def available_area_id(self, name: str) -> str:
         return await self._available_id(name, self._repo.get_area, "area")
@@ -93,7 +59,6 @@ class InventoryService:
         await self._repo.delete_area(area_id)
 
     async def save_device(self, device: Device, *, create: bool) -> Device:
-        self._normalize_device_type(device)
         self._validate_identity(device.id, "Device")
         existing = await self._repo.get_device(device.id)
         if create and existing:
@@ -115,7 +80,7 @@ class InventoryService:
                 )
 
         saved = await self._repo.upsert_device(device)
-        self._restart_required = True
+        await self._notify_device_configuration_changed()
         return saved
 
     async def delete_device(self, device_id: str) -> None:
@@ -127,7 +92,7 @@ class InventoryService:
                 "This Device has incident history. Disable it instead of deleting it."
             )
         await self._repo.delete_device(device_id)
-        self._restart_required = True
+        await self._notify_device_configuration_changed()
 
     async def area_usage(self, area_id: str) -> dict[str, int]:
         return await self._repo.area_usage(area_id)
@@ -139,11 +104,9 @@ class InventoryService:
         devices = await self._repo.list_devices()
         return tuple(asdict(device) for device in devices)
 
-    @staticmethod
-    def _normalize_device_type(device: Device) -> None:
-        if device.device_type.lower() not in _LEGACY_VENDOR_DEVICE_TYPES:
-            return
-        device.device_type = "doorbell" if "doorbell" in device.capabilities else "camera"
+    async def _notify_device_configuration_changed(self) -> None:
+        if self._on_device_configuration_changed:
+            await self._on_device_configuration_changed()
 
     @staticmethod
     async def _available_id(name: str, getter, fallback: str) -> str:

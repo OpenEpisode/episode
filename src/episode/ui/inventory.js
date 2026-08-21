@@ -1,4 +1,4 @@
-import { apiRequest } from "./api.js?v=2";
+import { apiRequest } from "./api.js?v=3";
 import { closeDialog, confirmDialog, notify, openDialog } from "./dialogs.js?v=1";
 import { escHtml } from "./dom.js";
 import { titleCase } from "./format.js";
@@ -113,7 +113,6 @@ function devicePayload(data, editing, device) {
     username: field(data, "username") || null,
     password: field(data, "password") || null,
     clear_credentials: isChecked(data, "clear_credentials"),
-    doorbell: field(data, "device_type") === "doorbell",
     video: {
       enabled: isChecked(data, "video_enabled"),
       manual_endpoint: isChecked(data, "manual_video_endpoint"),
@@ -149,9 +148,7 @@ export function openDeviceEditor(device, areas, onSaved) {
   const editing = Boolean(device);
   const values = deviceDefaults(device);
   const physicalTypes = ["camera", "doorbell", "alarm_panel", "sensor", "other"];
-  const deviceType = device?.configuration?.doorbell
-    ? "doorbell"
-    : physicalTypes.includes(device?.device_type) ? device.device_type : "camera";
+  const deviceType = physicalTypes.includes(device?.device_type) ? device.device_type : "camera";
   const credentialHint = editing && device.configuration?.password_configured
     ? "Stored securely — leave blank to keep"
     : "Camera password";
@@ -191,14 +188,14 @@ export function openDeviceEditor(device, areas, onSaved) {
       </div>
 
       <div class="form-section">
-        <div class="form-section-heading"><h3>Integrations</h3><p>Configured connections are shown as active in the Device overview after restart.</p></div>
+        <div class="form-section-heading"><h3>Integrations</h3><p>Configured connections activate automatically when the Device is saved.</p></div>
         <div class="integration-stack">
           ${integrationToggle("onvif", "ONVIF", "Standards-based discovery, media, and optional Events.", values.onvif.enabled, `
             <label class="toggle-row"><input type="checkbox" name="onvif_events_enabled"${checked(values.onvif.events_enabled)}><span><strong>Receive ONVIF Events</strong><small>Disabled by default to avoid noisy motion state changes.</small></span></label>`) }
           <div class="integration-group-label"><strong>Hikvision enhancements</strong><span>Optional vendor connections that complement ONVIF.</span></div>
           ${integrationToggle("isapi", "ISAPI Event stream", "Rich motion and classification Events. It is currently active when this switch is on.", values.isapi.enabled, "")}
-          ${integrationToggle("hikvision_sdk", "HCNetSDK", "Native doorbell callbacks. General camera use is not validated in this alpha.", values.sdk.enabled, `
-            <div class="role-guidance">Available for Doorbell Devices. Camera support remains a later validation task.</div>`) }
+          ${integrationToggle("hikvision_sdk", "HCNetSDK", "Native callbacks for doorbell rings and door-control Events.", values.sdk.enabled, `
+            <div class="role-guidance">Available for Doorbell Devices.</div>`) }
         </div>
         <div class="validation-panel">
           <div class="validation-heading">
@@ -236,7 +233,7 @@ export function openDeviceEditor(device, areas, onSaved) {
         method: editing ? "PUT" : "POST", body: payload,
       });
       closeDialog();
-      notify(editing ? "Device updated · restart Episode to apply integrations" : "Device added · restart Episode to activate integrations", "warning");
+      notify(editing ? "Device and integrations updated" : "Device added and integrations activated");
       await onSaved();
     },
   });
@@ -338,7 +335,7 @@ export function confirmDeviceDelete(device, onDeleted) {
     message: "Only Devices without incident history can be deleted. Otherwise disable the Device to preserve its relationships.",
     onConfirm: async () => {
       await apiRequest(`/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
-      closeDialog(); notify("Device deleted · restart Episode to stop integrations", "warning"); await onDeleted();
+      closeDialog(); notify("Device deleted and integrations updated"); await onDeleted();
     },
   });
 }

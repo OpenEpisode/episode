@@ -20,7 +20,7 @@ Episode is a local-first system that collects activity from cameras and other de
 groups related events and evidence into self-contained incident records, and
 coordinates actions such as recording and snapshot capture.
 
-The first public alpha uses ONVIF as its primary camera integration and keeps
+Episode uses ONVIF as its primary camera integration and keeps
 Hikvision-specific inputs as optional enrichment. ONVIF event polling is
 disabled by default because generic motion can be noisy; ONVIF discovery,
 media profiles and RTSP remain available. It is intended for technical
@@ -41,7 +41,8 @@ self-hosters who want local, portable evidence.
 - Starts and stops configured recordings around Episode activity.
 - Reviews each Episode through a chronological Event timeline linked to its recordings and snapshots.
 - Optionally projects vendor detection regions over snapshots and recordings without modifying evidence.
-- Presents Episodes, Activity, Evidence, Devices, and system status in a web UI.
+- Presents chronological Episodes, active camera views, Activity, Evidence,
+  Devices, and system status in a web UI.
 
 Episode does not currently provide authentication. Do not expose it directly to
 the Internet. The Docker setup binds the web interface to localhost by default.
@@ -73,21 +74,18 @@ docker compose --env-file .env pull
 docker compose --env-file .env up -d
 ```
 
-Open <http://localhost:8989>, then:
+Open <http://localhost:8989>. A fresh installation opens the guided setup:
 
-1. Open **Devices → Manage Areas** and create a physical correlation boundary.
+1. Create a physical Area that defines the correlation boundary.
 2. Add a Device, choose its physical role, enter its address and credentials,
    then use **Validate and discover**. Episode reports protocol support
    independently from what is configured or currently running.
 3. Select its capture behavior and integrations. Manufacturer, model, firmware,
    and media profiles discovered at runtime are shown read-only.
-4. Restart Episode once after Device changes so the selected connections start:
+4. Save the Device. Episode activates its selected integrations immediately;
+   the container does not need to restart.
 
-```bash
-docker compose --env-file .env restart episode
-```
-
-The UI shows a restart notice until this is done. Inspect service health with
+Inspect service health with
 `docker compose --env-file .env ps` and follow logs with
 `docker compose --env-file .env logs -f episode`.
 
@@ -100,10 +98,11 @@ docker compose --env-file .env down
 The image version is pinned in `.env`. The commands pass that file explicitly to
 Compose for `${...}` interpolation; it is not injected into the Episode
 container. Episode reads shared service settings from the read-only
-`episode.json` mount and stores Area and Device inventory in SQLite. Existing
-Area and Device entries in older configuration files are imported once, then
-the UI-managed inventory becomes authoritative. To upgrade, change
-`EPISODE_IMAGE` to a new published version, review the release notes, and run
+`episode.json` mount and stores UI-managed Area and Device inventory in SQLite.
+During the pre-release lifecycle, database migrations are not guaranteed; a
+release may require a clean database and will say so in its release notes. To
+upgrade, change `EPISODE_IMAGE` to a new published version, review the release
+notes, and run
 `docker compose --env-file .env pull` followed by
 `docker compose --env-file .env up -d`.
 
@@ -138,7 +137,7 @@ deliveries to Episode, set the HTTP bind address in a local `.env` file:
 EPISODE_HTTP_BIND=0.0.0.0
 ```
 
-Only do this on a trusted network. There is no API authentication in the alpha.
+Only do this on a trusted network. Beta does not provide API authentication.
 
 The [Event API guide](docs/EVENT_API.md) shows how Home Assistant, scripts, alarm
 panels, and other local systems can trigger the same Area-scoped recording flow.
@@ -150,11 +149,11 @@ Optional native integrations use the generic read-only `./plugins` mount.
 HCNetSDK setup is covered alongside the other
 [Hikvision enhancements](docs/HIKVISION_SETUP.md#hikvision-hcnetsdk); the SDK is
 supplied by the user and never included in Episode's image.
-Installed runtime files remain inactive until a device explicitly declares the
-matching plugin capability.
+Installed runtime files remain inactive until a Device explicitly enables the
+matching integration configuration.
 
-Alpha.12 also supports explicitly configured third-party Device and ingress
-plugins through a small versioned public contract. The
+Beta supports explicitly configured third-party Device and ingress plugins
+through the versioned plugin API v1 contract. The
 [plugin authoring guide](docs/PLUGINS.md) documents manifests, lifecycle,
 raw-first ingestion, scoped Device access, compatibility, and the included
 dependency-free example. Third-party plugins are trusted code and are not
@@ -170,6 +169,8 @@ sandboxed.
   `EPISODE_HTTP_BIND=0.0.0.0` and keep the host on a trusted network.
 - Use `docker compose --env-file .env logs -f episode` to inspect integration and
   recording errors.
+- Use **System → Download diagnostics** to attach a sanitized runtime report to
+  an issue without exposing stored credentials or private data paths.
 
 The [ONVIF troubleshooting guide](docs/ONVIF_SETUP.md#troubleshooting) contains a
 more complete checklist.
@@ -195,15 +196,15 @@ inventory—are ignored by Git and must never be committed.
 
 ## Project status
 
-Episode is a working ONVIF-first public alpha for technical self-hosters using
+Episode is a working ONVIF-first public beta for technical self-hosters using
 IP cameras and Docker. Hikvision integrations provide optional enrichment. The
 current priorities are reliable preservation, correct
 correlation, simple installation, and an uncluttered Episode-first interface.
 
 Authentication, action and processor plugins, AI processing, high availability,
 and guaranteed compatibility with every ONVIF implementation are not part of
-the current release. The third-party Device and ingress plugin API remains
-experimental throughout alpha. Device capabilities are detected rather than
+the current release. Beta supports Device and ingress plugin API v1 for the
+duration of the beta cycle. Device capabilities are detected rather than
 assumed.
 
 See [the contribution guide](docs/CONTRIBUTING.md) before proposing broader
@@ -221,6 +222,7 @@ artwork, light and dark organization avatars, and GitHub social previews.
 ## Documentation
 
 - [Architecture and domain model](docs/ARCHITECTURE.md)
+- [REST API v1 conventions](docs/API.md)
 - [Generic Event API](docs/EVENT_API.md)
 - [Plugin authoring and example](docs/PLUGINS.md)
 - [ONVIF camera setup](docs/ONVIF_SETUP.md)

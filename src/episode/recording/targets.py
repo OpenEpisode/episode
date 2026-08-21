@@ -24,10 +24,10 @@ class AreaRecordingTargetResolver:
         devices = await self._repo.list_devices(area_id=event.area_id)
         targets = []
         for device in devices:
-            if "video" not in device.capabilities:
-                continue
             video = device.get_config("video")
-            mode = video.settings.get("recording_mode", "on_event") if video else "on_event"
+            if video is None:
+                continue
+            mode = video.settings.get("recording_mode", "on_event")
             if mode == "on_episode" or (mode == "on_event" and device.id == event.device_id):
                 targets.append(device)
         return targets
