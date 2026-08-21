@@ -49,9 +49,9 @@ class InventoryStore:
             """INSERT INTO devices (
                 id, name, device_type, area_id,
                 capabilities, ip_address, username, password,
-                configs, metadata, enabled
+                configs, activity_window_seconds, metadata, enabled
             )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name,
                    device_type=excluded.device_type,
@@ -61,6 +61,7 @@ class InventoryStore:
                    username=excluded.username,
                    password=excluded.password,
                    configs=excluded.configs,
+                   activity_window_seconds=excluded.activity_window_seconds,
                    metadata=excluded.metadata,
                    enabled=excluded.enabled""",
             (
@@ -83,6 +84,7 @@ class InventoryStore:
                         for key, value in device.configs.items()
                     }
                 ),
+                device.activity_window_seconds,
                 json.dumps(device.metadata),
                 int(device.enabled),
             ),
@@ -173,6 +175,7 @@ class InventoryStore:
             username=row["username"],
             password=row["password"],
             configs=json.loads(row["configs"]) if row["configs"] else {},
+            activity_window_seconds=row["activity_window_seconds"],
             metadata=json.loads(row["metadata"]),
             enabled=bool(row["enabled"]),
         )

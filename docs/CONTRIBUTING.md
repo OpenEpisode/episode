@@ -4,7 +4,9 @@ Thank you for your interest in Episode.
 
 Episode is currently in active pre-1.0 development.
 
-The primary goal at this stage is to validate the Episode model rather than expand the feature set.
+The primary goal at this stage is to harden the Episode model and turn the
+working beta into a dependable, understandable product rather than expand the
+feature set indiscriminately.
 
 ## Guiding Principles
 
@@ -22,9 +24,10 @@ Architectural consistency is preferred over rapid feature growth.
 
 Please ask:
 
-> Does this help validate the Episode concept?
+> Does this make Episode more reliable, understandable, or meaningfully more useful?
 
-If not, it is probably better suited for a future release.
+If not, it is probably better suited for a future release. Prefer a demonstrated
+use case over a general policy framework introduced in anticipation of one.
 
 ## Code Style
 
@@ -32,6 +35,7 @@ If not, it is probably better suited for a future release.
 - Prefer composition over inheritance.
 - Keep vendor interpretation inside plugins; shared connectors remain vendor-neutral.
 - Preserve raw deliveries before interpretation.
+- Keep restart, timeout, and partial-write behavior explicit and testable.
 - Write code that is easy to understand and test.
 - Out-of-tree plugins must import only from the documented `episode.plugin_api`
   facade; internal plugin, storage, engine, and ingestion modules are not public
@@ -74,6 +78,8 @@ Each pull request should solve one problem.
 
 Ideas and architectural discussions are always welcome.
 
-The MVP intentionally remains small so that the core concept can be validated before additional functionality is introduced.
+The beta intentionally remains focused so that operational behavior and public
+extension contracts can mature before broader automation and AI functionality
+is introduced.
 
 Thank you for helping shape Episode.

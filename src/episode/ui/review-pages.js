@@ -1,6 +1,7 @@
 import { API, api, apiAll, apiBlob } from "./api.js?v=3";
 import {
   detailMetric,
+  episodeStateBadge,
   episodeTriggerBadge,
   eventBadge,
   eventSourceBadges,
@@ -8,7 +9,7 @@ import {
   pageHeader,
   sectionHeading,
   stateBadge,
-} from "./components.js?v=4";
+} from "./components.js?v=5";
 import { closeDeliveryViewer, openDeliveryViewer } from "./delivery-viewer.js?v=1";
 import { escHtml } from "./dom.js";
 import {
@@ -24,7 +25,7 @@ import {
   renderEvidenceGrid,
   showCarousel,
 } from "./evidence-gallery.js?v=6";
-import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js?v=9";
+import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js?v=11";
 import {
   fmt,
   fmtBytes,
@@ -40,7 +41,7 @@ import {
   groupEvidenceBundlesByDay,
   groupEvidenceByEpisode,
 } from "./review-lists.js?v=3";
-import { updateRecentEpisodes } from "./sidebar.js?v=2";
+import { updateRecentEpisodes } from "./sidebar.js?v=3";
 import { showContent, showError, showLoading } from "./view.js?v=1";
 import { eventTitle } from "./timeline.js?v=5";
 
@@ -169,7 +170,7 @@ export async function episodes(page = 1) {
                         </div>
                         <div class="episode-card-badges">
                           ${episodeTriggerBadge(item.trigger_type)}
-                          ${stateBadge(item.state)}
+                          ${episodeStateBadge(item.state)}
                         </div>
                       </div>
                       <div class="episode-history-summary">
@@ -218,34 +219,9 @@ export async function episode(id) {
         .map(entry => entry.device_id)
         .filter(Boolean))]
       : [];
-    const workspace = renderEpisodeWorkspace(item, events, evidence, timelapseDevices, deviceNames);
     const chronologicalEvents = [...events]
       .sort((left, right) => new Date(left.timestamp) - new Date(right.timestamp));
-
-    showContent(`
-      <div class="breadcrumbs"><a href="#episodes">Episodes</a> <span class="sep">›</span> <span>${escHtml(trunc(areaName, 40))}</span></div>
-      <header class="review-detail-hero episode-detail-header">
-        <div class="review-detail-identity">
-          <div class="review-detail-icon"><svg><use href="icons.svg?v=2#episodes"></use></svg></div>
-          <div>
-            <div class="eyebrow">Episode</div>
-            <h2>${escHtml(trunc(areaName, 48))}</h2>
-            <code>${escHtml(item.id)}</code>
-          </div>
-        </div>
-        <div class="review-detail-badges">
-          ${episodeTriggerBadge(item.trigger_type)}
-          ${stateBadge(item.state)}
-        </div>
-        <div class="review-detail-metrics">
-          ${detailMetric("clock", "Started", fmt(item.start_time))}
-          ${detailMetric("clock", "Duration", duration || (active ? "In progress" : "—"))}
-          ${detailMetric("activity", "Activity", plural(item.event_count, "Event"))}
-          ${detailMetric("evidence", "Evidence", plural(item.evidence_count, "artifact"))}
-        </div>
-      </header>
-      ${active ? renderCurrentViews(currentViews) : ""}
-      ${workspace.html}
+    const supportingContent = `
       <section class="section episode-secondary review-disclosure">
         <button type="button" class="collapse-header collapsed" onclick="toggleCollapse(this)">
           <span><svg><use href="icons.svg?v=2#evidence"></use></svg><span><strong>All evidence</strong><small>Browse every artifact preserved in this Episode</small></span></span>
@@ -272,7 +248,40 @@ export async function episode(id) {
               </tr>`).join("")}</tbody>
           </table></div>`}
         </div>
-      </section>`);
+      </section>`;
+    const workspace = renderEpisodeWorkspace(
+      item,
+      events,
+      evidence,
+      timelapseDevices,
+      deviceNames,
+      supportingContent,
+    );
+
+    showContent(`
+      <div class="breadcrumbs"><a href="#episodes">Episodes</a> <span class="sep">›</span> <span>${escHtml(trunc(areaName, 40))}</span></div>
+      <header class="review-detail-hero episode-detail-header">
+        <div class="review-detail-identity">
+          <div class="review-detail-icon"><svg><use href="icons.svg?v=2#episodes"></use></svg></div>
+          <div>
+            <div class="eyebrow">Episode</div>
+            <h2>${escHtml(trunc(areaName, 48))}</h2>
+            <code>${escHtml(item.id)}</code>
+          </div>
+        </div>
+        <div class="review-detail-badges">
+          ${episodeTriggerBadge(item.trigger_type)}
+          ${stateBadge(item.state)}
+        </div>
+        <div class="review-detail-metrics">
+          ${detailMetric("clock", "Started", fmt(item.start_time))}
+          ${detailMetric("clock", "Duration", duration || (active ? "In progress" : "—"))}
+          ${detailMetric("activity", "Activity", plural(item.event_count, "Event"))}
+          ${detailMetric("evidence", "Evidence", plural(item.evidence_count, "artifact"))}
+        </div>
+      </header>
+      ${active ? renderCurrentViews(currentViews) : ""}
+      ${workspace.html}`);
     activateEpisodeWorkspace(workspace.model, item, deviceNames);
     if (active) activateCurrentViews(id, currentViews);
   } catch (error) {

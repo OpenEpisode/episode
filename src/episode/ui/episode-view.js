@@ -1,5 +1,5 @@
 import { API } from "./api.js?v=3";
-import { eventSourceBadges } from "./components.js?v=3";
+import { eventSourceBadges } from "./components.js?v=5";
 import { $, $$, escHtml } from "./dom.js";
 import { fmtDuration, fmtTime, titleCase, trunc } from "./format.js?v=3";
 import {
@@ -167,31 +167,35 @@ export function renderEpisodeWorkspace(
   evidence,
   timelapseDevices = [],
   deviceNames = new Map(),
+  supportingContent = "",
 ) {
   const model = buildEpisodeTimeline(episode, events, evidence);
   return {
     model,
     html: `<div class="episode-workspace">
-      <section class="episode-media-panel">
-        <div class="episode-media-header">
-          <div>
-            <span>Evidence player</span>
-            <strong id="episode-media-title">Choose a timeline moment</strong>
+      <div class="episode-primary-column">
+        <section class="episode-media-panel">
+          <div class="episode-media-header">
+            <div>
+              <span>Evidence player</span>
+              <strong id="episode-media-title">Choose a timeline moment</strong>
+            </div>
+            <div class="episode-media-status">
+              <label class="episode-overlay-control hidden" id="episode-overlay-control"
+                  title="Show detection regions while camera observations remain continuous">
+                <input type="checkbox" id="episode-overlay-enabled" checked>
+                Detection overlay
+              </label>
+              <time id="episode-playhead-time">—</time>
+            </div>
           </div>
-          <div class="episode-media-status">
-            <label class="episode-overlay-control hidden" id="episode-overlay-control"
-                title="Show detection regions while camera observations remain continuous">
-              <input type="checkbox" id="episode-overlay-enabled" checked>
-              Detection overlay
-            </label>
-            <time id="episode-playhead-time">—</time>
+          <div class="episode-media-stage" id="episode-media-stage">
+            <div class="episode-media-empty">No playable media selected</div>
           </div>
-        </div>
-        <div class="episode-media-stage" id="episode-media-stage">
-          <div class="episode-media-empty">No playable media selected</div>
-        </div>
-        ${renderMediaTabs(model, timelapseDevices, deviceNames)}
-      </section>
+          ${renderMediaTabs(model, timelapseDevices, deviceNames)}
+        </section>
+        ${supportingContent ? `<div class="episode-secondary-stack">${supportingContent}</div>` : ""}
+      </div>
       <section class="episode-timeline-panel">
         <div class="episode-timeline-heading">
           <div><span>Episode timeline</span><strong>${fmtDuration(episode.start_time, episode.end_time || episode.last_event_time)}</strong></div>

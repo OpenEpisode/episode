@@ -110,6 +110,7 @@ class EpisodeBundleProjector:
                 "start_time": _utc_iso(episode.start_time),
                 "last_event_time": _utc_iso(episode.last_event_time),
                 "last_activity_at": _utc_iso(episode.last_activity_at),
+                "minimum_end_at": _utc_iso(episode.minimum_end_at),
                 "end_time": _utc_iso(episode.end_time),
                 "summary": episode.summary,
             },

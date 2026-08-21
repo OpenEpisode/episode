@@ -11,6 +11,13 @@ export function stateBadge(state) {
   return `<span class="badge badge-${badgeClass(state)}">${escHtml(state || "Unknown")}</span>`;
 }
 
+export function episodeStateBadge(state) {
+  const normalized = String(state || "").toLowerCase();
+  if (normalized === "closed") return "";
+  if (["new", "active", "quiescent"].includes(normalized)) return stateBadge("Active");
+  return stateBadge(state);
+}
+
 export function eventBadge(type) {
   return `<span class="badge badge-${badgeClass(type)}">${escHtml(type || "Unknown")}</span>`;
 }

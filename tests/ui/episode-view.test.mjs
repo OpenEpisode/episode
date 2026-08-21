@@ -24,7 +24,7 @@ const componentsUrl = moduleUrl(
 const episodeViewUrl = moduleUrl(
   (await uiFile("episode-view.js"))
     .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
-    .replace('"./components.js?v=3"', JSON.stringify(componentsUrl))
+    .replace('"./components.js?v=5"', JSON.stringify(componentsUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
     .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
     .replace('"./timeline.js?v=5"', JSON.stringify(timelineUrl)),
@@ -166,6 +166,26 @@ test("uses configured Device names while preserving Device identity in the model
   assert.match(html, /Front Camera/);
   assert.doesNotMatch(html, />camera-internal-id</);
   assert.equal(model.recordings[0].device_id, "camera-internal-id");
+});
+
+test("keeps supporting review panels in the Episode workspace", () => {
+  const episode = {
+    start_time: "2026-08-10T12:08:47Z",
+    end_time: "2026-08-10T12:08:49Z",
+  };
+
+  const { html } = renderEpisodeWorkspace(
+    episode,
+    [],
+    [],
+    [],
+    new Map(),
+    '<section id="supporting-review">All evidence</section>',
+  );
+
+  assert.match(html, /class="episode-secondary-stack"/);
+  assert.match(html, /class="episode-primary-column"/);
+  assert.match(html, /id="supporting-review"/);
 });
 
 test("matches a video detection only near its timestamp and on the same Device", () => {

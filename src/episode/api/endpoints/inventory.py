@@ -74,6 +74,7 @@ def inventory_router(context: ApiContext) -> APIRouter:
                     "recording": "unavailable",
                     "automatic_snapshots": False,
                     "onvif_events": None,
+                    "activity_window_seconds": device.activity_window_seconds or 30,
                 },
             }
         support = stored_support(device)

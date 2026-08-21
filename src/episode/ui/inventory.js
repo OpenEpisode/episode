@@ -59,7 +59,11 @@ export function openAreaEditor(area, onSaved) {
 
 function deviceDefaults(device) {
   const config = device?.configuration || {};
+  const policy = config.episode_policy || {};
   return {
+    episodePolicy: {
+      activity_window_seconds: policy.activity_window_seconds ?? 30,
+    },
     video: { enabled: true, manual_endpoint: false, protocol: "rtsp", port: 554, path: "/Streaming/Channels/101", recording_mode: "on_event", ...(config.video || {}) },
     onvif: { enabled: true, protocol: "http", port: 80, path: "/onvif/device_service", auth_mode: "digest_wsse", events_enabled: false, ...(config.onvif || {}) },
     isapi: { enabled: false, protocol: "http", port: 80, path: "/ISAPI/Event/notification/alertStream", ignore_events: ["videoloss", "illaccess"], ...(config.isapi || {}) },
@@ -113,6 +117,9 @@ function devicePayload(data, editing, device) {
     username: field(data, "username") || null,
     password: field(data, "password") || null,
     clear_credentials: isChecked(data, "clear_credentials"),
+    episode_policy: {
+      activity_window_seconds: Number(field(data, "activity_window_seconds")),
+    },
     video: {
       enabled: isChecked(data, "video_enabled"),
       manual_endpoint: isChecked(data, "manual_video_endpoint"),
@@ -177,6 +184,9 @@ export function openDeviceEditor(device, areas, onSaved) {
       </div></div>
 
       <div class="form-section"><h3>Capture</h3>
+        <div class="form-grid capture-policy-fields">
+          <label class="field"><span>Episode activity window</span><input name="activity_window_seconds" type="number" min="1" max="3600" required value="${values.episodePolicy.activity_window_seconds}"><small>Seconds this Device keeps an Episode open after each Event. Other recording Devices follow the Episode.</small></label>
+        </div>
         ${integrationToggle("video", "Video recording", "Capture this Device when its Area is active.", values.video.enabled, `
           <div class="form-grid">
             <label class="field"><span>Recording behavior</span><select name="recording_mode">

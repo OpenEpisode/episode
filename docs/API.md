@@ -40,9 +40,9 @@ Areas and Devices are deliberately unpaginated because they are bounded
 configuration inventory and are returned alphabetically. Batch cover lookup is
 a mapping operation rather than a pageable collection.
 
-Offset pagination is intentionally simple for Beta.1. New activity arriving
-while a client walks older pages may move offsets; consumers requiring a stable
-historical export should first work from a closed Episode.
+Offset pagination is intentionally simple for the beta lifecycle. New activity
+arriving while a client walks older pages may move offsets; consumers requiring
+a stable historical export should first work from a closed Episode.
 
 The global Event collection accepts `episode_id`, `area_id`, `device_id`,
 `event_type`, `event_state`, and `has_episode` filters. The global Evidence
@@ -86,6 +86,13 @@ they never expose Device credentials and are not Raw Artifacts or Evidence.
 Devices without a registered snapshot provider remain in the collection with
 `mode: "unavailable"` so preview support is never confused with recording
 health.
+
+Device detail exposes `capture_policy.activity_window_seconds`. An active
+Event from that Device contributes this minimum duration to its Episode.
+Episode resources expose the resulting persisted `minimum_end_at`; later
+active Events can move that deadline forward, while inactive Events cannot
+shorten it. Clients should treat the deadline as lifecycle state, not as a
+countdown owned by any individual recording Device.
 
 ## Compatibility during beta
 

@@ -47,6 +47,9 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
             "ip_address": "192.0.2.10",
             "username": "admin",
             "password": "top-secret",
+            "episode_policy": {
+                "activity_window_seconds": 90,
+            },
             "isapi": {"enabled": True},
         },
     )
@@ -60,6 +63,11 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
     stored = await repository.get_device("door-camera")
     assert stored.username == "admin"
     assert stored.password == "top-secret"
+    assert stored.activity_window_seconds == 90
+    assert body["capture_policy"]["activity_window_seconds"] == 90
+    assert body["configuration"]["episode_policy"] == {
+        "activity_window_seconds": 90,
+    }
     assert {"video", "onvif", "isapi"}.issubset(stored.configs)
     assert not stored.capabilities
 
@@ -71,6 +79,9 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
             "ip_address": "192.0.2.10",
             "username": None,
             "password": None,
+            "episode_policy": {
+                "activity_window_seconds": 60,
+            },
             "onvif": {"enabled": True, "events_enabled": True},
             "isapi": {"enabled": False},
         },
@@ -79,6 +90,7 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
     stored = await repository.get_device("door-camera")
     assert stored.username == "admin"
     assert stored.password == "top-secret"
+    assert stored.activity_window_seconds == 60
     assert "isapi" not in stored.configs
     assert stored.get_config("onvif").settings["events_enabled"] is True
 

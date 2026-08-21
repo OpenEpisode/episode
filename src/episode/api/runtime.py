@@ -181,7 +181,7 @@ class OperationalView:
                 "id": "engine",
                 "name": "Episode engine",
                 "state": status["services"]["engine"],
-                "summary": f"{int(engine.get('timeout', 0))}s inactivity timeout",
+                "summary": f"{int(engine.get('timeout', 0))}s default activity window",
                 "metrics": {},
             },
             {
@@ -235,6 +235,7 @@ class OperationalView:
             str(video.settings.get("recording_mode", "on_event")) if video else "unavailable"
         )
         events_enabled = bool(onvif.settings.get("events_enabled", False)) if onvif else None
+        default_activity_window = int(self._engine_status().get("timeout", 30))
         return {
             **summary,
             "integrations": integrations,
@@ -245,6 +246,9 @@ class OperationalView:
                 "recording": recording,
                 "automatic_snapshots": self._snapshots_enabled,
                 "onvif_events": events_enabled,
+                "activity_window_seconds": (
+                    device.activity_window_seconds or default_activity_window
+                ),
             },
         }
 

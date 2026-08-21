@@ -123,6 +123,27 @@ class EventStore:
         )
         return [self._row_to_event(row) for row in rows]
 
+    async def find_preceding_transition(self, event: Event) -> Event | None:
+        """Return the preceding state transition in the same semantic stream."""
+        rows = await self._connection.execute_fetchall(
+            """SELECT * FROM events
+               WHERE id != ?
+                 AND device_id = ?
+                 AND area_id = ?
+                 AND event_type = ?
+                 AND timestamp <= ?
+               ORDER BY timestamp DESC, id DESC
+               LIMIT 1""",
+            (
+                event.id,
+                event.device_id,
+                event.area_id,
+                event.event_type,
+                _utc_iso(event.timestamp),
+            ),
+        )
+        return self._row_to_event(rows[0]) if rows else None
+
     async def update_episode(self, event_id: str, episode_id: str) -> None:
         await self._connection.execute(
             "UPDATE events SET episode_id = ? WHERE id = ?", (episode_id, event_id)

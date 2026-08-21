@@ -66,6 +66,7 @@ class CapturePolicyResponse(ApiModel):
     recording: str
     automatic_snapshots: bool
     onvif_events: bool | None = None
+    activity_window_seconds: int
 
 
 class DeviceSummaryResponse(ApiModel):
@@ -136,6 +137,7 @@ class EpisodeResponse(ApiModel):
     start_time: datetime
     last_event_time: datetime | None
     last_activity_at: datetime | None
+    minimum_end_at: datetime | None
     end_time: datetime | None
     state: EpisodeState
     event_count: int

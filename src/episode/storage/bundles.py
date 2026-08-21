@@ -6,7 +6,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Any
 
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
 
 
 def bundle_dir(data_root: str, episode_id: str) -> str:

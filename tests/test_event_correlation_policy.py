@@ -68,6 +68,65 @@ def test_equivalent_onvif_motion_topics_form_one_semantic_state():
 
 
 @pytest.mark.asyncio
+async def test_triggering_devices_extend_episode_with_their_own_activity_windows(tmp_path):
+    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
+    repo = Repository(config)
+    engine = EpisodeEngine(repo, EventBus(), timeout=15)
+    await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(
+            id="camera",
+            name="Camera",
+            device_type="camera",
+            area_id="entrance",
+            activity_window_seconds=30,
+        )
+    )
+    await repo.upsert_device(
+        Device(
+            id="doorbell",
+            name="Doorbell",
+            device_type="doorbell",
+            area_id="entrance",
+            activity_window_seconds=90,
+        )
+    )
+    await engine.start()
+    try:
+        camera = await engine.ingest_event(
+            Event(
+                device_id="camera",
+                area_id="entrance",
+                event_type="motion_detection",
+            )
+        )
+        first = await repo.get_episode(camera.event.episode_id)
+        assert 29 <= (first.minimum_end_at - first.last_activity_at).total_seconds() <= 31
+
+        doorbell = await engine.ingest_event(
+            Event(device_id="doorbell", area_id="entrance", event_type="doorbell")
+        )
+        extended = await repo.get_episode(doorbell.event.episode_id)
+        doorbell_deadline = extended.minimum_end_at
+        assert doorbell.event.episode_id == camera.event.episode_id
+        assert 89 <= (doorbell_deadline - extended.last_activity_at).total_seconds() <= 91
+
+        await engine.ingest_event(
+            Event(
+                device_id="camera",
+                area_id="entrance",
+                timestamp=datetime.now(timezone.utc) + timedelta(microseconds=1),
+                event_type="human_detection",
+            )
+        )
+        assert (await repo.get_episode(camera.event.episode_id)).minimum_end_at >= doorbell_deadline
+    finally:
+        await engine.stop()
+        await repo.close()
+
+
+@pytest.mark.asyncio
 async def test_inactive_event_attaches_without_extending_episode(tmp_path):
     config = EpisodeConfig(
         data_dir=str(tmp_path),
@@ -206,11 +265,12 @@ async def test_late_inactive_attaches_to_matching_closed_episode_without_reopeni
         await repo.update_episode_state(episode_id, EpisodeState.CLOSED)
         closed_before = await repo.get_episode(episode_id)
 
+        inactive_timestamp = timestamp + timedelta(seconds=95)
         inactive = await engine.ingest_event(
             Event(
                 device_id="doorbell",
                 area_id="entrance",
-                timestamp=timestamp + timedelta(seconds=2),
+                timestamp=inactive_timestamp,
                 event_type="doorbell",
                 event_state=EventState.INACTIVE,
                 source="test",
@@ -222,7 +282,112 @@ async def test_late_inactive_attaches_to_matching_closed_episode_without_reopeni
         assert closed_after.state == EpisodeState.CLOSED
         assert closed_after.end_time == closed_before.end_time
         assert closed_after.last_activity_at == closed_before.last_activity_at
+        assert closed_after.last_event_time == inactive_timestamp
         assert closed_after.event_count == 2
+    finally:
+        await engine.stop()
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_inactive_transition_is_not_attached_twice(tmp_path):
+    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
+    repo = Repository(config)
+    engine = EpisodeEngine(repo, EventBus(), timeout=30)
+    await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(id="doorbell", name="Doorbell", device_type="doorbell", area_id="entrance")
+    )
+    await engine.start()
+    try:
+        timestamp = datetime.now(timezone.utc)
+        active = await engine.ingest_event(
+            Event(
+                device_id="doorbell",
+                area_id="entrance",
+                timestamp=timestamp,
+                event_type="doorbell",
+                event_state=EventState.ACTIVE,
+                source="test",
+            )
+        )
+        first_inactive = await engine.ingest_event(
+            Event(
+                device_id="doorbell",
+                area_id="entrance",
+                timestamp=timestamp + timedelta(seconds=60),
+                event_type="doorbell",
+                event_state=EventState.INACTIVE,
+                source="test",
+            )
+        )
+        second_inactive = await engine.ingest_event(
+            Event(
+                device_id="doorbell",
+                area_id="entrance",
+                timestamp=timestamp + timedelta(seconds=61),
+                event_type="doorbell",
+                event_state=EventState.INACTIVE,
+                source="test",
+            )
+        )
+
+        assert first_inactive.event.episode_id == active.event.episode_id
+        assert second_inactive.event.episode_id is None
+        assert (await repo.get_episode(active.event.episode_id)).event_count == 2
+    finally:
+        await engine.stop()
+        await repo.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("device_id", "event_type"),
+    [("other-doorbell", "doorbell"), ("doorbell", "motion_detection")],
+)
+async def test_inactive_transition_does_not_cross_semantic_streams(tmp_path, device_id, event_type):
+    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
+    repo = Repository(config)
+    engine = EpisodeEngine(repo, EventBus(), timeout=30)
+    await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(id="doorbell", name="Doorbell", device_type="doorbell", area_id="entrance")
+    )
+    await repo.upsert_device(
+        Device(
+            id="other-doorbell",
+            name="Other Doorbell",
+            device_type="doorbell",
+            area_id="entrance",
+        )
+    )
+    await engine.start()
+    try:
+        timestamp = datetime.now(timezone.utc)
+        await engine.ingest_event(
+            Event(
+                device_id="doorbell",
+                area_id="entrance",
+                timestamp=timestamp,
+                event_type="doorbell",
+                event_state=EventState.ACTIVE,
+                source="test",
+            )
+        )
+        inactive = await engine.ingest_event(
+            Event(
+                device_id=device_id,
+                area_id="entrance",
+                timestamp=timestamp + timedelta(seconds=60),
+                event_type=event_type,
+                event_state=EventState.INACTIVE,
+                source="test",
+            )
+        )
+
+        assert inactive.event.episode_id is None
     finally:
         await engine.stop()
         await repo.close()

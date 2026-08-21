@@ -325,6 +325,7 @@ async def test_device_api_owns_identity_integrations_and_safe_capture_policy(tmp
             "recording": "on_episode",
             "automatic_snapshots": False,
             "onvif_events": False,
+            "activity_window_seconds": 30,
         }
         assert "username" not in detail
         assert "password" not in detail

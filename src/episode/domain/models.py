@@ -83,10 +83,13 @@ class Device:
     username: str = ""
     password: str = ""
     configs: dict[str, CapabilityConfig] = field(default_factory=dict)
+    activity_window_seconds: int | None = None
     metadata: dict = field(default_factory=dict)
     enabled: bool = True
 
     def __post_init__(self):
+        if self.activity_window_seconds is not None and self.activity_window_seconds < 1:
+            raise ValueError("Device activity window must be positive")
         if self.configs and isinstance(next(iter(self.configs.values()), None), dict):
             self.configs = {
                 k: CapabilityConfig(**v) if isinstance(v, dict) else v
@@ -176,6 +179,7 @@ class Episode:
     start_time: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
     last_event_time: datetime | None = None
     last_activity_at: datetime | None = None
+    minimum_end_at: datetime | None = None
     end_time: datetime | None = None
     state: EpisodeState = EpisodeState.NEW
     event_count: int = 0

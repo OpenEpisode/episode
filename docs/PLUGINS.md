@@ -1,6 +1,6 @@
 # Plugin authoring
 
-Episode Beta.1 establishes plugin API v1 as the supported contract for
+Episode's beta lifecycle establishes plugin API v1 as the supported contract for
 out-of-tree Device and ingress plugins throughout the beta cycle. A plugin can
 be copied into the mounted `plugins/` directory and activated through
 configuration without changing, rebuilding, or importing from Episode's
@@ -22,6 +22,10 @@ runtime stream and snapshot endpoints. Episode still owns:
 - deduplication and correlation;
 - Episode lifetime and action policy;
 - Evidence storage and portable Episode bundles.
+
+In particular, a plugin reports an observation; it does not choose the Episode
+deadline. Core correlation resolves the authoritative Device and applies that
+Device's activity window after successful processing.
 
 Plugins must import only from `episode.plugin_api`. Modules below
 `episode.plugins`, `episode.ingestion`, `episode.storage`, and `episode.engine`
@@ -295,6 +299,7 @@ Before publishing a plugin, verify that it:
 - reports useful lifecycle and instance health without credentials or private
   paths;
 - closes connections, tasks, registrations, and media during `stop()`;
+- never assumes that plugin shutdown alone finalizes core recording actions;
 - contains tests for valid input, malformed input, duplicate delivery, startup
   failure, timeout, and cleanup.
 

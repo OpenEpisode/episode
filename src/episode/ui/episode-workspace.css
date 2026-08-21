@@ -7,6 +7,17 @@
   grid-template-columns: minmax(0, 1.65fr) minmax(20rem, 0.75fr);
   margin-bottom: 1.5rem;
 }
+.episode-primary-column {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+.episode-secondary-stack {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.episode-secondary-stack .episode-secondary { margin-bottom: 0; }
 .episode-media-panel,
 .episode-timeline-panel {
   background: var(--surface);
@@ -382,9 +393,16 @@
 .episode-secondary .collapse-body:not(.collapsed) { padding-top: 1rem; }
 
 @media (max-width: 1180px) {
-  .episode-workspace { grid-template-columns: 1fr; }
+  .episode-workspace {
+    grid-template-areas: "media" "timeline" "secondary";
+    grid-template-columns: 1fr;
+  }
+  .episode-primary-column { display: contents; }
+  .episode-media-panel { grid-area: media; }
+  .episode-secondary-stack { grid-area: secondary; }
   .episode-timeline-panel {
     display: block;
+    grid-area: timeline;
     max-height: none;
     position: static;
   }

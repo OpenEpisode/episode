@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from episode.domain.models import (
@@ -116,6 +116,13 @@ class EpisodeEngine:
                 candidate.id,
                 candidate.area_id,
             )
+            activity_time = datetime.now(tz=timezone.utc)
+            activity_window = self._timeout
+            if candidate.event_state == EventState.ACTIVE:
+                device = await self._repo.get_device(candidate.device_id)
+                if device and device.activity_window_seconds is not None:
+                    activity_window = device.activity_window_seconds
+
             event, created = await self._repo.canonicalize_event(candidate)
             conflict = bool(
                 not created
@@ -147,7 +154,11 @@ class EpisodeEngine:
             elif created:
                 logger.info("Persisted canonical event %s (%s)", event.id, event.event_type)
                 async with self._lifecycle_lock:
-                    await self._correlate(event)
+                    await self._correlate(
+                        event,
+                        activity_time=activity_time,
+                        activity_window=activity_window,
+                    )
             else:
                 logger.info(
                     "Linked duplicate %s delivery to canonical event %s",
@@ -205,11 +216,16 @@ class EpisodeEngine:
             await self._match_orphan_evidence(evidence)
         return evidence
 
-    async def _correlate(self, event: Event):
+    async def _correlate(
+        self,
+        event: Event,
+        *,
+        activity_time: datetime,
+        activity_window: int,
+    ):
         if not event.area_id:
             logger.warning("Stored event %s without an Episode: no Area", event.id)
             return
-        activity_time = datetime.now(tz=timezone.utc)
         logger.debug(
             "Correlating event %s (area=%s, state=%s, timeout=%s, now=%s, event_ts=%s)",
             event.id,
@@ -219,39 +235,24 @@ class EpisodeEngine:
             activity_time.isoformat(),
             event.timestamp,
         )
-        episode = await self._repo.find_open_episode_for_area(event.area_id, self._timeout)
-        logger.debug(
-            "find_open_episode_for_area(%s, %s) -> %s",
-            event.area_id,
-            self._timeout,
-            episode.id if episode else None,
-        )
-
         if event.event_state == EventState.INACTIVE:
-            if not episode:
-                episode = await self._repo.find_recent_closed_episode_for_inactive(
-                    event,
-                    self._timeout,
-                )
-                if not episode:
-                    logger.debug(
-                        "Stored inactive event %s without opening an episode",
-                        event.id,
-                    )
-                    return
-                await self._repo.add_event_to_episode(
+            preceding = await self._repo.find_preceding_event_transition(event)
+            if (
+                preceding is None
+                or preceding.event_state != EventState.ACTIVE
+                or not preceding.episode_id
+            ):
+                logger.debug(
+                    "Stored inactive event %s without a matching active transition",
                     event.id,
-                    episode.id,
-                    _defer_manifest=True,
                 )
-                event.episode_id = episode.id
-                logger.info(
-                    "Attached late inactive event %s to closed episode %s",
+                return
+
+            episode = await self._repo.get_episode(preceding.episode_id)
+            if episode is None or episode.state == EpisodeState.ARCHIVED:
+                logger.debug(
+                    "Stored inactive event %s without a mutable matching episode",
                     event.id,
-                    episode.id,
-                )
-                await self._bus.publish(
-                    Message(type="episode.updated", data={"episode_id": episode.id})
                 )
                 return
             await self._repo.update_episode_times(
@@ -266,10 +267,25 @@ class EpisodeEngine:
                 _defer_manifest=True,
             )
             event.episode_id = episode.id
+            logger.info(
+                "Attached inactive event %s to episode %s via active event %s",
+                event.id,
+                episode.id,
+                preceding.id,
+            )
             await self._bus.publish(
                 Message(type="episode.updated", data={"episode_id": episode.id})
             )
             return
+
+        minimum_end_at = activity_time + timedelta(seconds=activity_window)
+        episode = await self._repo.find_open_episode_for_area(event.area_id, self._timeout)
+        logger.debug(
+            "find_open_episode_for_area(%s, %s) -> %s",
+            event.area_id,
+            self._timeout,
+            episode.id if episode else None,
+        )
 
         if episode:
             await self._repo.add_event_to_episode(
@@ -277,10 +293,16 @@ class EpisodeEngine:
                 episode.id,
                 _defer_manifest=True,
             )
+            completed_at = datetime.now(tz=timezone.utc)
             await self._repo.update_episode_times(
                 episode.id,
                 event.timestamp,
-                activity_time=datetime.now(tz=timezone.utc),
+                activity_time=completed_at,
+                _defer_manifest=True,
+            )
+            await self._repo.extend_episode_minimum_end(
+                episode.id,
+                completed_at + timedelta(seconds=activity_window),
                 _defer_manifest=True,
             )
             if episode.state == EpisodeState.QUIESCENT:
@@ -302,14 +324,21 @@ class EpisodeEngine:
                 start_time=event.timestamp,
                 last_event_time=event.timestamp,
                 last_activity_at=activity_time,
+                minimum_end_at=minimum_end_at,
                 state=EpisodeState.ACTIVE,
             )
             await self._repo.create_episode(episode)
             await self._repo.add_event_to_episode(event.id, episode.id, _defer_manifest=True)
+            completed_at = datetime.now(tz=timezone.utc)
             await self._repo.update_episode_times(
                 episode.id,
                 event.timestamp,
-                activity_time=datetime.now(tz=timezone.utc),
+                activity_time=completed_at,
+                _defer_manifest=True,
+            )
+            await self._repo.extend_episode_minimum_end(
+                episode.id,
+                completed_at + timedelta(seconds=activity_window),
                 _defer_manifest=True,
             )
             event.episode_id = episode.id
@@ -370,7 +399,7 @@ class EpisodeEngine:
                 async with self._lifecycle_lock:
                     closed = await self._repo.close_timed_out_episodes(self._timeout)
                 for ep in closed:
-                    logger.info("Episode %s closed (inactivity timeout)", ep.id)
+                    logger.info("Episode %s closed (activity policy satisfied)", ep.id)
                     await self._bus.publish(
                         Message(
                             type="episode.updated",

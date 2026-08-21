@@ -1,5 +1,5 @@
 import { api } from "./api.js?v=3";
-import { stateBadge } from "./components.js?v=3";
+import { episodeStateBadge } from "./components.js?v=5";
 import { $ } from "./dom.js";
 import { plural, trunc } from "./format.js?v=3";
 
@@ -16,7 +16,10 @@ export async function updateRecentEpisodes(list = null) {
     const recent = (list || await api("/episodes?limit=8")).slice(0, 8);
     element.innerHTML = `<div class="label">Recent episodes</div>
       ${recent.length
-        ? recent.map(episode => `<a href="#episode/${episode.id}">${stateBadge(episode.state)} ${trunc(episode.primary_area_id || "?", 22)}</a>`).join("")
+        ? recent.map(episode => {
+            const badge = episodeStateBadge(episode.state);
+            return `<a href="#episode/${episode.id}">${badge ? `${badge} ` : ""}${trunc(episode.primary_area_id || "?", 22)}</a>`;
+          }).join("")
         : '<span class="sidebar-empty">No episodes yet</span>'}`;
   } catch {
     element.innerHTML = '<div class="label">Recent episodes</div><span class="sidebar-empty">Unavailable</span>';

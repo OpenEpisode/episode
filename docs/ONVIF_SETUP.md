@@ -80,10 +80,15 @@ vendor-neutral Events. Equivalent topics describing the same device state are
 aggregated. The complete SOAP response is preserved exactly, and each derived
 notification remains separately traceable to its source receipt.
 
-An active transition can open or extend an Episode. Its matching inactive
-transition is retained and attached to an open Episode, but does not open one or
-extend its inactivity timeout. Raw SOAP responses, downloaded snapshots, and
-recordings are checksummed and stored without overlays or modification.
+An active transition can open or extend an Episode using that Device's activity
+window. The inactive transition is retained and attached but does not open,
+shorten, or extend the Episode by itself. Raw SOAP responses, downloaded
+snapshots, and recordings are checksummed and stored without overlays or
+modification.
+
+The activity window belongs to the Device that emitted the Event. A second
+camera recording because it uses **Any Episode in this Area** follows the same
+Episode deadline even when its own configured window differs.
 
 ### Optional Episode-requested snapshots
 

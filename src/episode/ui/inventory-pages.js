@@ -14,7 +14,7 @@ import {
   confirmDeviceDelete,
   openAreaEditor,
   openDeviceEditor,
-} from "./inventory.js?v=5";
+} from "./inventory.js?v=6";
 import { showContent, showError, showLoading } from "./view.js?v=1";
 
 let inventoryAreas = [];
@@ -209,6 +209,7 @@ export async function deviceView(id) {
             <div><dt>Manufacturer</dt><dd>${escHtml(identity.manufacturer || "Not detected")}</dd></div>
             <div><dt>Model</dt><dd>${escHtml(identity.model || "Not detected")}</dd></div>
             <div><dt>Firmware</dt><dd>${escHtml(identity.firmware_version || "Not reported")}</dd></div>
+            <div><dt>Episode activity window</dt><dd>${item.capture_policy.activity_window_seconds} seconds</dd></div>
             <div><dt>Automatic snapshots</dt><dd>${item.capture_policy.automatic_snapshots ? "Enabled" : "Disabled"}</dd></div>
             <div><dt>ONVIF Events</dt><dd>${item.capture_policy.onvif_events === null ? "Unavailable" : item.capture_policy.onvif_events ? "Enabled" : "Disabled"}</dd></div>
           </dl>

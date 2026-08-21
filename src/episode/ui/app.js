@@ -1,7 +1,7 @@
 import { $, $$ } from "./dom.js";
 import { closeCarousel } from "./evidence-gallery.js?v=6";
-import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=5";
-import { onboardingNeeded, welcome } from "./onboarding.js?v=4";
+import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=6";
+import { onboardingNeeded, welcome } from "./onboarding.js?v=5";
 import {
   activity,
   closeReviewOverlays,
@@ -10,8 +10,8 @@ import {
   evidence,
   evidenceDetail,
   event,
-} from "./review-pages.js?v=11";
-import { startSidebar } from "./sidebar.js?v=2";
+} from "./review-pages.js?v=13";
+import { startSidebar } from "./sidebar.js?v=3";
 import { toggleCollapse } from "./view.js?v=1";
 
 const THEME_STORAGE_KEY = "episode-theme";

@@ -1,6 +1,6 @@
 import { api } from "./api.js?v=3";
 import { pageHeader } from "./components.js?v=3";
-import { openAreaEditor, openDeviceEditor } from "./inventory.js?v=5";
+import { openAreaEditor, openDeviceEditor } from "./inventory.js?v=6";
 import { showContent, showError, showLoading } from "./view.js?v=1";
 
 let areas = [];

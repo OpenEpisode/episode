@@ -53,10 +53,19 @@ Event. Complementary observations, such as broad ONVIF motion followed by a
 vendor human classification, remain distinct Events in the same Episode. ONVIF
 is the primary standards-based path; vendor connectors add detail.
 
-State transitions also have lifecycle meaning: active observations may open or
-extend an Episode, while inactive observations can describe its ongoing state
-without extending the inactivity window. This policy belongs to correlation,
-not to protocol connectors.
+State transitions also have lifecycle meaning. Every active Event contributes a
+minimum deadline using the triggering Device's activity window. The Episode
+persists the greatest contributed deadline, so later Events may extend it but
+cannot shorten it, and configuration edits or restarts cannot change a decision
+already made. Recording Devices that joined through Area policy follow the
+Episode; they do not impose their own window unless they also emit an Event.
+
+An inactive Event is paired with the latest preceding active Event from the same
+Area, Device, and normalized Event type. It inherits that Event's Episode even
+when the Episode has already closed, but does not shorten its persisted minimum
+deadline, reopen it, or restart actions. Unpaired inactive Events remain
+preserved and unassigned. This lifecycle policy belongs to correlation, not to
+protocol plugins.
 
 ## Current module boundaries
 
@@ -147,6 +156,12 @@ cleanup is logged without preventing the remaining resources from closing.
 Asynchronous plugin startup and shutdown are bounded independently, so a hung
 plugin cannot indefinitely block later integrations or application cleanup.
 
+At startup, the Episode engine evaluates persisted active Episodes against
+their stored minimum deadline. An expired Episode is closed deterministically.
+The current beta does not yet reconstruct recording targets or resume capture
+for an Episode whose deadline is still in the future; restart continuity is an
+explicit operational-hardening task.
+
 
 ## Persistence model
 
@@ -235,10 +250,12 @@ raw artifacts.
 Recordings remain active for the Episode lifecycle and are stored as sequential,
 immutable segments. A shared `recording_session_id` and ordered `segment_index`
 identify chunks from one continuous recording action without relying on filename
-interpretation. Graceful application shutdown terminates ffmpeg, validates and
-publishes the active segment, and removes its working `.part` path. An abrupt
-host or power failure can leave only the current incomplete segment unpublished;
-segments finalized before the interruption remain durable Episode Evidence.
+interpretation. Episode asks FFmpeg to close the active segment during orderly
+shutdown and publishes it only after validation. Container grace limits,
+multiple concurrent streams, a native-process stall, or abrupt host failure can
+still leave the current segment as an unpublished `.part` file. Segments
+finalized before the interruption remain durable Episode Evidence. Startup does
+not yet validate, quarantine, or resume these partial files.
 
 Evidence correlation uses the source observation timestamp and Area. Delayed
 uploads can therefore join an already-closed Episode when they were captured
@@ -343,11 +360,15 @@ first-class fields without removing the underlying diagnostic metadata.
 - `on_event` video devices record their own active Events; `on_episode` video
   devices record active Episodes in their Area, including Episodes opened by
   non-video sources.
+- Episode minimum duration is contributed by triggering Devices; later active
+  Events may extend it but no Event can shorten it.
 - Recording lifetime follows Episode lifetime; ONVIF snapshot capture is
   explicit and disabled by default.
 - Broader event-to-action policy is not implemented.
 - Authentication and safe Internet exposure are not implemented.
 - Annotation and processing-run persistence are planned, not yet public APIs.
+- Capture interrupted by an application or host restart is not yet resumed;
+  unpublished `.part` files require operational inspection.
 
 These are the next boundaries to extract; they are not reasons to expand
 connector-specific logic into the core.

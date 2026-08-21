@@ -18,6 +18,7 @@ const componentsUrl = moduleUrl(
 );
 const {
   detailMetric,
+  episodeStateBadge,
   eventBadge,
   pageControls,
   pageHeader,
@@ -48,6 +49,13 @@ test("shared badges normalize classes and escape external labels", () => {
     stateBadge("closed"),
     '<span class="badge badge-closed">closed</span>',
   );
+});
+
+test("Episode state badges only surface meaningful list state", () => {
+  assert.equal(episodeStateBadge("closed"), "");
+  assert.equal(episodeStateBadge("active"), stateBadge("Active"));
+  assert.equal(episodeStateBadge("quiescent"), stateBadge("Active"));
+  assert.equal(episodeStateBadge("archived"), stateBadge("archived"));
 });
 
 test("source badges have a deterministic presentation order", () => {

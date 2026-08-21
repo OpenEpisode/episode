@@ -106,6 +106,12 @@ notes, and run
 `docker compose --env-file .env pull` followed by
 `docker compose --env-file .env up -d`.
 
+Before stopping or replacing the container, allow active Episodes to finish
+when practical. The current beta preserves every recording segment that has
+already been finalized, but an interruption during capture can leave the
+current segment as an unpublished `.part` file. Automatic repair or resumption
+of that in-progress segment is not implemented yet.
+
 ### Area recording
 
 Each video Device has a **Recording behavior** selected in the UI:
@@ -114,9 +120,16 @@ Each video Device has a **Recording behavior** selected in the UI:
 - `on_episode` records whenever any active Event opens or updates an Episode in
   the device's Area, including Events from doorbells and non-video sensors.
 
-All participating cameras record until the Episode closes after
-`episode_timeout` seconds without active Event activity. Inactive observations
-and duplicate connector deliveries do not start recordings.
+Each Device also has an **Episode activity window**. When that Device emits an
+active Event, it guarantees that the Episode remains open for at least that many
+seconds. Later Events may extend the deadline but never shorten it. Cameras that
+join through `on_episode` follow the Episode deadline; their own window matters
+only when they emit an Event themselves.
+
+`episode_timeout` remains the fallback for Devices that do not yet have an
+explicit activity window. Inactive observations are retained but never shorten
+or extend the deadline, and duplicate connector deliveries do not start
+recordings.
 
 Long recordings are finalized as immutable, sync-friendly segments while capture
 continues through the same FFmpeg connection. Set
@@ -182,6 +195,12 @@ event payloads, snapshots, recordings, an atomic `manifest.json`, and an
 append-only `journal.ndjson`. The folder remains understandable if the SQLite
 index is unavailable. Keep this directory backed up or synchronized separately.
 
+Completed Evidence is immutable and indexed by checksum. A `.part` recording
+is working state rather than Evidence: it is not included in the Episode
+manifest or UI until FFmpeg closes and Episode validates it. After an
+interrupted capture, retain such files for diagnosis; do not assume they are
+playable or delete them before reviewing the logs.
+
 Local `episode.json`, `.env`, and runtime data—including the SQLite-managed
 inventory—are ignored by Git and must never be committed.
 
@@ -196,9 +215,9 @@ inventory—are ignored by Git and must never be committed.
 
 ## Project status
 
-Episode is a working ONVIF-first public beta for technical self-hosters using
-IP cameras and Docker. Hikvision integrations provide optional enrichment. The
-current priorities are reliable preservation, correct
+Episode `0.1.0-beta.2` is a working ONVIF-first public beta for technical
+self-hosters using IP cameras and Docker. Hikvision integrations provide
+optional enrichment. The current priorities are reliable preservation, correct
 correlation, simple installation, and an uncluttered Episode-first interface.
 
 Authentication, action and processor plugins, AI processing, high availability,

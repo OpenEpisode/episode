@@ -23,3 +23,15 @@ captured evidence.
 
 General bugs and hardening suggestions that do not expose a vulnerability can be
 reported through the public issue tracker.
+
+## Deployment and plugin trust
+
+Treat Episode, its Event and Alarm Server endpoints, FTP service, camera
+network, and mounted plugin directory as one trusted local security boundary.
+Third-party plugins execute as trusted code inside the Episode process and are
+not sandboxed. Review them before installation and keep the plugin mount
+read-only.
+
+SHA-256 checksums detect accidental or later byte changes; they are not a
+signature, trusted timestamp, or legal chain of custody. Signed manifests and
+external timestamping remain future hardening work.

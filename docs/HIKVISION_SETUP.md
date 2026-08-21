@@ -35,6 +35,8 @@ docker compose --env-file .env up -d
 Open <http://localhost:8989>, create an Area, and add the camera from the
 **Devices** page. The System page reports core service and Integration health.
 Saving Device changes activates its connections without restarting Episode.
+Set the Device's **Episode activity window** to the minimum time an active Event
+from that Device should keep its Area Episode and participating recordings open.
 
 ## ISAPI event stream
 
@@ -299,3 +301,12 @@ the Episode logs.
 
 Set `EPISODE_UID` and `EPISODE_GID` in `.env` to the host user that owns the data
 directory, then restart the container.
+
+### A restart left `.part` recording files
+
+A `.part` file is the current FFmpeg working segment and is not published as
+Evidence until it closes and validates. Finalized earlier segments remain safe,
+but the current beta does not automatically repair or resume a segment
+interrupted by a container or host restart. Keep the file and surrounding logs
+when reporting the incident. When practical, allow active Episodes to finish
+before replacing the container.

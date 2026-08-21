@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS devices (
     username TEXT NOT NULL DEFAULT '',
     password TEXT NOT NULL DEFAULT '',
     configs TEXT NOT NULL DEFAULT '{}',
+    activity_window_seconds INTEGER CHECK (
+        activity_window_seconds IS NULL OR activity_window_seconds > 0
+    ),
     metadata TEXT NOT NULL DEFAULT '{}',
     enabled INTEGER NOT NULL DEFAULT 1
 );
@@ -40,6 +43,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     start_time TEXT NOT NULL,
     last_event_time TEXT,
     last_activity_at TEXT,
+    minimum_end_at TEXT,
     end_time TEXT,
     state TEXT NOT NULL DEFAULT 'new',
     event_count INTEGER NOT NULL DEFAULT 0,

@@ -70,6 +70,10 @@ class SDKConfigurationRequest(BaseModel):
     port: int = Field(default=8000, ge=1, le=65535)
 
 
+class EpisodePolicyRequest(BaseModel):
+    activity_window_seconds: int | None = Field(default=None, ge=1, le=3600)
+
+
 class DeviceWriteRequest(BaseModel):
     id: str | None = Field(default=None, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     name: str = Field(min_length=1, max_length=80)
@@ -80,6 +84,7 @@ class DeviceWriteRequest(BaseModel):
     username: str | None = Field(default=None, max_length=128)
     password: str | None = Field(default=None, max_length=256)
     clear_credentials: bool = False
+    episode_policy: EpisodePolicyRequest = Field(default_factory=EpisodePolicyRequest)
     video: VideoConfigurationRequest = Field(default_factory=VideoConfigurationRequest)
     onvif: ONVIFConfigurationRequest = Field(default_factory=ONVIFConfigurationRequest)
     isapi: ISAPIConfigurationRequest = Field(default_factory=ISAPIConfigurationRequest)
@@ -145,6 +150,7 @@ class DeviceValidationResponse(BaseModel):
 class DeviceConfigurationResponse(BaseModel):
     username_configured: bool
     password_configured: bool
+    episode_policy: EpisodePolicyRequest
     video: VideoConfigurationRequest
     onvif: ONVIFConfigurationRequest
     isapi: ISAPIConfigurationRequest
@@ -161,6 +167,9 @@ def editable_device_configuration(device: Device) -> dict:
     return DeviceConfigurationResponse(
         username_configured=bool(device.username),
         password_configured=bool(device.password),
+        episode_policy=EpisodePolicyRequest(
+            activity_window_seconds=device.activity_window_seconds,
+        ),
         video=VideoConfigurationRequest(
             enabled=video is not None,
             manual_endpoint=manual_video,
@@ -270,6 +279,7 @@ def device_from_request(
         username=username,
         password=password,
         configs=configs,
+        activity_window_seconds=request.episode_policy.activity_window_seconds,
         metadata=dict(existing.metadata) if existing else {},
         enabled=request.enabled,
     )

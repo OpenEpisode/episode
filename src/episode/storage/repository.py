@@ -363,6 +363,9 @@ class Repository:
     async def find_recent_events_by_device(self, device_id: str, since: datetime) -> list[Event]:
         return await self._event_store().find_recent_by_device(device_id, since)
 
+    async def find_preceding_event_transition(self, event: Event) -> Event | None:
+        return await self._event_store().find_preceding_transition(event)
+
     async def update_event_episode(self, event_id: str, episode_id: str) -> None:
         await self._event_store().update_episode(event_id, episode_id)
 
@@ -514,16 +517,17 @@ class Repository:
         await self._conn.execute(
             """INSERT INTO episodes (
                 id, primary_area_id, start_time,
-                last_event_time, last_activity_at, end_time, state,
+                last_event_time, last_activity_at, minimum_end_at, end_time, state,
                 event_count, evidence_count, summary
             )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 episode.id,
                 episode.primary_area_id,
                 _utc_iso(episode.start_time),
                 _utc_iso(episode.last_event_time),
                 _utc_iso(episode.last_activity_at),
+                _utc_iso(episode.minimum_end_at),
                 _utc_iso(episode.end_time),
                 episode.state.value,
                 episode.event_count,
@@ -595,18 +599,26 @@ class Repository:
         return {row["episode_id"]: row["event_type"] for row in rows}
 
     async def find_open_episode_for_area(self, area_id: str, timeout: int) -> Episode | None:
-        cutoff = _utc_iso(datetime.now(tz=timezone.utc) - timedelta(seconds=timeout))
+        now = datetime.now(tz=timezone.utc)
+        now_value = _utc_iso(now)
+        cutoff = _utc_iso(now - timedelta(seconds=timeout))
         rows = await self._conn.execute_fetchall(
             """SELECT * FROM episodes
                WHERE primary_area_id = ?
                AND state IN ('active', 'quiescent')
-               AND julianday(COALESCE(last_activity_at, last_event_time, start_time))
-                   >= julianday(?)
+               AND (
+                   (minimum_end_at IS NOT NULL
+                    AND julianday(minimum_end_at) >= julianday(?))
+                   OR
+                   (minimum_end_at IS NULL
+                    AND julianday(COALESCE(last_activity_at, last_event_time, start_time))
+                        >= julianday(?))
+               )
                ORDER BY julianday(
                    COALESCE(last_activity_at, last_event_time, start_time)
                ) DESC
                LIMIT 1""",
-            (area_id, cutoff),
+            (area_id, now_value, cutoff),
         )
         episode = self._row_to_episode(rows[0]) if rows else None
         logger.debug(
@@ -637,41 +649,6 @@ class Repository:
                ORDER BY julianday(start_time) DESC
                LIMIT 1""",
             (area_id, observed_at, observed_at),
-        )
-        return self._row_to_episode(rows[0]) if rows else None
-
-    async def find_recent_closed_episode_for_inactive(
-        self,
-        event: Event,
-        grace_seconds: int,
-    ) -> Episode | None:
-        """Find the Episode whose matching active transition a late inactive closes."""
-        cutoff = _utc_iso(datetime.now(tz=timezone.utc) - timedelta(seconds=grace_seconds))
-        event_time = _utc_iso(event.timestamp)
-        rows = await self._conn.execute_fetchall(
-            """SELECT episode.*
-               FROM episodes AS episode
-               WHERE episode.primary_area_id = ?
-                 AND episode.state = 'closed'
-                 AND julianday(episode.end_time) >= julianday(?)
-                 AND julianday(?) >= julianday(episode.start_time)
-                 AND EXISTS (
-                     SELECT 1
-                     FROM events AS active_event
-                     WHERE active_event.episode_id = episode.id
-                       AND active_event.device_id = ?
-                       AND active_event.event_type = ?
-                       AND active_event.event_state = 'active'
-                 )
-               ORDER BY julianday(episode.end_time) DESC
-               LIMIT 1""",
-            (
-                event.area_id,
-                cutoff,
-                event_time,
-                event.device_id,
-                event.event_type,
-            ),
         )
         return self._row_to_episode(rows[0]) if rows else None
 
@@ -859,33 +836,58 @@ class Repository:
         if not _defer_manifest:
             await self.refresh_episode_manifest(episode_id)
 
+    async def extend_episode_minimum_end(
+        self,
+        episode_id: str,
+        minimum_end_at: datetime,
+        *,
+        _defer_manifest: bool = False,
+    ) -> None:
+        value = _utc_iso(minimum_end_at)
+        await self._conn.execute(
+            """UPDATE episodes
+               SET minimum_end_at = CASE
+                   WHEN minimum_end_at IS NULL
+                     OR julianday(minimum_end_at) < julianday(?)
+                   THEN ?
+                   ELSE minimum_end_at
+               END
+               WHERE id = ?""",
+            (value, value, episode_id),
+        )
+        await self._conn.commit()
+        if not _defer_manifest:
+            await self.refresh_episode_manifest(episode_id)
+
     async def close_timed_out_episodes(self, timeout: int) -> list[Episode]:
         now = datetime.now(tz=timezone.utc)
         now_value = _utc_iso(now)
         cutoff = _utc_iso(now - timedelta(seconds=timeout))
-        rows = await self._conn.execute_fetchall(
-            """SELECT * FROM episodes
+        cursor = await self._conn.execute(
+            """UPDATE episodes
+               SET state = ?, end_time = ?
                WHERE state IN ('active', 'quiescent')
-               AND julianday(COALESCE(last_activity_at, last_event_time, start_time))
-                   < julianday(?)""",
-            (cutoff,),
+               AND (
+                   (minimum_end_at IS NOT NULL
+                    AND julianday(minimum_end_at) < julianday(?))
+                   OR
+                   (minimum_end_at IS NULL
+                    AND julianday(COALESCE(last_activity_at, last_event_time, start_time))
+                        < julianday(?))
+               )
+               RETURNING *""",
+            (
+                EpisodeState.CLOSED.value,
+                now_value,
+                now_value,
+                cutoff,
+            ),
         )
+        rows = await cursor.fetchall()
+        await self._conn.commit()
         closed = []
         for row in rows:
             episode = self._row_to_episode(row)
-            cursor = await self._conn.execute(
-                """UPDATE episodes
-                   SET state = ?, end_time = ?
-                   WHERE id = ?
-                     AND state IN ('active', 'quiescent')
-                     AND julianday(
-                         COALESCE(last_activity_at, last_event_time, start_time)
-                     ) < julianday(?)""",
-                (EpisodeState.CLOSED.value, now_value, episode.id, cutoff),
-            )
-            await self._conn.commit()
-            if cursor.rowcount != 1:
-                continue
             await asyncio.to_thread(
                 append_journal,
                 self._data_dir,
@@ -893,8 +895,6 @@ class Repository:
                 "episode.state_changed",
                 {"state": EpisodeState.CLOSED.value},
             )
-            episode.state = EpisodeState.CLOSED
-            episode.end_time = now
             closed.append(episode)
             await self.refresh_episode_manifest(episode.id)
         return closed
@@ -939,6 +939,9 @@ class Repository:
             else None,
             last_activity_at=datetime.fromisoformat(row["last_activity_at"])
             if row["last_activity_at"]
+            else None,
+            minimum_end_at=datetime.fromisoformat(row["minimum_end_at"])
+            if row["minimum_end_at"]
             else None,
             end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
             state=EpisodeState(row["state"]),

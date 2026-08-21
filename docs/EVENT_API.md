@@ -46,6 +46,9 @@ Area:
    Device driven only through this API.
 4. Save the Device and use its displayed ID as `device_id`.
 
+Set the Device's **Episode activity window** to the minimum recording duration
+appropriate for this source.
+
 An active Event opens or updates the Device's Area Episode. Video Devices in
 that Area configured as **Any Episode in this Area** (`on_episode`) start
 recording. An inactive Event is retained in the Episode timeline without
@@ -104,7 +107,14 @@ Identifiers may contain letters, numbers, dots, underscores, colons, and
 hyphens. Unknown fields and timestamps without a timezone are rejected.
 
 For a one-shot trigger, send an active Event and omit the inactive transition.
-The Episode closes normally after its configured inactivity timeout.
+The triggering Device's activity window determines the minimum Episode duration.
+If the source also reports an inactive transition, it is retained in the Episode
+timeline but does not shorten the already-established deadline.
+
+The activity window is persisted on the Episode as `minimum_end_at` when the
+active Event is processed. Editing the Device later does not rewrite that
+decision. Other recording Devices that join through Area policy follow the
+Episode deadline; they do not substitute their own configured window.
 
 ## Idempotency
 
