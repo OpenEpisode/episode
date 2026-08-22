@@ -37,6 +37,7 @@ class ONVIFDeviceConfig:
     timeout: float = 15
     events_enabled: bool = False
     profile_token: str = ""
+    relaxed_validation: bool = False
 
 
 ClientFactory = Callable[[ONVIFDeviceConfig], ONVIFClient]
@@ -53,6 +54,7 @@ def _default_client_factory(config: ONVIFDeviceConfig) -> ONVIFClient:
         path=config.path,
         auth_mode=config.auth_mode,
         timeout=config.timeout,
+        relaxed_validation=config.relaxed_validation,
     )
 
 
@@ -368,6 +370,7 @@ def device_config(value: Mapping[str, object]) -> tuple[ONVIFDeviceConfig | None
             timeout=timeout,
             events_enabled=bool(settings.get("events_enabled", False)),
             profile_token=str(settings.get("profile_token", "")),
+            relaxed_validation=bool(settings.get("onvif_relaxed_validation", False)),
         ),
         None,
     )

@@ -50,6 +50,7 @@ class ONVIFConfigurationRequest(BaseModel):
     path: str = Field(default="/onvif/device_service", max_length=500)
     auth_mode: AuthMode = "digest_wsse"
     events_enabled: bool = False
+    onvif_relaxed_validation: bool = False
 
 
 class ISAPIConfigurationRequest(BaseModel):
@@ -187,6 +188,7 @@ def editable_device_configuration(device: Device) -> dict:
             path=onvif.path if onvif else "/onvif/device_service",
             auth_mode=onvif.settings.get("auth_mode", "digest_wsse") if onvif else "digest_wsse",
             events_enabled=bool(onvif.settings.get("events_enabled", False)) if onvif else False,
+            onvif_relaxed_validation=bool(onvif.settings.get("onvif_relaxed_validation", False)) if onvif else False,
         ),
         isapi=ISAPIConfigurationRequest(
             enabled=isapi is not None,
@@ -233,6 +235,7 @@ def device_from_request(
         settings.update(
             auth_mode=request.onvif.auth_mode,
             events_enabled=request.onvif.events_enabled,
+            onvif_relaxed_validation=request.onvif.onvif_relaxed_validation,
         )
         configs["onvif"] = CapabilityConfig(
             protocol=request.onvif.protocol,
@@ -307,6 +310,7 @@ def validation_device_from_request(
         settings={
             "auth_mode": request.onvif.auth_mode,
             "events_enabled": request.onvif.events_enabled,
+            "onvif_relaxed_validation": request.onvif.onvif_relaxed_validation,
         },
     )
     device.configs["isapi"] = CapabilityConfig(

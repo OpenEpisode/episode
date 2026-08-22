@@ -65,7 +65,7 @@ function deviceDefaults(device) {
       activity_window_seconds: policy.activity_window_seconds ?? 30,
     },
     video: { enabled: true, manual_endpoint: false, protocol: "rtsp", port: 554, path: "/Streaming/Channels/101", recording_mode: "on_event", ...(config.video || {}) },
-    onvif: { enabled: true, protocol: "http", port: 80, path: "/onvif/device_service", auth_mode: "digest_wsse", events_enabled: false, ...(config.onvif || {}) },
+    onvif: { enabled: true, protocol: "http", port: 80, path: "/onvif/device_service", auth_mode: "digest_wsse", events_enabled: false, onvif_relaxed_validation: false, ...(config.onvif || {}) },
     isapi: { enabled: false, protocol: "http", port: 80, path: "/ISAPI/Event/notification/alertStream", ignore_events: ["videoloss", "illaccess"], ...(config.isapi || {}) },
     sdk: { enabled: false, port: 8000, ...(config.hikvision_sdk || {}) },
   };
@@ -135,6 +135,7 @@ function devicePayload(data, editing, device) {
       path: field(data, "onvif_path"),
       auth_mode: field(data, "onvif_auth_mode"),
       events_enabled: isChecked(data, "onvif_events_enabled"),
+      onvif_relaxed_validation: isChecked(data, "onvif_relaxed_validation"),
     },
     isapi: {
       enabled: isChecked(data, "isapi_enabled"),
@@ -201,7 +202,8 @@ export function openDeviceEditor(device, areas, onSaved) {
         <div class="form-section-heading"><h3>Integrations</h3><p>Configured connections activate automatically when the Device is saved.</p></div>
         <div class="integration-stack">
           ${integrationToggle("onvif", "ONVIF", "Standards-based discovery, media, and optional Events.", values.onvif.enabled, `
-            <label class="toggle-row"><input type="checkbox" name="onvif_events_enabled"${checked(values.onvif.events_enabled)}><span><strong>Receive ONVIF Events</strong><small>Disabled by default to avoid noisy motion state changes.</small></span></label>`) }
+            <label class="toggle-row"><input type="checkbox" name="onvif_events_enabled"${checked(values.onvif.events_enabled)}><span><strong>Receive ONVIF Events</strong><small>Disabled by default to avoid noisy motion state changes.</small></span></label>
+            <label class="toggle-row"><input type="checkbox" name="onvif_relaxed_validation"${checked(values.onvif.onvif_relaxed_validation)}><span><strong>Relaxed validation</strong><small>Use lenient parsing for cameras with non-standard SOAP responses (e.g. Reolink).</small></span></label>`) }
           <div class="integration-group-label"><strong>Hikvision enhancements</strong><span>Optional vendor connections that complement ONVIF.</span></div>
           ${integrationToggle("isapi", "ISAPI Event stream", "Rich motion and classification Events. It is currently active when this switch is on.", values.isapi.enabled, "")}
           ${integrationToggle("hikvision_sdk", "HCNetSDK", "Native callbacks for doorbell rings and door-control Events.", values.sdk.enabled, `

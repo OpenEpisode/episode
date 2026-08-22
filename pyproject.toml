@@ -12,6 +12,7 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "pyftpdlib>=2.0.0",
     "httpx>=0.28.0",
+    "lxml>=6.1.0",
 ]
 
 [project.scripts]

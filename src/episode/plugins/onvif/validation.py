@@ -22,6 +22,7 @@ async def validate_device(device: Device, checked_at: str, timeout: float) -> di
             str(config.settings.get("auth_mode", "digest_wsse")) if config else "digest_wsse"
         ),
         timeout=min(timeout, 8),
+        relaxed_validation=bool(config.settings.get("onvif_relaxed_validation", False)) if config else False,
     )
     try:
         discovered = await asyncio.wait_for(client.discover(), timeout=timeout)
