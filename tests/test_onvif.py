@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+import uuid as _uuid
 import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import replace
@@ -146,6 +148,41 @@ async def test_snapshot_action_preserves_downloaded_bytes_as_episode_evidence():
     await episode_engine.stop()
     await repo.close()
 
+
+
+
+@pytest.mark.asyncio
+async def test_envelope_contains_ws_addressing_headers():
+        client = ONVIFClient("192.0.2.1", "user", "pass")
+        operation = ET.Element("{urn:test}Read")
+
+        envelope = client._envelope(
+            operation,
+            authenticated=False,
+            soap_action="http://example.com/DoThing",
+            destination="http://camera/events",
+        )
+
+        assert b'>http://camera/events</' in envelope
+        assert b'>http://example.com/DoThing</' in envelope
+
+        # MessageID should be urn:uuid:<valid-uuid>
+        msg_id_match = re.search(rb'MessageID[^>]*>urn:uuid:([0-9a-f-]+)<', envelope)
+        assert msg_id_match is not None
+        _uuid.UUID(msg_id_match.group(1).decode())  # validates UUID format
+
+        # Each call should produce a unique MessageID
+        envelope2 = client._envelope(
+            operation,
+            authenticated=False,
+            soap_action="http://example.com/DoThing",
+            destination="http://camera/events",
+        )
+        msg_id_match2 = re.search(rb'MessageID[^>]*>([^<]+)<', envelope2)
+        assert msg_id_match is not None
+        assert msg_id_match.group(1) != msg_id_match2.group(1)
+
+        await client.close()
 
 def test_onvif_level_notifications_only_emit_real_transitions():
     initial, active = parse_notifications(ET.fromstring(NOTIFICATIONS))
