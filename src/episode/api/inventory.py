@@ -188,7 +188,9 @@ def editable_device_configuration(device: Device) -> dict:
             path=onvif.path if onvif else "/onvif/device_service",
             auth_mode=onvif.settings.get("auth_mode", "digest_wsse") if onvif else "digest_wsse",
             events_enabled=bool(onvif.settings.get("events_enabled", False)) if onvif else False,
-            onvif_relaxed_validation=bool(onvif.settings.get("onvif_relaxed_validation", False)) if onvif else False,
+            onvif_relaxed_validation=bool(onvif.settings.get("onvif_relaxed_validation", False))
+            if onvif
+            else False,
         ),
         isapi=ISAPIConfigurationRequest(
             enabled=isapi is not None,

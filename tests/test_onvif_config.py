@@ -159,8 +159,11 @@ async def test_onvif_discovery_does_not_enable_disabled_recording():
 
     assert config.device.get_config("video") is None
     assert "video" in config.device.capabilities
+
+
 import sys
-sys.path.insert(0, '/mnt/storage/services/episode/episode/src')
+
+sys.path.insert(0, "/mnt/storage/services/episode/episode/src")
 
 from episode.plugins.onvif.device import device_config, ONVIFDeviceConfig
 from episode.api.inventory import (
@@ -173,7 +176,6 @@ from episode.api.inventory import (
 from episode.domain.models import Device, CapabilityConfig
 
 
-
 def test_onvif_relaxed_validation_is_disabled_by_default():
     config, error = device_config(_device())
     assert error is None
@@ -181,43 +183,49 @@ def test_onvif_relaxed_validation_is_disabled_by_default():
 
 
 def test_onvif_relaxed_validation_can_be_enabled():
-    config, error = device_config({
-        **_device(),
-        "configs": {
-            **_device()["configs"],
-            "onvif": {
-                **_device()["configs"]["onvif"],
-                "settings": {"onvif_relaxed_validation": True},
+    config, error = device_config(
+        {
+            **_device(),
+            "configs": {
+                **_device()["configs"],
+                "onvif": {
+                    **_device()["configs"]["onvif"],
+                    "settings": {"onvif_relaxed_validation": True},
+                },
             },
-        },
-    })
+        }
+    )
     assert error is None
     assert config.relaxed_validation is True
 
 
 def test_onvif_relaxed_validation_can_be_explicitly_disabled():
-    config, error = device_config({
-        **_device(),
-        "configs": {
-            **_device()["configs"],
-            "onvif": {
-                **_device()["configs"]["onvif"],
-                "settings": {"onvif_relaxed_validation": False},
+    config, error = device_config(
+        {
+            **_device(),
+            "configs": {
+                **_device()["configs"],
+                "onvif": {
+                    **_device()["configs"]["onvif"],
+                    "settings": {"onvif_relaxed_validation": False},
+                },
             },
-        },
-    })
+        }
+    )
     assert error is None
     assert config.relaxed_validation is False
 
 
 def test_onvif_config_request_defaults_relaxed_validation_false():
     from episode.api.inventory import ONVIFConfigurationRequest
+
     req = ONVIFConfigurationRequest()
     assert req.onvif_relaxed_validation is False
 
 
 def test_onvif_config_request_accepts_relaxed_validation():
     from episode.api.inventory import ONVIFConfigurationRequest
+
     req = ONVIFConfigurationRequest(onvif_relaxed_validation=True)
     assert req.onvif_relaxed_validation is True
 
@@ -229,17 +237,31 @@ def test_device_write_request_persists_relaxed_validation():
         device_from_request,
     )
     from episode.domain.models import Device, CapabilityConfig
+
     existing = Device(
-        id="test", name="Test", device_type="camera", area_id="area",
-        ip_address="192.0.2.10", username="u", password="p",
-        configs={"onvif": CapabilityConfig(
-            protocol="http", port=80, path="/onvif/device_service",
-            settings={"onvif_relaxed_validation": True},
-        )},
+        id="test",
+        name="Test",
+        device_type="camera",
+        area_id="area",
+        ip_address="192.0.2.10",
+        username="u",
+        password="p",
+        configs={
+            "onvif": CapabilityConfig(
+                protocol="http",
+                port=80,
+                path="/onvif/device_service",
+                settings={"onvif_relaxed_validation": True},
+            )
+        },
     )
     request = DeviceWriteRequest(
-        name="Test", device_type="camera", area_id="area",
-        ip_address="192.0.2.10", username="u", password="p",
+        name="Test",
+        device_type="camera",
+        area_id="area",
+        ip_address="192.0.2.10",
+        username="u",
+        password="p",
         onvif=ONVIFConfigurationRequest(onvif_relaxed_validation=True),
     )
     device = device_from_request("test", request, existing)
@@ -254,9 +276,14 @@ def test_validation_device_includes_relaxed_validation():
         ONVIFConfigurationRequest,
         validation_device_from_request,
     )
+
     request = DeviceWriteRequest(
-        name="Test", device_type="camera", area_id="area",
-        ip_address="192.0.2.10", username="u", password="p",
+        name="Test",
+        device_type="camera",
+        area_id="area",
+        ip_address="192.0.2.10",
+        username="u",
+        password="p",
         onvif=ONVIFConfigurationRequest(onvif_relaxed_validation=True),
     )
     device = validation_device_from_request(request)
@@ -268,13 +295,23 @@ def test_validation_device_includes_relaxed_validation():
 def test_editable_device_configuration_returns_relaxed_validation():
     from episode.api.inventory import editable_device_configuration
     from episode.domain.models import Device, CapabilityConfig
+
     device = Device(
-        id="test", name="Test", device_type="camera", area_id="area",
-        ip_address="192.0.2.10", username="u", password="p",
-        configs={"onvif": CapabilityConfig(
-            protocol="http", port=80, path="/onvif/device_service",
-            settings={"onvif_relaxed_validation": True, "events_enabled": False},
-        )},
+        id="test",
+        name="Test",
+        device_type="camera",
+        area_id="area",
+        ip_address="192.0.2.10",
+        username="u",
+        password="p",
+        configs={
+            "onvif": CapabilityConfig(
+                protocol="http",
+                port=80,
+                path="/onvif/device_service",
+                settings={"onvif_relaxed_validation": True, "events_enabled": False},
+            )
+        },
     )
     config = editable_device_configuration(device)
     assert config["onvif"]["onvif_relaxed_validation"] is True
