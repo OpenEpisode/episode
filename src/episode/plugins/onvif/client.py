@@ -4,6 +4,11 @@ import base64
 import hashlib
 import os
 import xml.etree.ElementTree as ET
+
+try:
+    from lxml import etree as _lxml_etree
+except ImportError:
+    _lxml_etree = None
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit, urlunsplit
@@ -74,6 +79,7 @@ class ONVIFClient:
         path: str = "/onvif/device_service",
         auth_mode: str = "digest_wsse",
         timeout: float = 15,
+        relaxed_validation: bool = False,
     ):
         self.host = host
         self.username = username
@@ -82,6 +88,7 @@ class ONVIFClient:
         port_part = f":{port}" if port and port not in (80, 443) else ""
         self.device_url = f"{protocol}://{host}{port_part}{path}"
         self._clock_offset = timedelta()
+        self.relaxed_validation = relaxed_validation
         self._client = httpx.AsyncClient(
             auth=httpx.DigestAuth(username, password),
             timeout=httpx.Timeout(timeout, read=max(timeout, 45)),
@@ -143,7 +150,10 @@ class ONVIFClient:
         try:
             root = ET.fromstring(raw)
         except ET.ParseError as error:
-            raise ONVIFError("Camera returned invalid SOAP XML") from error
+            if self.relaxed_validation:
+                root = _lxml_etree.fromstring(raw, parser=_lxml_etree.XMLParser(recover=True))
+            else:
+                raise ONVIFError("Camera returned invalid SOAP XML") from error
         fault = root.find(f".//{{{SOAP}}}Fault")
         if fault is not None:
             reason = fault.findtext(f".//{{{SOAP}}}Text", "ONVIF SOAP fault")
