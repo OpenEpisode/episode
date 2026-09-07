@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 EVENT_MAP = {
     # Audio
-    "audio_detection_detection": ("audio", "sound"),
+    "audio_detection": ("audio", "sound"),
     # Image
     "face_detection": ("face",),
     "human_detection": ("human", "person", "people"),
@@ -32,7 +32,7 @@ EVENT_MAP = {
     "loitering_detection": ("loitering",),
     "motion_detection": ("motion", "movement", "mov", "md"),
     "package_detection": ("package",),
-    "pet_detection": ("pet", "animal", "dot_cat", "dog", "cat"),
+    "pet_detection": ("pet", "animal", "dog_cat", "dog", "cat"),
     "vehicle_detection": ("vehicle", "car"),
     # Other events
     "tampering_detection": ("vt",),
@@ -203,12 +203,18 @@ def interpret_event(raw_payload: dict[str, Any]) -> ReolinkEvent:
     Returns:
         Normalized ReolinkEvent
     """
+    payload = raw_payload
+    if len(payload) == 1 and next(iter(payload)) in {"AlarmEvent", "Event"}:
+        nested = next(iter(payload.values()))
+        if isinstance(nested, dict):
+            payload = nested
+
     # Extract timestamp
-    timestamp = _extract_timestamp(raw_payload)
+    timestamp = _extract_timestamp(payload)
 
     # Map event type
-    event_type = _map_event_type(raw_payload)
-    event_state = _map_event_state(raw_payload)
+    event_type = _map_event_type(payload)
+    event_state = _map_event_state(payload)
 
     metadata = {
         "integration": "reolink",
@@ -216,8 +222,8 @@ def interpret_event(raw_payload: dict[str, Any]) -> ReolinkEvent:
     }
 
     # Extract common fields
-    event_id = raw_payload.get("eventID", "") or raw_payload.get("EventIndex", "")
-    channel = raw_payload.get("channel", 0)
+    event_id = payload.get("eventID", "") or payload.get("EventIndex", "")
+    channel = payload.get("channel", payload.get("channelId", 0))
     if isinstance(channel, str):
         try:
             channel = int(channel)
@@ -428,7 +434,15 @@ def _xml_to_dict(element) -> dict[str, Any]:
 def _extract_timestamp(payload: dict[str, Any]) -> datetime:
     """Extract timestamp from event payload."""
     # Check various possible locations
-    for key in ("time", "timestamp", "createTime", "eventTime", "EventTime", "AlarmTime"):
+    for key in (
+        "time",
+        "timestamp",
+        "timeStamp",
+        "createTime",
+        "eventTime",
+        "EventTime",
+        "AlarmTime",
+    ):
         value = payload.get(key)
         if value:
             parsed = _try_parse_timestamp(value)
@@ -478,13 +492,7 @@ def _try_parse_timestamp(value) -> datetime | None:
 
 def _map_event_type(payload: dict[str, Any]) -> str:
     """Map event payload to canonical event type string."""
-    # Unwrap the payload if it comes nested inside its root XML tag
-    if len(payload) == 1 and list(payload.keys())[0] in ("AlarmEvent", "Event"):
-        payload = list(payload.values())[0]
-        if not isinstance(payload, dict):
-            payload = {}
-
-    # Check various possible keys at the root level of the unwrapped payload
+    # Check various possible keys at the root level of the event payload.
     cmd = payload.get("cmd", "")
     event_type_val = payload.get("type", "")
     channel_event = payload.get("channelEvent", "")

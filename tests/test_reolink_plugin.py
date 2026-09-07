@@ -193,6 +193,36 @@ def test_parse_alarm_event_frame_multiple_alarm_events():
     assert events[1].event_type == "vehicle_detection"
 
 
+def test_parse_wrapped_event_preserves_state_identity_and_timestamp():
+    xml = (
+        b"<Event><cmd>AudioDetect</cmd><state>false</state><channelId>2</channelId>"
+        b"<eventID>event-42</eventID><timeStamp>1756000000</timeStamp></Event>"
+    )
+
+    events = parse_alarm_event_frame(xml, channel=0)
+
+    assert len(events) == 1
+    assert events[0].event_type == "audio_detection"
+    assert events[0].event_state == "inactive"
+    assert events[0].channel == 2
+    assert events[0].event_id == "event-42"
+    assert events[0].timestamp == datetime.fromtimestamp(1756000000, tz=timezone.utc)
+
+
+def test_parse_smart_ai_event_uses_detected_subtype():
+    xml = (
+        b"<AlarmEventList><AlarmEvent><status>none</status><smartAiTypeList>"
+        b"<smartAiType><type>intrusion</type><subList><type>people</type></subList>"
+        b"</smartAiType></smartAiTypeList></AlarmEvent></AlarmEventList>"
+    )
+
+    events = parse_alarm_event_frame(xml, channel=0)
+
+    assert len(events) == 1
+    assert events[0].event_type == "human_detection"
+    assert events[0].event_state == "active"
+
+
 def test_parse_alarm_event_frame_invalid_returns_empty():
     assert parse_alarm_event_frame(b"\x00\x01\x02", channel=0) == []
 
@@ -906,6 +936,32 @@ async def test_handler_preserves_then_expands_raw_frame():
     interpreted = await plugin._handle(notification)
     assert interpreted.event is not None
     assert interpreted.event.event_type == "human_detection"
+
+
+@pytest.mark.asyncio
+async def test_handler_keeps_battery_telemetry_out_of_episode_events():
+    from episode.domain.models import ReceiptStatus
+
+    plugin = _make_plugin()
+    connection = FakeConnection("cam-1", "Front Camera")
+    connection.config = _make_event_config(events_enabled=True)
+    plugin._connections = [connection]
+    raw = dataclasses.replace(
+        _envelope(),
+        payload=b"<batteryStatus><batteryPower>12</batteryPower></batteryStatus>",
+        media_type="application/octet-stream",
+        metadata={
+            "plugin_id": "reolink",
+            "kind": "raw_event_frame",
+            "command_id": 252,
+            "channel": 0,
+        },
+    )
+
+    result = await plugin._handle(raw)
+
+    assert result.status == ReceiptStatus.IGNORED
+    assert result.metadata == {"reason": "device_telemetry", "command_id": 252}
 
 
 @pytest.mark.asyncio

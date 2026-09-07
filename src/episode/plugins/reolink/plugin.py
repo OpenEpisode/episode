@@ -113,6 +113,12 @@ class ReolinkPlugin:
                     status=ReceiptStatus.REJECTED,
                     metadata={"reason": "device_connection_unavailable"},
                 )
+            if command_id == 252:
+                return IngressHandlerResult(
+                    claimed=True,
+                    status=ReceiptStatus.IGNORED,
+                    metadata={"reason": "device_telemetry", "command_id": command_id},
+                )
             nonce = envelope.metadata.get("nonce")
             use_aes = envelope.metadata.get("use_aes")
             events = connection.decode_event_frame(
@@ -129,13 +135,6 @@ class ReolinkPlugin:
                     metadata={"reason": "derived_delivery_storage_unavailable"},
                 )
             for index, event in enumerate(events):
-                # Battery telemetry (cmdId=252) carries charging/discharging as
-                # its state; the Episode engine only correlates active/inactive
-                # transitions, so map low-power alerts to active and periodic
-                # status to inactive. The original state is preserved below.
-                event_state = event.event_state
-                if event_state not in {"active", "inactive"}:
-                    event_state = "active" if event.event_type == "battery_low" else "inactive"
                 await self._delivery_sink(
                     RawPluginDelivery(
                         plugin_id=PLUGIN_ID,
@@ -156,13 +155,10 @@ class ReolinkPlugin:
                             "parent_receipt_id": envelope.receipt_id,
                             "notification_index": index,
                             "event_type": event.event_type,
-                            "event_state": event_state,
+                            "event_state": event.event_state,
                             "observed_at": event.timestamp.isoformat(),
                             "channel": event.channel,
                             "event_id": event.event_id,
-                            "battery_state": event.event_state
-                            if event.event_state not in {"active", "inactive"}
-                            else "",
                         },
                     )
                 )
