@@ -71,6 +71,19 @@ class SDKConfigurationRequest(BaseModel):
     port: int = Field(default=8000, ge=1, le=65535)
 
 
+class ReolinkConfigurationRequest(BaseModel):
+    enabled: bool = False
+    host: str = Field(default="", max_length=255)
+    port: int | None = Field(default=9000, ge=1, le=65535)
+    media_enabled: bool = False
+    events_enabled: bool = False
+
+    @field_validator("host")
+    @classmethod
+    def strip_host(cls, value: str) -> str:
+        return value.strip()
+
+
 class EpisodePolicyRequest(BaseModel):
     activity_window_seconds: int | None = Field(default=None, ge=1, le=3600)
 
@@ -90,6 +103,7 @@ class DeviceWriteRequest(BaseModel):
     onvif: ONVIFConfigurationRequest = Field(default_factory=ONVIFConfigurationRequest)
     isapi: ISAPIConfigurationRequest = Field(default_factory=ISAPIConfigurationRequest)
     hikvision_sdk: SDKConfigurationRequest = Field(default_factory=SDKConfigurationRequest)
+    reolink: ReolinkConfigurationRequest = Field(default_factory=ReolinkConfigurationRequest)
 
     @field_validator("name", "device_type", "area_id", "ip_address")
     @classmethod
@@ -104,6 +118,7 @@ class DeviceWriteRequest(BaseModel):
                 self.onvif.enabled,
                 self.isapi.enabled,
                 self.hikvision_sdk.enabled,
+                self.reolink.enabled,
             )
         )
         if needs_address and not self.ip_address:
@@ -156,6 +171,7 @@ class DeviceConfigurationResponse(BaseModel):
     onvif: ONVIFConfigurationRequest
     isapi: ISAPIConfigurationRequest
     hikvision_sdk: SDKConfigurationRequest
+    reolink: ReolinkConfigurationRequest
 
 
 def editable_device_configuration(device: Device) -> dict:
@@ -163,6 +179,7 @@ def editable_device_configuration(device: Device) -> dict:
     onvif = device.get_config("onvif")
     isapi = device.get_config("isapi")
     sdk = device.get_config("hikvision_sdk")
+    reolink = device.get_config("reolink")
     discovered_video = bool(video and video.settings.get("origin") == "onvif")
     manual_video = bool(video and video.protocol and video.path and not discovered_video)
     return DeviceConfigurationResponse(
@@ -201,6 +218,15 @@ def editable_device_configuration(device: Device) -> dict:
             enabled=sdk is not None,
             port=sdk.port if sdk and sdk.port else 8000,
         ),
+        reolink=ReolinkConfigurationRequest(
+            enabled=reolink is not None,
+            host=reolink.settings.get("host", "") if reolink else "",
+            port=reolink.port if reolink and reolink.port else 9000,
+            media_enabled=bool(reolink.settings.get("media_enabled", False)) if reolink else False,
+            events_enabled=bool(reolink.settings.get("events_enabled", False))
+            if reolink
+            else False,
+        ),
     ).model_dump()
 
 
@@ -209,13 +235,13 @@ def device_from_request(
     request: DeviceWriteRequest,
     existing: Device | None = None,
 ) -> Device:
-    managed_capabilities = {"doorbell", "onvif", "isapi", "hikvision_sdk"}
+    managed_capabilities = {"doorbell", "onvif", "isapi", "hikvision_sdk", "reolink"}
     capabilities = set(existing.capabilities if existing else ()) - managed_capabilities
 
     configs = {
         key: value
         for key, value in (existing.configs.items() if existing else ())
-        if key not in {"video", "onvif", "isapi", "hikvision_sdk"}
+        if key not in {"video", "onvif", "isapi", "hikvision_sdk", "reolink"}
     }
     if request.video.enabled:
         previous = existing.get_config("video") if existing else None
@@ -252,6 +278,16 @@ def device_from_request(
         )
     if request.hikvision_sdk.enabled:
         configs["hikvision_sdk"] = CapabilityConfig(port=request.hikvision_sdk.port)
+    if request.reolink.enabled:
+        previous = existing.get_config("reolink") if existing else None
+        settings = dict(previous.settings) if previous else {}
+        settings["host"] = request.reolink.host
+        settings["media_enabled"] = request.reolink.media_enabled
+        settings["events_enabled"] = request.reolink.events_enabled
+        configs["reolink"] = CapabilityConfig(
+            port=request.reolink.port,
+            settings=settings,
+        )
 
     if request.clear_credentials:
         username = ""
@@ -320,4 +356,12 @@ def validation_device_from_request(
         settings={"ignore_events": request.isapi.ignore_events},
     )
     device.configs["hikvision_sdk"] = CapabilityConfig(port=request.hikvision_sdk.port)
+    device.configs["reolink"] = CapabilityConfig(
+        port=request.reolink.port,
+        settings={
+            "host": request.reolink.host,
+            "media_enabled": request.reolink.media_enabled,
+            "events_enabled": request.reolink.events_enabled,
+        },
+    )
     return device

@@ -89,3 +89,37 @@ test("ONVIF malformed XML recovery is explicit and included in onboarding valida
   assert.equal(globalThis.inventoryRequests.length, 1);
   assert.equal(globalThis.inventoryRequests[0].options.body.onvif.relaxed_xml, true);
 });
+
+test("Reolink settings are explicit and included in the Device payload", async () => {
+  globalThis.inventoryRequests = [];
+  const dialog = captureEditor();
+
+  assert.match(dialog.content, /name="reolink_enabled"/);
+  assert.match(dialog.content, /name="reolink_media_enabled"/);
+  assert.match(dialog.content, /name="reolink_events_enabled"/);
+
+  const data = new Map([
+    ["name", "Driveway camera"],
+    ["device_type", "camera"],
+    ["area_id", "entrance"],
+    ["ip_address", "192.0.2.20"],
+    ["username", "viewer"],
+    ["password", "secret"],
+    ["activity_window_seconds", "30"],
+    ["recording_mode", "on_event"],
+    ["reolink_enabled", "on"],
+    ["reolink_host", "192.0.2.21"],
+    ["reolink_port", "9000"],
+    ["reolink_media_enabled", "on"],
+    ["reolink_events_enabled", "on"],
+  ]);
+  await dialog.onSubmit(data);
+
+  assert.deepEqual(globalThis.inventoryRequests[0].options.body.reolink, {
+    enabled: true,
+    host: "192.0.2.21",
+    port: 9000,
+    media_enabled: true,
+    events_enabled: true,
+  });
+});

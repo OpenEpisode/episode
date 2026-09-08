@@ -151,5 +151,20 @@ def builtin_plugin_registry() -> PluginRegistry:
                     capabilities=("snapshot-interpretation",),
                 ),
             ),
+            PluginRegistration(
+                id="reolink",
+                name="Reolink",
+                kind="device-integration",
+                activation_config_type="reolink",
+                factory=module_plugin_factory("episode.plugins.reolink"),
+                validation_capability="reolink",
+                validator=module_plugin_validator("episode.plugins.reolink.validation"),
+                integration=PluginIntegration(
+                    type="reolink",
+                    name="Reolink",
+                    device_scoped=True,
+                    capabilities=("discovery", "media", "events", "snapshots"),
+                ),
+            ),
         ]
     )

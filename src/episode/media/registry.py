@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
+
+# A plugin-native snapshot fetcher: returns (jpeg_bytes, content_type) or raises.
+SnapshotFetcher = Callable[[], Awaitable[tuple[bytes, str]]]
 
 
 @dataclass(frozen=True)
@@ -15,6 +19,10 @@ class CameraMedia:
     password: str = ""
     profile_token: str = ""
     source: str = ""
+    # Optional plugin-native fetcher used when snapshots are not available over
+    # plain HTTP (e.g. Reolink binary protocol). Takes precedence over
+    # snapshot_uri when set.
+    snapshot_fetcher: SnapshotFetcher | None = field(default=None, compare=False)
 
     def authenticated_stream_uri(self) -> str:
         if not self.stream_uri or not self.username:
@@ -47,7 +55,17 @@ class MediaRegistry:
 
     async def fetch_snapshot(self, device_id: str) -> tuple[bytes, str]:
         source = self.get(device_id)
-        if not source or not source.snapshot_uri:
+        if not source:
+            raise LookupError(f"No snapshot endpoint for device {device_id}")
+        # Plugin-native fetcher (e.g. Reolink binary protocol) takes precedence.
+        if source.snapshot_fetcher is not None:
+            data, content_type = await source.snapshot_fetcher()
+            if not content_type.startswith("image/"):
+                raise ValueError(f"Snapshot fetcher returned {content_type}")
+            if len(data) > 25 * 1024 * 1024:
+                raise ValueError("Snapshot exceeds the 25 MiB safety limit")
+            return data, content_type
+        if not source.snapshot_uri:
             raise LookupError(f"No snapshot endpoint for device {device_id}")
         auth = httpx.DigestAuth(source.username, source.password) if source.username else None
         async with httpx.AsyncClient(auth=auth, timeout=15, follow_redirects=False) as client:

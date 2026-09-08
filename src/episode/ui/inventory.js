@@ -68,6 +68,7 @@ function deviceDefaults(device) {
     onvif: { enabled: true, protocol: "http", port: 80, path: "/onvif/device_service", auth_mode: "digest_wsse", events_enabled: false, relaxed_xml: false, ...(config.onvif || {}) },
     isapi: { enabled: false, protocol: "http", port: 80, path: "/ISAPI/Event/notification/alertStream", ignore_events: ["videoloss", "illaccess"], ...(config.isapi || {}) },
     sdk: { enabled: false, port: 8000, ...(config.hikvision_sdk || {}) },
+    reolink: { enabled: false, host: "", port: 9000, media_enabled: false, events_enabled: false, ...(config.reolink || {}) },
   };
 }
 
@@ -85,6 +86,7 @@ const validationIntegrations = [
   ["onvif", "ONVIF"],
   ["isapi", "ISAPI"],
   ["hikvision_sdk", "HCNetSDK"],
+  ["reolink", "Reolink"],
 ];
 
 function renderValidationResults(results = {}) {
@@ -149,6 +151,13 @@ function devicePayload(data, editing, device) {
       enabled: isChecked(data, "hikvision_sdk_enabled"),
       port: Number(field(data, "sdk_port")),
     },
+    reolink: {
+      enabled: isChecked(data, "reolink_enabled"),
+      host: field(data, "reolink_host"),
+      port: numberOrNull(field(data, "reolink_port")),
+      media_enabled: isChecked(data, "reolink_media_enabled"),
+      events_enabled: isChecked(data, "reolink_events_enabled"),
+    },
   };
 }
 
@@ -208,6 +217,10 @@ export function openDeviceEditor(device, areas, onSaved) {
           ${integrationToggle("isapi", "ISAPI Event stream", "Rich motion and classification Events. It is currently active when this switch is on.", values.isapi.enabled, "")}
           ${integrationToggle("hikvision_sdk", "HCNetSDK", "Native callbacks for doorbell rings and door-control Events.", values.sdk.enabled, `
             <div class="role-guidance">Available for Doorbell Devices.</div>`) }
+          <div class="integration-group-label"><strong>Reolink</strong><span>Native binary protocol for Reolink cameras.</span></div>
+          ${integrationToggle("reolink", "Reolink API", "Discovery, media, and Events over the Reolink binary protocol.", values.reolink.enabled, `
+            <label class="toggle-row"><input type="checkbox" name="reolink_media_enabled"${checked(values.reolink.media_enabled)}><span><strong>Enable media (streams &amp; snapshots)</strong><small>Register the discovered RTSP stream and binary snapshots so recording and snapshot-on-event work without ONVIF.</small></span></label>
+            <label class="toggle-row"><input type="checkbox" name="reolink_events_enabled"${checked(values.reolink.events_enabled)}><span><strong>Receive Reolink events</strong><small>Listen for motion and detection events pushed over the binary protocol. Disabled by default to avoid noisy state changes.</small></span></label>`) }
         </div>
         <div class="validation-panel">
           <div class="validation-heading">
@@ -235,6 +248,7 @@ export function openDeviceEditor(device, areas, onSaved) {
           <fieldset><legend>ONVIF service</legend><label class="field"><span>Protocol</span><input name="onvif_protocol" value="${safeValue(values.onvif.protocol)}"></label><label class="field"><span>Port</span><input name="onvif_port" type="number" min="1" max="65535" value="${values.onvif.port || ""}"></label><label class="field"><span>Path</span><input name="onvif_path" value="${safeValue(values.onvif.path)}"></label><label class="field"><span>Authentication</span><select name="onvif_auth_mode"><option value="digest_wsse"${selected(values.onvif.auth_mode === "digest_wsse")}>Digest + WS-Username Token</option><option value="digest"${selected(values.onvif.auth_mode === "digest")}>Digest only</option></select></label></fieldset>
           <fieldset><legend>ISAPI endpoint</legend><label class="field"><span>Protocol</span><input name="isapi_protocol" value="${safeValue(values.isapi.protocol)}"></label><label class="field"><span>Port</span><input name="isapi_port" type="number" min="1" max="65535" value="${values.isapi.port || ""}"></label><label class="field"><span>Path</span><input name="isapi_path" value="${safeValue(values.isapi.path)}"></label><label class="field"><span>Ignored Events</span><input name="isapi_ignore_events" value="${safeValue((values.isapi.ignore_events || []).join(", "))}"></label></fieldset>
           <fieldset><legend>HCNetSDK login</legend><label class="field"><span>SDK port</span><input name="sdk_port" type="number" min="1" max="65535" value="${values.sdk.port}"></label></fieldset>
+          <fieldset><legend>Reolink API</legend><label class="field"><span>API host</span><input name="reolink_host" value="${safeValue(values.reolink.host)}" placeholder="Defaults to the Device address"><small>Optional. Overrides the Device network address.</small></label><label class="field"><span>API port</span><input name="reolink_port" type="number" min="1" max="65535" value="${values.reolink.port || ""}"></label></fieldset>
         </div>
         ${editing ? "" : `<label class="field"><span>Device ID <small>generated if empty</small></span><input name="id" maxlength="64" pattern="[a-z0-9][a-z0-9_-]*" placeholder="front-door-camera"></label>`}
       </details>`,
@@ -267,7 +281,7 @@ export function openDeviceEditor(device, areas, onSaved) {
   const sdkWasConfigured = values.sdk.enabled;
   const updateDeviceRole = () => {
     if (!editing && !["camera", "doorbell"].includes(typeSelect.value)) {
-      for (const integration of ["video", "onvif", "isapi", "hikvision_sdk"]) {
+      for (const integration of ["video", "onvif", "isapi", "hikvision_sdk", "reolink"]) {
         const option = overlay.querySelector(`[data-integration="${integration}"]`);
         const toggle = option.querySelector(".integration-toggle input");
         toggle.checked = false;
@@ -286,7 +300,7 @@ export function openDeviceEditor(device, areas, onSaved) {
   const resultsElement = overlay.querySelector("[data-validation-results]");
   const applyValidation = () => {
     resultsElement.innerHTML = renderValidationResults(validationResults);
-    for (const integration of ["onvif", "isapi"]) {
+    for (const integration of ["onvif", "isapi", "reolink"]) {
       const option = overlay.querySelector(`[data-integration="${integration}"]`);
       const toggle = option.querySelector(".integration-toggle input");
       const unsupported = validationResults[integration]?.status === "unsupported";

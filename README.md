@@ -174,6 +174,8 @@ panels, and other local systems can trigger the same Area-scoped recording flow.
 
 Start with the [ONVIF setup guide](docs/ONVIF_SETUP.md). Hikvision users can also
 enable the [vendor-specific enhancements](docs/HIKVISION_SETUP.md).
+Reolink users can enable the [Baichuan integration](docs/REOLINK-SETUP.md)
+without enabling ONVIF.
 
 Optional native integrations use the generic read-only `./plugins` mount.
 HCNetSDK setup is covered alongside the other
@@ -276,6 +278,7 @@ artwork, light and dark organization avatars, and GitHub social previews.
 - [Plugin authoring and example](docs/PLUGINS.md)
 - [ONVIF camera setup](docs/ONVIF_SETUP.md)
 - [Hikvision setup and troubleshooting](docs/HIKVISION_SETUP.md)
+- [Reolink camera setup](docs/REOLINK-SETUP.md)
 - [Contributing](docs/CONTRIBUTING.md)
 - [Security policy](docs/SECURITY.md)
 

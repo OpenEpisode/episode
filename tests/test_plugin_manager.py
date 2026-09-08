@@ -89,7 +89,7 @@ def test_builtin_plugin_module_is_not_imported_during_registration(monkeypatch):
     registry = builtin_plugin_registry()
 
     validators = registry.validators()
-    assert set(validators) == {"onvif", "isapi"}
+    assert set(validators) == {"onvif", "isapi", "reolink"}
     assert imported == []
     selected = registry.for_configuration({"onvif", "video"})
     assert [registration.id for registration in selected] == ["onvif"]

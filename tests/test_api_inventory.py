@@ -258,3 +258,58 @@ async def test_video_without_onvif_requires_a_manual_rtsp_endpoint(inventory_api
 
     assert response.status_code == 422
     assert "manual RTSP endpoint" in response.text
+
+
+@pytest.mark.asyncio
+async def test_reolink_events_and_media_roundtrip(inventory_api):
+    repository, inventory, client = inventory_api
+
+    area_response = await client.post(
+        "/api/v1/areas",
+        json={"name": "Yard", "location": "Back"},
+    )
+    assert area_response.status_code == 201
+    area_id = area_response.json()["id"]
+
+    device_response = await client.post(
+        "/api/v1/devices",
+        json={
+            "name": "Yard camera",
+            "area_id": area_id,
+            "ip_address": "192.0.2.20",
+            "username": "admin",
+            "password": "secret",
+            "reolink": {
+                "enabled": True,
+                "media_enabled": True,
+                "events_enabled": True,
+            },
+        },
+    )
+    assert device_response.status_code == 201
+    stored = await repository.get_device(device_response.json()["id"])
+    reolink = stored.get_config("reolink")
+    assert reolink is not None
+    assert reolink.settings["media_enabled"] is True
+    assert reolink.settings["events_enabled"] is True
+
+    # Round-trip back through editable configuration
+    body = device_response.json()
+    assert body["configuration"]["reolink"]["media_enabled"] is True
+    assert body["configuration"]["reolink"]["events_enabled"] is True
+
+    # Disable events on update
+    update = await client.put(
+        f"/api/v1/devices/{device_response.json()['id']}",
+        json={
+            "name": "Yard camera",
+            "area_id": area_id,
+            "ip_address": "192.0.2.20",
+            "username": None,
+            "password": None,
+            "reolink": {"enabled": True, "media_enabled": True, "events_enabled": False},
+        },
+    )
+    assert update.status_code == 200
+    stored = await repository.get_device(device_response.json()["id"])
+    assert stored.get_config("reolink").settings["events_enabled"] is False
