@@ -108,6 +108,93 @@ test("keeps unmatched snapshots and inactive events visible", () => {
   assert.equal(result.entries[1].relatedEvent, null);
 });
 
+test("clusters same-device events in one displayed second without merging entries", () => {
+  const entries = [
+    {
+      id: "event-human-a",
+      kind: "event",
+      start: 10000 + 100,
+      end: 10000 + 100,
+      deviceId: "camera",
+      event: {
+        id: "human-a",
+        event_type: "human_detection",
+        event_state: "active",
+        metadata: { bounding_box: { x: 0.1, y: 0.2, width: 0.2, height: 0.2 } },
+      },
+    },
+    {
+      id: "event-motion",
+      kind: "event",
+      start: 10000 + 300,
+      end: 10000 + 300,
+      deviceId: "camera",
+      event: {
+        id: "motion",
+        event_type: "motion_detection",
+        event_state: "active",
+        metadata: {},
+      },
+    },
+    {
+      id: "event-human-b",
+      kind: "event",
+      start: 10000 + 800,
+      end: 10000 + 800,
+      deviceId: "camera",
+      event: {
+        id: "human-b",
+        event_type: "human_detection",
+        event_state: "active",
+        metadata: { bounding_box: { x: 0.7, y: 0.2, width: 0.2, height: 0.2 } },
+      },
+    },
+    {
+      id: "event-other-device",
+      kind: "event",
+      start: 10000 + 500,
+      end: 10000 + 500,
+      deviceId: "other-camera",
+      event: {
+        id: "other-device",
+        event_type: "motion_detection",
+        event_state: "active",
+        metadata: {},
+      },
+    },
+    {
+      id: "event-next-second",
+      kind: "event",
+      start: 11000,
+      end: 11000,
+      deviceId: "camera",
+      event: {
+        id: "next-second",
+        event_type: "human_detection",
+        event_state: "active",
+        metadata: {},
+      },
+    },
+  ];
+
+  const moments = timeline.buildTimelineMoments(entries);
+  const cameraMoment = moments.find(moment => moment.deviceId === "camera" && moment.start < 11000);
+
+  assert.equal(moments.length, 3);
+  assert.deepEqual(
+    cameraMoment.entries.map(entry => entry.id),
+    ["event-human-a", "event-motion", "event-human-b"],
+  );
+  assert.deepEqual(
+    cameraMoment.entries.map(entry => entry.event.id),
+    ["human-a", "motion", "human-b"],
+  );
+  assert.notEqual(cameraMoment.entries[0].event.metadata.bounding_box.x,
+    cameraMoment.entries[2].event.metadata.bounding_box.x);
+  assert.equal(moments.find(moment => moment.deviceId === "other-camera").entries.length, 1);
+  assert.equal(moments.find(moment => moment.start === 11000).entries[0].event.id, "next-second");
+});
+
 test("prefers an explicit evidence Event link over the time-window heuristic", () => {
   const result = timeline.buildEpisodeTimeline(
     { start_time: "2026-08-10T12:00:00Z", end_time: "2026-08-10T12:01:00Z" },

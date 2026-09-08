@@ -1,6 +1,6 @@
 import { $, $$ } from "./dom.js";
 import { closeCarousel } from "./evidence-gallery.js?v=7";
-import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=14";
+import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=15";
 import { onboardingNeeded, welcome } from "./onboarding.js?v=7";
 import {
   activity,
@@ -10,7 +10,7 @@ import {
   evidence,
   evidenceDetail,
   event,
-} from "./review-pages.js?v=16";
+} from "./review-pages.js?v=17";
 import { startSidebar } from "./sidebar.js?v=3";
 import { startRetentionPolicy } from "./retention-policy.js?v=1";
 import { toggleCollapse } from "./view.js?v=1";

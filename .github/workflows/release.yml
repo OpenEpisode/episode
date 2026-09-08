@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Verify release version
         run: |
@@ -74,6 +76,47 @@ jobs:
             --generate-notes
             --title "Episode ${GITHUB_REF_NAME}"
           )
+
+          PREVIOUS_TAG="$(git describe --tags --match 'v*' --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          if [[ -n "${PREVIOUS_TAG}" ]]; then
+            COMMIT_RANGE="${PREVIOUS_TAG}..${GITHUB_REF_NAME}"
+            RELEASE_ARGUMENTS+=(--notes-start-tag "${PREVIOUS_TAG}")
+          else
+            COMMIT_RANGE="${GITHUB_REF_NAME}"
+          fi
+
+          COMMIT_LINES=""
+          while IFS=$'\t' read -r COMMIT_SHA COMMIT_SUBJECT; do
+            COMMIT_AUTHOR="$(
+              gh api \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}" \
+                --jq '.author.login // empty' \
+                2>/dev/null || true
+            )"
+            if [[ -n "${COMMIT_AUTHOR}" ]]; then
+              COMMIT_AUTHOR="@${COMMIT_AUTHOR}"
+            else
+              COMMIT_AUTHOR="$(git show -s --format='%an' "${COMMIT_SHA}")"
+            fi
+
+            COMMIT_SHORT_SHA="${COMMIT_SHA:0:7}"
+            printf -v COMMIT_LINE \
+              -- '- %s by %s in [%s](https://github.com/%s/commit/%s)' \
+              "${COMMIT_SUBJECT}" \
+              "${COMMIT_AUTHOR}" \
+              "${COMMIT_SHORT_SHA}" \
+              "${GITHUB_REPOSITORY}" \
+              "${COMMIT_SHA}"
+            COMMIT_LINES+="${COMMIT_LINE}"$'\n'
+          done < <(git log --format='%H%x09%s' "${COMMIT_RANGE}")
+          COMMIT_LINES="${COMMIT_LINES%$'\n'}"
+
+          RELEASE_ARGUMENTS+=(--notes "## Included commits
+
+          ${COMMIT_LINES}")
+
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
             RELEASE_ARGUMENTS+=(--prerelease)
           fi

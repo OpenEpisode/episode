@@ -92,6 +92,80 @@ function snapshotEntries(snapshots) {
     }));
 }
 
+function momentKey(entry) {
+  return JSON.stringify([entry.deviceId, Math.floor(entry.start / 1000)]);
+}
+
+function hasDeviceIdentity(entry) {
+  return entry.deviceId !== null
+    && entry.deviceId !== undefined
+    && String(entry.deviceId).trim() !== "";
+}
+
+/**
+ * Build the presentation moments without changing the canonical entries.
+ *
+ * Events share a moment only when they belong to the same Device and render
+ * in the same displayed second. Snapshots remain individual moments so that
+ * every piece of Evidence keeps its own navigation target.
+ */
+export function buildTimelineMoments(entries) {
+  const moments = [];
+  const eventMoments = new Map();
+  let order = 0;
+
+  for (const entry of entries) {
+    if (entry.kind !== "event") {
+      moments.push({
+        id: "moment-" + entry.id,
+        kind: "snapshot",
+        start: entry.start,
+        end: entry.end,
+        deviceId: entry.deviceId,
+        entries: [entry],
+        order: order++,
+      });
+      continue;
+    }
+
+    if (!hasDeviceIdentity(entry)) {
+      moments.push({
+        id: "moment-" + entry.id,
+        kind: "events",
+        start: entry.start,
+        end: entry.end,
+        deviceId: entry.deviceId,
+        entries: [entry],
+        order: order++,
+      });
+      continue;
+    }
+
+    const key = momentKey(entry);
+    let moment = eventMoments.get(key);
+    if (!moment) {
+      moment = {
+        id: "moment-" + entry.id,
+        kind: "events",
+        start: entry.start,
+        end: entry.end,
+        deviceId: entry.deviceId,
+        entries: [],
+        order: order++,
+      };
+      eventMoments.set(key, moment);
+      moments.push(moment);
+    }
+    moment.entries.push(entry);
+    moment.start = Math.min(moment.start, entry.start);
+    moment.end = Math.max(moment.end, entry.end);
+  }
+
+  return moments
+    .sort((left, right) => left.start - right.start || left.order - right.order)
+    .map(({ order: _order, ...moment }) => moment);
+}
+
 function hasBoundingBox(entry) {
   const box = entry.event?.metadata?.bounding_box;
   return box && [box.x, box.y, box.width, box.height].every(Number.isFinite);
@@ -181,6 +255,7 @@ export function buildEpisodeTimeline(episode, events, evidence) {
   entries.push(...snapshotEntries(snapshots));
   entries.sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
   const detectionTracks = buildDetectionTracks(entries);
+  const moments = buildTimelineMoments(entries);
 
   const startCandidates = [
     timestamp(episode.start_time),
@@ -195,5 +270,5 @@ export function buildEpisodeTimeline(episode, events, evidence) {
   const start = startCandidates.length ? Math.min(...startCandidates) : 0;
   const end = endCandidates.length ? Math.max(...endCandidates) : start;
 
-  return { start, end, entries, recordings, snapshots, detectionTracks };
+  return { start, end, entries, moments, recordings, snapshots, detectionTracks };
 }

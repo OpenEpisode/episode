@@ -8,7 +8,7 @@ import {
 import { closeDialog, confirmDialog, notify } from "./dialogs.js?v=1";
 import { escHtml } from "./dom.js";
 import { fmtBytes, fmtShort, plural, titleCase } from "./format.js?v=4";
-import { eventTitle } from "./timeline.js?v=5";
+import { eventTitle } from "./timeline.js?v=6";
 import {
   confirmAreaDelete,
   confirmDeviceDelete,

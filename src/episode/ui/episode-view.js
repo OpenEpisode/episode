@@ -6,7 +6,7 @@ import {
   buildEpisodeTimeline,
   detectionForMoment,
   eventTitle,
-} from "./timeline.js?v=5";
+} from "./timeline.js?v=6";
 import {
   attachMediaSource,
   evidenceMediaUrl,
@@ -79,32 +79,57 @@ function eventContext(event) {
   return [lockName, unlockMethod].filter(Boolean).join(" · ");
 }
 
-function renderTimelineEvent(entry, deviceNames) {
-  const duration = entry.end > entry.start
-    ? ` · ${secondsLabel(entry.end - entry.start)}`
-    : "";
+function renderTimelineEvent(entry) {
+  const duration = entry.end > entry.start ? secondsLabel(entry.end - entry.start) : "";
   const context = eventContext(entry.event);
   const lockName = String(entry.event.metadata?.lock_name || "").trim();
   const unlockMethod = entry.event.metadata?.unlock_method
     ? titleCase(entry.event.metadata.unlock_method)
     : "";
-  return `<div class="timeline-entry timeline-entry-${eventMarkerClass(entry)}"
-      data-timeline-id="${entry.id}">
-    <time datetime="${new Date(entry.start).toISOString()}">${fmtTime(entry.start)}</time>
+  const source = eventSourceBadges(entry.event);
+  const eventLabel = `${entry.title} at ${fmtTime(entry.start)}`;
+  const summary = [duration, context].filter(Boolean).join(" · ");
+  return `<div class="timeline-event-item timeline-entry-${eventMarkerClass(entry)}"
+      data-timeline-id="${entry.id}" data-event-id="${entry.event.id}">
+    <button type="button" class="timeline-moment timeline-event-select"
+        data-moment-id="${entry.id}" aria-label="${escHtml(eventLabel)}">
+      <strong>${escHtml(entry.title)}</strong>
+      ${summary ? `<span>${escHtml(summary)}</span>` : ""}
+    </button>
+    ${source ? `<div class="timeline-event-source">${source}</div>` : ""}
+    <details class="timeline-details">
+      <summary>Details</summary>
+      <div>${titleCase(entry.event.event_state || "Unknown")}</div>
+      ${lockName ? `<div>Lock: ${escHtml(lockName)}</div>` : ""}
+      ${unlockMethod ? `<div>Method: ${escHtml(unlockMethod)}</div>` : ""}
+      ${entry.event.metadata?.unlock_outcome ? `<div>Outcome: ${titleCase(entry.event.metadata.unlock_outcome)}</div>` : ""}
+      <a href="#event/${entry.event.id}">Open Event</a>
+    </details>
+  </div>`;
+}
+
+function momentMarkerClass(moment) {
+  const classes = new Set(moment.entries.map(eventMarkerClass));
+  return classes.size === 1 ? [...classes][0] : "event";
+}
+
+function renderTimelineEventMoment(moment, deviceNames) {
+  const label = trunc(deviceLabel(moment.deviceId, deviceNames), 28);
+  const count = moment.entries.length > 1
+    ? `<span>${moment.entries.length} observations</span>`
+    : "";
+  return `<div class="timeline-entry timeline-entry-event-moment timeline-entry-${momentMarkerClass(moment)}"
+      data-timeline-group-id="${moment.id}">
+    <time datetime="${new Date(moment.start).toISOString()}">${fmtTime(moment.start)}</time>
     <span class="timeline-marker"></span>
     <div class="timeline-entry-content">
-      <button type="button" class="timeline-moment" data-moment-id="${entry.id}">
-        <strong>${entry.title}</strong>
-        <span>${escHtml(trunc(deviceLabel(entry.deviceId, deviceNames), 28))}${duration}${context ? ` · ${escHtml(context)}` : ""}</span>
-      </button>
-      <details class="timeline-details">
-        <summary>Details</summary>
-        <div>${titleCase(entry.event.event_state)} · ${eventSourceBadges(entry.event)}</div>
-        ${lockName ? `<div>Lock: ${escHtml(lockName)}</div>` : ""}
-        ${unlockMethod ? `<div>Method: ${escHtml(unlockMethod)}</div>` : ""}
-        ${entry.event.metadata?.unlock_outcome ? `<div>Outcome: ${titleCase(entry.event.metadata.unlock_outcome)}</div>` : ""}
-        <a href="#event/${entry.event.id}">Open Event</a>
-      </details>
+      <div class="timeline-moment-heading">
+        <strong>${escHtml(label)}</strong>
+        ${count}
+      </div>
+      <div class="timeline-event-list">
+        ${moment.entries.map(entry => renderTimelineEvent(entry)).join("")}
+      </div>
     </div>
   </div>`;
 }
@@ -136,18 +161,18 @@ function renderTimelineEntries(model, deviceNames) {
   if (!model.entries.length) return '<div class="timeline-empty">No Events or snapshots</div>';
   let previousEnd = model.start;
   const rows = [];
-  for (const entry of model.entries) {
-    const gap = entry.start - previousEnd;
+  for (const moment of model.moments) {
+    const gap = moment.start - previousEnd;
     if (gap > 60000) {
       rows.push(`<div class="timeline-gap">
         <span></span><span class="timeline-gap-line"></span>
         <span>${secondsLabel(gap)} without activity</span>
       </div>`);
     }
-    rows.push(entry.kind === "event"
-      ? renderTimelineEvent(entry, deviceNames)
-      : renderTimelineSnapshot(entry, deviceNames));
-    previousEnd = Math.max(previousEnd, entry.end);
+    rows.push(moment.kind === "events"
+      ? renderTimelineEventMoment(moment, deviceNames)
+      : renderTimelineSnapshot(moment.entries[0], deviceNames));
+    previousEnd = Math.max(previousEnd, moment.end);
   }
   return rows.join("");
 }
@@ -250,6 +275,14 @@ export function activateEpisodeWorkspace(model, episode, deviceNames = new Map()
   const setActiveMoment = id => {
     $$(".timeline-entry").forEach(row => {
       row.classList.toggle("active", row.dataset.timelineId === id);
+    });
+    $$(".timeline-event-item").forEach(row => {
+      row.classList.toggle("active", row.dataset.timelineId === id);
+    });
+    $$('[data-timeline-group-id]').forEach(group => {
+      const selected = [...group.querySelectorAll(".timeline-event-item")]
+        .some(row => row.dataset.timelineId === id);
+      group.classList.toggle("active", selected);
     });
   };
   const updateMomentFromPlayback = moment => {

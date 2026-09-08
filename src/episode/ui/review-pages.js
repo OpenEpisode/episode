@@ -35,7 +35,7 @@ import {
   renderEvidenceGrid,
   showCarousel,
 } from "./evidence-gallery.js?v=7";
-import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js?v=12";
+import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js?v=13";
 import {
   fmt,
   fmtBytes,
@@ -53,7 +53,7 @@ import {
 } from "./review-lists.js?v=3";
 import { updateRecentEpisodes } from "./sidebar.js?v=3";
 import { showContent, showError, showLoading } from "./view.js?v=1";
-import { eventTitle } from "./timeline.js?v=5";
+import { eventTitle } from "./timeline.js?v=6";
 
 const PAGE_SIZES = Object.freeze({ episodes: 48, activity: 100, evidence: 60 });
 const COMMON_EVENT_TYPES = [

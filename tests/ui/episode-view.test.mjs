@@ -32,7 +32,7 @@ const episodeViewUrl = moduleUrl(
     .replace('"./components.js?v=6"', JSON.stringify(componentsUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
     .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
-    .replace('"./timeline.js?v=5"', JSON.stringify(timelineUrl))
+    .replace('"./timeline.js?v=6"', JSON.stringify(timelineUrl))
     .replace('"./media-player.js?v=2"', JSON.stringify(mediaUrl)),
 );
 const { renderEpisodeWorkspace } = await import(episodeViewUrl);
@@ -123,7 +123,8 @@ test("renders a media-first timeline with all Doorbell states and snapshots", ()
   assert.match(html, /episode-media-stage/);
   assert.match(html, /episode-timeline-rail/);
   assert.match(html, /Doorbell rang/);
-  assert.match(html, /doorbell · 16s/);
+  assert.match(html, /<strong>doorbell<\/strong>/);
+  assert.match(html, /<span>16s<\/span>/);
   assert.match(html, /Human detected/);
   assert.match(html, /Doorbell call ended/);
   assert.match(html, /Door unlock record/);
@@ -136,6 +137,73 @@ test("renders a media-first timeline with all Doorbell states and snapshots", ()
   assert.match(html, /Uncorrelated evidence/);
   assert.match(html, /Detection overlay/);
   assert.equal(model.recordings.length, 2);
+});
+
+test("renders same-second Events as one Device moment with independent controls", () => {
+  const episode = {
+    start_time: "2026-08-10T12:00:00Z",
+    end_time: "2026-08-10T12:00:05Z",
+  };
+  const events = [
+    {
+      id: "human-a",
+      timestamp: "2026-08-10T12:00:01.100Z",
+      device_id: "camera",
+      event_type: "human_detection",
+      event_state: "active",
+      sources: ["hikvision:isapi"],
+      metadata: { bounding_box: { x: 0.1, y: 0.2, width: 0.2, height: 0.2 } },
+    },
+    {
+      id: "human-b",
+      timestamp: "2026-08-10T12:00:01.800Z",
+      device_id: "camera",
+      event_type: "human_detection",
+      event_state: "active",
+      sources: ["onvif"],
+      metadata: { bounding_box: { x: 0.7, y: 0.2, width: 0.2, height: 0.2 } },
+    },
+    {
+      id: "other-camera",
+      timestamp: "2026-08-10T12:00:01.500Z",
+      device_id: "other-camera",
+      event_type: "motion_detection",
+      event_state: "active",
+      sources: ["onvif"],
+      metadata: {},
+    },
+    {
+      id: "later",
+      timestamp: "2026-08-10T12:00:02.000Z",
+      device_id: "camera",
+      event_type: "motion_detection",
+      event_state: "active",
+      sources: ["onvif"],
+      metadata: {},
+    },
+  ];
+
+  const { html, model } = renderEpisodeWorkspace(episode, events, [], [], new Map([
+    ["camera", "Garagem"],
+    ["other-camera", "Porta Principal"],
+  ]));
+  const eventMoments = model.moments.filter(moment => moment.kind === "events");
+  const cameraMoment = eventMoments.find(moment =>
+    moment.entries.some(entry => entry.event.id === "human-a")
+  );
+
+  assert.equal(eventMoments.length, 3);
+  assert.deepEqual(cameraMoment.entries.map(entry => entry.event.id), ["human-a", "human-b"]);
+  assert.match(html, /data-timeline-group-id="moment-event-human-a"/);
+  assert.match(html, /<strong>Garagem<\/strong>/);
+  assert.match(html, /2 observations/);
+  assert.match(html, /data-moment-id="event-human-a"/);
+  assert.match(html, /data-moment-id="event-human-b"/);
+  assert.match(html, /href="#event\/human-a"/);
+  assert.match(html, /href="#event\/human-b"/);
+  assert.match(html, /source-chip|hikvision:isapi/);
+  assert.match(html, /data-timeline-group-id="moment-event-other-camera"/);
+  assert.match(html, /data-timeline-group-id="moment-event-later"/);
 });
 
 test("uses configured Device names while preserving Device identity in the model", () => {

@@ -1,0 +1,78 @@
+name: Cleanup old releases
+
+on:
+  workflow_run:
+    workflows:
+      - Release container
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report what would be removed without deleting it
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Retain the two newest GHCR images
+        uses: snok/container-retention-policy@d3bdcf5ce9b05f685154e4a16c39233b245e3d53 # v3.1.0
+        with:
+          account: OpenEpisode
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-names: episode
+          tag-selection: both
+          keep-n-most-recent: 2
+          timestamp-to-use: created_at
+          cut-off: 0s
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+
+      - name: Retain the two newest published GitHub releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t RELEASES < <(
+            gh api --paginate \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[] | select(.draft == false) | [(.published_at // .created_at), (.id | tostring), .tag_name] | @tsv' \
+              | sort -r
+          )
+
+          if (( ${#RELEASES[@]} <= 2 )); then
+            echo "Nothing to remove; ${#RELEASES[@]} published release(s) exist."
+            exit 0
+          fi
+
+          for RELEASE in "${RELEASES[@]:2}"; do
+            IFS=$'\t' read -r _ RELEASE_ID RELEASE_TAG <<< "${RELEASE}"
+            if [[ "${DRY_RUN}" == "true" ]]; then
+              echo "Would delete GitHub release ${RELEASE_TAG}; Git tag will remain."
+              continue
+            fi
+
+            echo "Deleting GitHub release ${RELEASE_TAG}; preserving Git tag."
+            gh api --method DELETE \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"
+          done

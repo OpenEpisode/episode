@@ -78,6 +78,25 @@ Small, focused pull requests are preferred over large feature drops.
 
 Each pull request should solve one problem.
 
+## Release retention
+
+Git tags remain as the permanent source history. After a successful container
+release, the `Cleanup old releases` workflow retains the two newest published
+GitHub Releases and the two newest usable GHCR images, including the manifests
+required by their multi-platform images, and removes older release records and
+package versions. It never deletes Git tags.
+
+Each Release prepends the commit subjects, GitHub usernames where resolvable,
+and links since the preceding version tag to GitHub's generated pull-request
+notes. It falls back to the recorded Git author name when an account cannot be
+resolved. Commit subjects should therefore describe the user-visible or
+operational change clearly.
+
+Maintainers can run the workflow manually with its default dry-run option to
+review the proposed cleanup without deleting anything. The `episode` package
+must grant this repository the **Admin** Actions access role for its
+`GITHUB_TOKEN` to delete package versions.
+
 ## Discussions
 
 Ideas and architectural discussions are always welcome.
