@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from episode.config import EpisodeConfig
-from episode.domain.models import Area, Device, EpisodeState, Event, EventState
+from episode.domain.models import Area, Device, EpisodeState, Event, EventState, IngestionReceipt
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
 from episode.plugins.onvif.events import ONVIFNotification, ONVIFStateTracker
@@ -121,6 +122,268 @@ async def test_triggering_devices_extend_episode_with_their_own_activity_windows
             )
         )
         assert (await repo.get_episode(camera.event.episode_id)).minimum_end_at >= doorbell_deadline
+    finally:
+        await engine.stop()
+        await repo.close()
+
+
+async def _stored_receipt(repo, received_at: datetime) -> IngestionReceipt:
+    receipt = IngestionReceipt(source="test", received_at=received_at)
+    await repo.create_ingestion_receipt(receipt)
+    return receipt
+
+
+@pytest.mark.asyncio
+async def test_engine_notifies_quiescent_then_closed_transitions(tmp_path):
+    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
+    repo = Repository(config)
+    bus = EventBus()
+    engine = EpisodeEngine(repo, bus, timeout=30)
+    await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(
+            id="camera",
+            name="Camera",
+            device_type="camera",
+            area_id="entrance",
+            activity_window_seconds=1,
+        )
+    )
+    transitions = []
+
+    async def observe(message):
+        transitions.append(message.data.get("state"))
+
+    bus.subscribe("episode.updated", observe)
+    try:
+        base = datetime.now(timezone.utc) - timedelta(seconds=3)
+        created = await engine.ingest_event(
+            Event(
+                device_id="camera",
+                area_id="entrance",
+                timestamp=base,
+                event_type="motion_detection",
+            ),
+            receipt=await _stored_receipt(repo, base),
+        )
+        await engine._close_timed_out_episodes()
+        assert (await repo.get_episode(created.event.episode_id)).state == EpisodeState.QUIESCENT
+        await engine._close_timed_out_episodes(now=base + timedelta(seconds=7))
+        assert (await repo.get_episode(created.event.episode_id)).state == EpisodeState.CLOSED
+        assert transitions[-2:] == [EpisodeState.QUIESCENT.value, EpisodeState.CLOSED.value]
+    finally:
+        await engine.stop()
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_active_event_within_quiescent_grace_reuses_episode(tmp_path):
+    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
+    repo = Repository(config)
+    engine = EpisodeEngine(repo, EventBus(), timeout=30)
+    await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(
+            id="camera",
+            name="Camera",
+            device_type="camera",
+            area_id="entrance",
+            activity_window_seconds=1,
+        )
+    )
+    try:
+        base = datetime.now(timezone.utc) - timedelta(seconds=3)
+        first = await engine.ingest_event(
+            Event(
+                device_id="camera",
+                area_id="entrance",
+                timestamp=base,
+                event_type="motion_detection",
+            ),
+            receipt=await _stored_receipt(repo, base),
+        )
+        episode_id = first.event.episode_id
+        quiescent, closed = await repo.transition_timed_out_episodes(
+            timeout=30,
+            quiescent_grace_seconds=5,
+            now=base + timedelta(seconds=2),
+        )
+        assert [episode.id for episode in quiescent] == [episode_id]
+        assert closed == []
+
+        continued = await engine.ingest_event(
+            Event(
+                device_id="camera",
+                area_id="entrance",
+                timestamp=base + timedelta(seconds=3),
+                event_type="human_detection",
+            ),
+            receipt=await _stored_receipt(repo, base + timedelta(seconds=3)),
+        )
+        episode = await repo.get_episode(episode_id)
+        assert continued.event.episode_id == episode_id
+        assert episode.state == EpisodeState.ACTIVE
+        assert episode.minimum_end_at >= base + timedelta(seconds=4)
+    finally:
+        await engine.stop()
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_active_event_after_quiescent_grace_starts_new_episode(tmp_path):
+    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
+    repo = Repository(config)
+    engine = EpisodeEngine(repo, EventBus(), timeout=30)
+    await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(
+            id="camera",
+            name="Camera",
+            device_type="camera",
+            area_id="entrance",
+            activity_window_seconds=1,
+        )
+    )
+    try:
+        base = datetime.now(timezone.utc) - timedelta(seconds=10)
+        first = await engine.ingest_event(
+            Event(
+                device_id="camera",
+                area_id="entrance",
+                timestamp=base,
+                event_type="motion_detection",
+            ),
+            receipt=await _stored_receipt(repo, base),
+        )
+        first_id = first.event.episode_id
+        quiescent, closed = await repo.transition_timed_out_episodes(
+            timeout=30,
+            quiescent_grace_seconds=5,
+            now=base + timedelta(seconds=7),
+        )
+        assert quiescent == []
+        assert [episode.id for episode in closed] == [first_id]
+
+        second = await engine.ingest_event(
+            Event(
+                device_id="camera",
+                area_id="entrance",
+                timestamp=base + timedelta(seconds=7),
+                event_type="motion_detection",
+            ),
+            receipt=await _stored_receipt(repo, base + timedelta(seconds=7)),
+        )
+        assert second.event.episode_id != first_id
+        assert len(await repo.list_episodes()) == 2
+    finally:
+        await engine.stop()
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_inactive_event_during_quiescence_attaches_without_reactivation(tmp_path):
+    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
+    repo = Repository(config)
+    engine = EpisodeEngine(repo, EventBus(), timeout=30)
+    await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(
+            id="camera",
+            name="Camera",
+            device_type="camera",
+            area_id="entrance",
+            activity_window_seconds=1,
+        )
+    )
+    try:
+        base = datetime.now(timezone.utc) - timedelta(seconds=3)
+        first = await engine.ingest_event(
+            Event(
+                device_id="camera",
+                area_id="entrance",
+                timestamp=base,
+                event_type="motion_detection",
+            ),
+            receipt=await _stored_receipt(repo, base),
+        )
+        episode_id = first.event.episode_id
+        await repo.transition_timed_out_episodes(
+            timeout=30,
+            quiescent_grace_seconds=5,
+            now=base + timedelta(seconds=2),
+        )
+        before = await repo.get_episode(episode_id)
+
+        inactive = await engine.ingest_event(
+            Event(
+                device_id="camera",
+                area_id="entrance",
+                timestamp=base + timedelta(seconds=3),
+                event_type="motion_detection",
+                event_state=EventState.INACTIVE,
+            ),
+            receipt=await _stored_receipt(repo, base + timedelta(seconds=3)),
+        )
+        after = await repo.get_episode(episode_id)
+        assert inactive.event.episode_id == episode_id
+        assert after.state == EpisodeState.QUIESCENT
+        assert after.minimum_end_at == before.minimum_end_at
+    finally:
+        await engine.stop()
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_ingress_time_keeps_event_in_episode_when_processing_is_delayed(
+    tmp_path, monkeypatch
+):
+    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
+    repo = Repository(config)
+    engine = EpisodeEngine(repo, EventBus(), timeout=30, quiescent_grace_seconds=0)
+    await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(
+            id="camera",
+            name="Camera",
+            device_type="camera",
+            area_id="entrance",
+            activity_window_seconds=2,
+        )
+    )
+    original_canonicalize = repo.canonicalize_event
+
+    async def delayed_canonicalize(candidate):
+        if candidate.event_type == "human_detection":
+            await asyncio.sleep(2)
+        return await original_canonicalize(candidate)
+
+    monkeypatch.setattr(repo, "canonicalize_event", delayed_canonicalize)
+    try:
+        base = datetime.now(timezone.utc) - timedelta(seconds=1)
+        first = await engine.ingest_event(
+            Event(
+                device_id="camera",
+                area_id="entrance",
+                timestamp=base,
+                event_type="motion_detection",
+            ),
+            receipt=await _stored_receipt(repo, base),
+        )
+        delayed = await engine.ingest_event(
+            Event(
+                device_id="camera",
+                area_id="entrance",
+                timestamp=base + timedelta(milliseconds=500),
+                event_type="human_detection",
+            ),
+            receipt=await _stored_receipt(repo, base + timedelta(milliseconds=500)),
+        )
+        assert delayed.event.episode_id == first.event.episode_id
     finally:
         await engine.stop()
         await repo.close()

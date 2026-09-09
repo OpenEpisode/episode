@@ -79,6 +79,7 @@ def test_public_api_has_no_duplicate_routes_and_keeps_expected_surface():
         "/api/v1/diagnostics",
         "/api/v1/diagnostics/export",
         "/api/v1/settings/retention",
+        "/api/v1/settings/episode",
         "/api/v1/areas",
         "/api/v1/areas/{area_id}",
         "/api/v1/devices",

@@ -254,7 +254,9 @@ async def test_stale_device_timestamps_do_not_expire_active_episode(engine, repo
         )
     )
 
-    assert await repo.close_timed_out_episodes(timeout=2) == []
+    quiescent, closed = await repo.transition_timed_out_episodes(timeout=2)
+    assert quiescent == []
+    assert closed == []
 
     await bus.publish(
         Message(
@@ -272,7 +274,7 @@ async def test_stale_device_timestamps_do_not_expire_active_episode(engine, repo
 
 
 @pytest.mark.asyncio
-async def test_slow_event_processing_refreshes_activity_at_completion(
+async def test_slow_event_processing_keeps_activity_at_ingress(
     engine,
     repo,
     bus,
@@ -306,8 +308,10 @@ async def test_slow_event_processing_refreshes_activity_at_completion(
     completed_at = datetime.now(tz=timezone.utc)
     episodes = await repo.list_episodes()
     assert len(episodes) == 1
-    assert episodes[0].last_activity_at >= completed_at - timedelta(seconds=0.5)
-    assert await repo.close_timed_out_episodes(timeout=2) == []
+    assert episodes[0].last_activity_at <= completed_at - timedelta(seconds=2)
+    _, closed = await repo.transition_timed_out_episodes(timeout=2)
+    assert closed == []
+    assert (await repo.get_episode(episodes[0].id)).state == EpisodeState.QUIESCENT
 
 
 @pytest.mark.asyncio
@@ -668,7 +672,7 @@ async def test_episode_closes_after_timeout(engine, repo, bus):
         )
     )
 
-    async with asyncio.timeout(5):
+    async with asyncio.timeout(10):
         while True:
             episodes = await repo.list_episodes()
             if episodes[0].state == EpisodeState.CLOSED:

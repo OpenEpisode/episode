@@ -8,7 +8,7 @@ import re
 import subprocess
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -229,9 +229,10 @@ class RecordingEngine:
                 start_time=state.started_at,
                 continued=True,
             )
-            resumable = episode.state in {EpisodeState.ACTIVE, EpisodeState.QUIESCENT} and (
-                episode.minimum_end_at is None or episode.minimum_end_at > now
-            )
+            resumable = episode.state in {
+                EpisodeState.ACTIVE,
+                EpisodeState.QUIESCENT,
+            } and await self._episode_within_capture_horizon(episode, now)
             if resumable:
                 self._recoverable[self._rec_key(rec.episode_id, rec.device_id)] = rec
                 bundle.preserve_temporary_components()
@@ -247,7 +248,7 @@ class RecordingEngine:
             *await self._repo.list_episodes(state=EpisodeState.QUIESCENT, limit=10000),
         ]
         for episode in episodes:
-            if not episode.minimum_end_at or episode.minimum_end_at <= now:
+            if not await self._episode_within_capture_horizon(episode, now):
                 continue
             events = await self._repo.list_events(episode_id=episode.id, limit=10000)
             targets: dict[str, Device] = {}
@@ -283,6 +284,13 @@ class RecordingEngine:
                 recording,
                 reason="active_target_not_reconstructed",
             )
+
+    async def _episode_within_capture_horizon(self, episode, now: datetime) -> bool:
+        """Keep recovery aligned with the engine's persisted settling policy."""
+        if episode.minimum_end_at is None:
+            return True
+        grace = await self._repo.get_quiescent_grace_seconds()
+        return episode.minimum_end_at + timedelta(seconds=grace) >= now
 
     async def _on_event(self, msg: Message) -> None:
         result = msg.data.get("result")

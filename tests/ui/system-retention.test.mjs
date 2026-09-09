@@ -13,6 +13,7 @@ const apiUrl = moduleUrl(`
   export const API = "/api/v1";
   export async function api(path) { return globalThis.systemResponses[path]; }
   export async function apiRequest(path, options) {
+    if (globalThis.systemRequestError) throw globalThis.systemRequestError;
     globalThis.systemRequests.push({ path, options });
   }
 `);
@@ -34,7 +35,11 @@ const formatUrl = moduleUrl(`
   export function fmtBytes(value) { return String(value ?? 0); }
   export function fmtShort(value) { return String(value ?? ""); }
   export function plural(value, label) { return value + " " + label; }
-  export function titleCase(value) { return String(value ?? ""); }
+  export function titleCase(value) {
+    return String(value ?? "").split("_")
+      .map(part => part ? part[0].toUpperCase() + part.slice(1) : part)
+      .join(" ");
+  }
 `);
 const timelineUrl = moduleUrl(`export function eventTitle() { return "Event"; }`);
 const inventoryUrl = moduleUrl(`
@@ -58,6 +63,7 @@ globalThis.FormData = class {
   get(name) { return this.form[name]; }
 };
 globalThis.systemRequests = [];
+globalThis.systemRequestError = null;
 globalThis.policyRefreshes = 0;
 globalThis.systemDialogCloses = 0;
 globalThis.systemResponses = {
@@ -110,6 +116,13 @@ globalThis.systemResponses = {
     confirmed_at: null,
     notice: "Retention requirements vary by jurisdiction and use case.",
   },
+  "/settings/episode": {
+    quiescent_grace_seconds: 5,
+    default_quiescent_grace_seconds: 5,
+    min_quiescent_grace_seconds: 0,
+    max_quiescent_grace_seconds: 60,
+    notice: "Brief continuation window after the activity deadline.",
+  },
 };
 
 const module = await import(moduleUrl(
@@ -145,7 +158,28 @@ test("System separates overview, recording, and storage concerns", async () => {
   assert.match(globalThis.systemHtml, /garage-camera/);
   assert.match(globalThis.systemHtml, /Review capture/);
   assert.match(globalThis.systemHtml, /No action is required/);
+  assert.match(globalThis.systemHtml, /Episode settling grace/);
+  assert.match(globalThis.systemHtml, /name="quiescent_grace_seconds"/);
+  assert.match(globalThis.systemHtml, /value="5"/);
   assert.doesNotMatch(globalThis.systemHtml, /name="retention_days"/);
+
+  globalThis.systemRequests = [];
+  await globalThis.window.saveEpisodeLifecycle({ quiescent_grace_seconds: "8" });
+  assert.deepEqual(globalThis.systemRequests, [{
+    path: "/settings/episode",
+    options: { method: "PUT", body: { quiescent_grace_seconds: 8 } },
+  }]);
+  assert.equal(globalThis.systemNotification, "Episode settling grace updated");
+
+  globalThis.systemRequestError = new Error("validation failed");
+  await globalThis.window.saveEpisodeLifecycle({ quiescent_grace_seconds: "61" });
+  assert.equal(
+    globalThis.systemNotification,
+    "Could not update Episode settling grace: validation failed",
+  );
+  globalThis.systemRequestError = null;
+
+  globalThis.systemRequests = [];
 
   await module.systemStatus("storage");
 
@@ -186,4 +220,29 @@ test("System requires explicit confirmation before disabling retention", async (
   }]);
   assert.equal(globalThis.systemNotification, "Automatic retention disabled");
   assert.equal(globalThis.systemDialogCloses, 1);
+});
+
+test("Integration diagnostics are readable while preserving raw JSON", () => {
+  const html = module.renderDiagnosticDetails({
+    connected: true,
+    selected_profile: "main",
+    last_message_at: "2026-09-08T12:34:56Z",
+    event_topics: Array.from({ length: 14 }, (_, index) => `Topic${index + 1}`),
+    profiles: [{
+      token: "main",
+      name: "Main stream",
+      encoding: "H264",
+      width: 3840,
+      height: 2160,
+      snapshot: true,
+    }],
+  });
+
+  assert.match(html, /class="diagnostic-facts"/);
+  assert.match(html, /Connected/);
+  assert.match(html, /Yes/);
+  assert.match(html, /Event Topics/);
+  assert.match(html, /Show 2 more/);
+  assert.match(html, /Main stream/);
+  assert.match(html, /View raw JSON/);
 });

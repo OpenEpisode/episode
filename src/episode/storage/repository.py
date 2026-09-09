@@ -9,6 +9,11 @@ from datetime import datetime, timedelta, timezone
 import aiosqlite
 
 from episode.config import EpisodeConfig
+from episode.domain.lifecycle import (
+    DEFAULT_QUIESCENT_GRACE_SECONDS,
+    QUIESCENT_GRACE_SETTING,
+    validate_quiescent_grace_seconds,
+)
 from episode.domain.models import (
     Area,
     Device,
@@ -133,6 +138,22 @@ class Repository:
             (key, value, _utc_iso(datetime.now(tz=timezone.utc))),
         )
         await self._conn.commit()
+
+    async def get_quiescent_grace_seconds(
+        self,
+        default: int = DEFAULT_QUIESCENT_GRACE_SECONDS,
+    ) -> int:
+        """Return the persisted Episode settling window or its safe default."""
+        fallback = validate_quiescent_grace_seconds(default)
+        value = await self.get_system_setting(QUIESCENT_GRACE_SETTING)
+        if value is None:
+            return fallback
+        try:
+            parsed = int(value)
+            return validate_quiescent_grace_seconds(parsed)
+        except (TypeError, ValueError):
+            logger.error("Invalid stored Episode quiescent grace; using default")
+            return fallback
 
     async def _mark_raw_artifact_expired(self, artifact_id: str, expired_at: str) -> None:
         rows = await self._conn.execute_fetchall(
@@ -794,10 +815,24 @@ class Repository:
         )
         return {row["episode_id"]: row["event_type"] for row in rows}
 
-    async def find_open_episode_for_area(self, area_id: str, timeout: int) -> Episode | None:
-        now = datetime.now(tz=timezone.utc)
-        now_value = _utc_iso(now)
-        cutoff = _utc_iso(now - timedelta(seconds=timeout))
+    async def find_open_episode_for_area(
+        self,
+        area_id: str,
+        timeout: int,
+        *,
+        at: datetime | None = None,
+        quiescent_grace_seconds: int = DEFAULT_QUIESCENT_GRACE_SECONDS,
+    ) -> Episode | None:
+        """Find an Area Episode open at the supplied ingress time.
+
+        ``at`` is deliberately supplied by the caller.  Using query time here
+        makes an Event received before a deadline look late when persistence is
+        delayed by another delivery or a busy database.
+        """
+        reference = at or datetime.now(tz=timezone.utc)
+        grace = validate_quiescent_grace_seconds(quiescent_grace_seconds)
+        grace_cutoff = _utc_iso(reference - timedelta(seconds=grace))
+        fallback_cutoff = _utc_iso(reference - timedelta(seconds=timeout + grace))
         rows = await self._conn.execute_fetchall(
             """SELECT * FROM episodes
                WHERE primary_area_id = ?
@@ -814,14 +849,22 @@ class Repository:
                    COALESCE(last_activity_at, last_event_time, start_time)
                ) DESC
                LIMIT 1""",
-            (area_id, now_value, cutoff),
+            (area_id, grace_cutoff, fallback_cutoff),
         )
         episode = self._row_to_episode(rows[0]) if rows else None
+        if episode:
+            deadline = episode.minimum_end_at
+            if deadline is None:
+                baseline = episode.last_activity_at or episode.last_event_time or episode.start_time
+                deadline = baseline + timedelta(seconds=timeout)
+            if reference > deadline + timedelta(seconds=grace):
+                episode = None
         logger.debug(
-            "Open episode for area %s: %s (cutoff=%s, activity=%s)",
+            "Open episode for area %s: %s (at=%s, grace=%ss, activity=%s)",
             area_id,
             episode.id if episode else None,
-            cutoff,
+            reference,
+            grace,
             episode.last_activity_at if episode else None,
         )
         return episode
@@ -1067,35 +1110,69 @@ class Repository:
         if not _defer_manifest:
             await self.refresh_episode_manifest(episode_id)
 
-    async def close_timed_out_episodes(self, timeout: int) -> list[Episode]:
-        now = datetime.now(tz=timezone.utc)
-        now_value = _utc_iso(now)
-        cutoff = _utc_iso(now - timedelta(seconds=timeout))
-        cursor = await self._conn.execute(
-            """UPDATE episodes
-               SET state = ?, end_time = ?
-               WHERE state IN ('active', 'quiescent')
-               AND (
-                   (minimum_end_at IS NOT NULL
-                    AND julianday(minimum_end_at) < julianday(?))
-                   OR
-                   (minimum_end_at IS NULL
-                    AND julianday(COALESCE(last_activity_at, last_event_time, start_time))
-                        < julianday(?))
-               )
-               RETURNING *""",
-            (
-                EpisodeState.CLOSED.value,
-                now_value,
-                now_value,
-                cutoff,
-            ),
+    async def transition_timed_out_episodes(
+        self,
+        timeout: int,
+        quiescent_grace_seconds: int = DEFAULT_QUIESCENT_GRACE_SECONDS,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[list[Episode], list[Episode]]:
+        """Move expired Episodes through quiescence and then close them.
+
+        The returned lists contain Episodes transitioned to QUIESCENT and
+        CLOSED respectively.  ``now`` is injectable so lifecycle decisions can
+        be tested against the same clock as Event ingress.
+        """
+        observed_at = now or datetime.now(tz=timezone.utc)
+        grace = validate_quiescent_grace_seconds(quiescent_grace_seconds)
+        rows = await self._conn.execute_fetchall(
+            """SELECT * FROM episodes
+               WHERE state IN ('active', 'quiescent')"""
         )
-        rows = await cursor.fetchall()
-        await self._conn.commit()
-        closed = []
+        quiescent: list[Episode] = []
+        closed: list[Episode] = []
         for row in rows:
             episode = self._row_to_episode(row)
+            deadline = episode.minimum_end_at
+            if deadline is None:
+                baseline = episode.last_activity_at or episode.last_event_time or episode.start_time
+                deadline = baseline + timedelta(seconds=timeout)
+            close_at = deadline + timedelta(seconds=grace)
+
+            # A delayed lifecycle pass may first observe an active Episode only
+            # after its complete settling horizon. Persist the state that is
+            # true now instead of publishing an immediately stale intermediate
+            # transition.
+            if close_at < observed_at:
+                await self._conn.execute(
+                    "UPDATE episodes SET state = ?, end_time = ? WHERE id = ?",
+                    (EpisodeState.CLOSED.value, _utc_iso(observed_at), episode.id),
+                )
+                episode.state = EpisodeState.CLOSED
+                episode.end_time = observed_at
+                closed.append(episode)
+                continue
+
+            if episode.state == EpisodeState.ACTIVE and deadline <= observed_at:
+                await self._conn.execute(
+                    "UPDATE episodes SET state = ? WHERE id = ?",
+                    (EpisodeState.QUIESCENT.value, episode.id),
+                )
+                episode.state = EpisodeState.QUIESCENT
+                quiescent.append(episode)
+
+        if quiescent or closed:
+            await self._conn.commit()
+        for episode in quiescent:
+            await asyncio.to_thread(
+                append_journal,
+                self._data_dir,
+                episode.id,
+                "episode.state_changed",
+                {"state": EpisodeState.QUIESCENT.value},
+            )
+            await self.refresh_episode_manifest(episode.id)
+        for episode in closed:
             await asyncio.to_thread(
                 append_journal,
                 self._data_dir,
@@ -1103,9 +1180,8 @@ class Repository:
                 "episode.state_changed",
                 {"state": EpisodeState.CLOSED.value},
             )
-            closed.append(episode)
             await self.refresh_episode_manifest(episode.id)
-        return closed
+        return quiescent, closed
 
     async def append_episode_journal(
         self,

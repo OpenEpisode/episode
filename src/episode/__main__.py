@@ -119,6 +119,7 @@ class Application:
             thumbnail_cache=self._thumbnails,
             retention=self._retention,
             recorder=self._recorder,
+            engine=self._engine,
         )
         register_plugins_api(self._fastapi_app, self._plugins)
 

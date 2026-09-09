@@ -20,17 +20,19 @@ Episode is a local-first system that collects activity from cameras and other de
 groups related events and evidence into self-contained incident records, and
 coordinates actions such as recording and snapshot capture.
 
-Episode uses ONVIF as its primary camera integration and keeps
-Hikvision-specific inputs as optional enrichment. ONVIF event polling is
-disabled by default because generic motion can be noisy; ONVIF discovery,
-media profiles and RTSP remain available. It is intended for technical
-self-hosters who want local, portable evidence.
+Episode uses ONVIF as its primary standards-based camera integration and offers
+optional direct integrations for Hikvision and compatible Reolink Devices.
+ONVIF event polling is disabled by default because generic motion can be noisy;
+ONVIF discovery, media profiles and RTSP remain available. It is intended for
+technical self-hosters who want local, portable evidence.
 
 ## What it does
 
 - Discovers ONVIF media profiles and can subscribe to motion and tamper events when enabled per device.
 - Records from discovered RTSP streams and can optionally request ONVIF snapshots.
 - Optionally enriches observations with Hikvision ISAPI and Alarm Server events.
+- Connects directly to compatible Reolink Devices for discovery, media,
+  snapshots, and subscribed Events through the Baichuan integration.
 - Preserves camera-created files through a generic FTP transport, then lets the
   configured Hikvision plugin interpret supported snapshot filenames.
 - Preserves and checksums raw deliveries, snapshots, and recordings locally.
@@ -131,6 +133,14 @@ only when they emit an Event themselves.
 explicit activity window. Inactive observations are retained but never shorten
 or extend the deadline, and duplicate connector deliveries do not start
 recordings.
+
+When the minimum deadline is reached, the Episode enters a short **quiescent**
+settling state. Recordings continue during the configurable Episode settling
+grace (five seconds by default), and a new active Event received during that
+window returns the same Area Episode to active and extends its deadline. If no
+active Event arrives, the Episode closes and recordings finalize. This is an
+Area-level continuation window, not a replacement for a Device activity window;
+configure it under **System → Recordings**.
 
 Recordings are captured as rolling HLS/fMP4 bundles. Each camera contributes one
 logical Evidence item to an Episode, backed by a playlist, initialization file,
@@ -246,10 +256,12 @@ inventory—are ignored by Git and must never be committed.
 
 ## Project status
 
-Episode `0.1.0-beta.5` is a working ONVIF-first public beta for technical
-self-hosters using IP cameras and Docker. Hikvision integrations provide
-optional enrichment. The current priorities are reliable preservation, correct
-correlation, simple installation, and an uncluttered Episode-first interface.
+Episode `0.1.0-beta.6` is a working multi-vendor, ONVIF-first public beta for
+technical self-hosters using IP cameras and Docker. Hikvision integrations
+provide optional enrichment, while the Reolink integration provides direct
+Baichuan discovery, media, snapshots, and Events on compatible Devices. The
+current priorities are reliable preservation, correct correlation, simple
+installation, and an uncluttered Episode-first interface.
 
 Authentication, action and processor plugins, AI processing, high availability,
 and guaranteed compatibility with every ONVIF implementation are not part of

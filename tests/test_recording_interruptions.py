@@ -36,6 +36,9 @@ async def test_resume_active_episodes_requests_complete_event_history():
             self.event_limits.append(limit)
             return []
 
+        async def get_quiescent_grace_seconds(self):
+            return 5
+
     repository = RepositoryStub()
     recorder = RecordingEngine(repository, EventBus(), "/tmp/episode-test")
 

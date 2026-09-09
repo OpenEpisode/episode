@@ -13,6 +13,8 @@ from episode.api.errors import PUBLIC_ERROR_RESPONSES
 from episode.api.schemas import (
     DiagnosticsExportResponse,
     DiagnosticsResponse,
+    EpisodeLifecycleSettingsResponse,
+    EpisodeLifecycleSettingsUpdate,
     HealthResponse,
     RetentionSettingsResponse,
     RetentionSettingsUpdate,
@@ -170,6 +172,29 @@ def system_router(context: ApiContext) -> APIRouter:
         )
         status = context.retention.status()
         return {**status, "notice": _RETENTION_NOTICE}
+
+    @router.get(
+        "/api/v1/settings/episode",
+        response_model=EpisodeLifecycleSettingsResponse,
+    )
+    async def episode_lifecycle_settings():
+        if not context.engine:
+            raise HTTPException(503, "Episode lifecycle service is unavailable")
+        return context.engine.lifecycle_settings()
+
+    @router.put(
+        "/api/v1/settings/episode",
+        response_model=EpisodeLifecycleSettingsResponse,
+    )
+    async def update_episode_lifecycle_settings(
+        request: EpisodeLifecycleSettingsUpdate,
+    ):
+        if not context.engine:
+            raise HTTPException(503, "Episode lifecycle service is unavailable")
+        try:
+            return await context.engine.set_quiescent_grace(request.quiescent_grace_seconds)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
 
     @router.get("/api/v1/diagnostics", response_model=DiagnosticsResponse)
     async def diagnostics():

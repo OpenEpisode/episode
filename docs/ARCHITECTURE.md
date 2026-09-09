@@ -56,9 +56,20 @@ is the primary standards-based path; vendor connectors add detail.
 State transitions also have lifecycle meaning. Every active Event contributes a
 minimum deadline using the triggering Device's activity window. The Episode
 persists the greatest contributed deadline, so later Events may extend it but
-cannot shorten it, and configuration edits or restarts cannot change a decision
-already made. Recording Devices that joined through Area policy follow the
+cannot shorten it. Configuration edits or restarts cannot change that persisted
+minimum deadline. Recording Devices that joined through Area policy follow the
 Episode; they do not impose their own window unless they also emit an Event.
+
+When that deadline passes, an active Episode enters `QUIESCENT` for the
+configured five-second settling grace by default. Recordings and current views
+remain active during this short Area-level horizon. An active Event whose
+reception time falls within the horizon joins the same Episode, returns it to
+`ACTIVE`, and contributes its Device activity window. If the horizon expires
+without active activity, the Episode becomes `CLOSED`; closure does not reopen
+or merge finalized recordings. The grace is persisted as an installation
+setting and can be changed under **System → Recordings**. Lifecycle correlation
+uses the Event's ingress reception time captured before database processing so
+queue or database latency does not create an artificial split.
 
 An inactive Event is paired with the latest preceding active Event from the same
 Area, Device, and normalized Event type. It inherits that Event's Episode even
@@ -75,6 +86,7 @@ src/episode/
 ├── ingestion/        raw-first preservation and bounded plugin dispatch
 ├── plugins/          lazy integrations and protocol/vendor interpretation
 │   ├── onvif/        standards-based Device integration
+│   ├── reolink/       direct Baichuan Device integration
 │   └── hikvision/    import-empty vendor namespace and shared XML helpers
 │       ├── alarm_server/
 │       ├── ftp/
@@ -105,6 +117,13 @@ the Hikvision FTP handler recognizes supported filenames and emits snapshot
 Evidence. Unknown files remain visible raw deliveries. HCNetSDK callbacks
 follow the same raw-first route; native decoding remains isolated in the SDK
 plugin.
+
+The Reolink plugin owns its Baichuan TCP connection, authentication, capability
+discovery, snapshot requests, RTSP media registration, subscription lifecycle,
+reconnect behavior, and notification interpretation. Exact received Event
+frames cross the same raw-first boundary before recognized observations are
+normalized. Unsupported frames remain preserved, and the plugin remains inert
+unless a Device explicitly enables it.
 
 The optional Event API is the vendor-neutral exception to plugin interpretation:
 its JSON schema is already a canonical observation contract, so a core-owned
@@ -159,11 +178,14 @@ cleanup is logged without preventing the remaining resources from closing.
 Asynchronous plugin startup and shutdown are bounded independently, so a hung
 plugin cannot indefinitely block later integrations or application cleanup.
 
-At startup, the Episode engine closes persisted active Episodes whose minimum
-deadline has passed. After plugins restore media registrations, the recording
-engine reconstructs targets for Episodes whose deadline remains in the future.
-An interrupted HLS recording resumes in its existing Evidence workspace with an
-explicit playlist discontinuity; it does not create a second logical recording.
+At startup, the Episode engine restores each persisted open Episode to the state
+appropriate for the current time: active Episodes past their minimum deadline
+enter quiescence, while any Episode whose complete grace horizon has passed
+closes directly. After plugins restore media registrations, the recording engine
+reconstructs targets for Episodes whose deadline or quiescent horizon remains in
+the future. An interrupted HLS recording resumes in its existing Evidence
+workspace with an explicit playlist discontinuity; it does not create a second
+logical recording.
 
 
 ## Persistence model

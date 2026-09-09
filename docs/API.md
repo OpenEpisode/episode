@@ -134,6 +134,14 @@ active Events can move that deadline forward, while inactive Events cannot
 shorten it. Clients should treat the deadline as lifecycle state, not as a
 countdown owned by any individual recording Device.
 
+`GET /api/v1/settings/episode` exposes the installation's bounded
+`quiescent_grace_seconds` setting. `PUT` accepts a value from 0 through 60
+seconds. When a minimum Episode deadline passes, the Episode enters
+`quiescent`; recordings remain active for this Area-level continuation window.
+An active Event received within the window continues the same Episode. A value
+of zero disables the settling period. This setting is distinct from the
+per-Device `activity_window_seconds` policy.
+
 ## Compatibility during beta
 
 The `/api/v1` resource shapes and Device/ingress plugin API v1 are compatibility

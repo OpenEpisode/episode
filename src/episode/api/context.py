@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from episode.api.projections import public_event
 from episode.api.runtime import OperationalView
@@ -12,6 +12,9 @@ from episode.inventory import DeviceValidationService, InventoryService
 from episode.media.previews import CurrentViewService
 from episode.media.timelapse import TimelapseService
 from episode.retention import RetentionService
+
+if TYPE_CHECKING:
+    from episode.engine.engine import EpisodeEngine
 
 
 @dataclass(slots=True)
@@ -29,6 +32,7 @@ class ApiContext:
     thumbnails: ThumbnailCache | None = None
     retention: RetentionService | None = None
     recorder: Any | None = None
+    engine: EpisodeEngine | None = None
 
     def __post_init__(self) -> None:
         if self.timelapses is None:

@@ -35,7 +35,7 @@ export function operationalBadge(state) {
 function capabilityBadges(capabilities) {
   return (capabilities || [])
     .filter(capability => capability !== "events")
-    .map(capability => `<span class="badge badge-neutral">${titleCase(capability)}</span>`)
+    .map(capability => `<span class="badge badge-neutral">${escHtml(titleCase(capability))}</span>`)
     .join(" ");
 }
 
@@ -43,6 +43,92 @@ function integrationBadges(integrations) {
   return (integrations || [])
     .map(integration => `<span class="badge badge-${integration.state}">${titleCase(integration.type)}</span>`)
     .join(" ");
+}
+
+function diagnosticLabel(key) {
+  return titleCase(key)
+    .replace(/\bId\b/g, "ID")
+    .replace(/\bUri\b/g, "URI")
+    .replace(/\bUrl\b/g, "URL")
+    .replace(/\bOnvif\b/g, "ONVIF")
+    .replace(/\bRtsp\b/g, "RTSP")
+    .replace(/\bHls\b/g, "HLS");
+}
+
+function hasDiagnosticValue(value) {
+  if (value === null || value === undefined || value === "") return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+function diagnosticScalar(key, value) {
+  let display;
+  if (typeof value === "boolean") {
+    display = `<span class="diagnostic-boolean ${value ? "is-true" : "is-false"}">${value ? "Yes" : "No"}</span>`;
+  } else if (key.endsWith("_at") && typeof value === "string") {
+    display = `<time datetime="${escHtml(value)}" title="${escHtml(value)}">${escHtml(fmtShort(value))}</time>`;
+  } else {
+    display = escHtml(String(value));
+  }
+  return `<div class="diagnostic-fact"><dt>${escHtml(diagnosticLabel(key))}</dt><dd>${display}</dd></div>`;
+}
+
+function diagnosticPrimitiveList(key, values) {
+  const visible = values.slice(0, 12);
+  const remaining = values.slice(12);
+  const tags = items => items.map(value =>
+    `<span class="diagnostic-tag">${escHtml(String(value))}</span>`).join("");
+  return `<section class="diagnostic-section">
+    <header><h4>${escHtml(diagnosticLabel(key))}</h4><span>${values.length}</span></header>
+    <div class="diagnostic-tags">${tags(visible)}</div>
+    ${remaining.length ? `<details class="diagnostic-more">
+      <summary>Show ${remaining.length} more</summary>
+      <div class="diagnostic-tags">${tags(remaining)}</div>
+    </details>` : ""}
+  </section>`;
+}
+
+function diagnosticBody(value) {
+  const entries = Object.entries(value || {}).filter(([, item]) => hasDiagnosticValue(item));
+  const scalars = entries.filter(([, item]) => typeof item !== "object");
+  const structured = entries.filter(([, item]) => typeof item === "object");
+  return `${scalars.length ? `<dl class="diagnostic-facts">
+      ${scalars.map(([key, item]) => diagnosticScalar(key, item)).join("")}
+    </dl>` : ""}
+    ${structured.map(([key, item]) => diagnosticStructuredValue(key, item)).join("")}`;
+}
+
+function diagnosticStructuredValue(key, value) {
+  if (Array.isArray(value) && value.every(item => typeof item !== "object" || item === null)) {
+    return diagnosticPrimitiveList(key, value);
+  }
+  if (Array.isArray(value)) {
+    return `<section class="diagnostic-section">
+      <header><h4>${escHtml(diagnosticLabel(key))}</h4><span>${value.length}</span></header>
+      <div class="diagnostic-objects">${value.map((item, index) => {
+        const heading = item?.name || item?.id || item?.token || `Item ${index + 1}`;
+        return `<article class="diagnostic-object">
+          <h5>${escHtml(String(heading))}</h5>
+          ${diagnosticBody(item)}
+        </article>`;
+      }).join("")}</div>
+    </section>`;
+  }
+  return `<section class="diagnostic-section">
+    <header><h4>${escHtml(diagnosticLabel(key))}</h4></header>
+    ${diagnosticBody(value)}
+  </section>`;
+}
+
+export function renderDiagnosticDetails(details) {
+  return `<div class="diagnostic-panel">
+    ${diagnosticBody(details)}
+    <details class="diagnostic-raw">
+      <summary>View raw JSON</summary>
+      <pre>${escHtml(JSON.stringify(details, null, 2))}</pre>
+    </details>
+  </div>`;
 }
 
 export function renderIntegrationRows(integrations, showDetails = false) {
@@ -55,14 +141,14 @@ export function renderIntegrationRows(integrations, showDetails = false) {
       return `<div class="resource-row">
         <span class="status-indicator ${operationalIndicator(integration.state)}"></span>
         <div class="resource-main">
-          <strong>${integration.name}</strong>
-          <span>${integration.summary || titleCase(integration.type)}</span>
+          <strong>${escHtml(integration.name)}</strong>
+          <span>${escHtml(integration.summary || titleCase(integration.type))}</span>
           <div class="badge-cluster">${capabilityBadges(integration.capabilities)}</div>
         </div>
         ${operationalBadge(integration.state)}
         ${showDetails && details.length ? `<details class="diagnostic-details">
           <summary>Technical details</summary>
-          <pre>${escHtml(JSON.stringify(integration.details, null, 2))}</pre>
+          ${renderDiagnosticDetails(integration.details)}
         </details>` : ""}
       </div>`;
     }).join("")}
@@ -203,6 +289,21 @@ window.saveRetention = form => {
   });
 };
 
+window.saveEpisodeLifecycle = async form => {
+  const data = new FormData(form);
+  const grace = Number(data.get("quiescent_grace_seconds"));
+  try {
+    await apiRequest("/settings/episode", {
+      method: "PUT",
+      body: { quiescent_grace_seconds: grace },
+    });
+    notify("Episode settling grace updated", "success");
+    await systemStatus("recordings");
+  } catch (error) {
+    notify(`Could not update Episode settling grace: ${error.message}`, "warning");
+  }
+};
+
 export async function devices() {
   showLoading();
   try {
@@ -304,7 +405,9 @@ export async function deviceView(id) {
             <div><dt>Model</dt><dd>${escHtml(identity.model || "Not detected")}</dd></div>
             <div><dt>Firmware</dt><dd>${escHtml(identity.firmware_version || "Not reported")}</dd></div>
             <div><dt>Episode activity window</dt><dd>${item.capture_policy.activity_window_seconds} seconds</dd></div>
-            <div><dt>Automatic snapshots</dt><dd>${item.capture_policy.automatic_snapshots ? "Enabled" : "Disabled"}</dd></div>
+            <div><dt>Event-triggered snapshots</dt><dd>${item.capture_policy.automatic_snapshots
+              ? "Enabled — requests and preserves an image for each new active Event"
+              : "Disabled — active Events do not request preserved images"}</dd></div>
             <div><dt>ONVIF Events</dt><dd>${item.capture_policy.onvif_events === null ? "Unavailable" : item.capture_policy.onvif_events ? "Enabled" : "Disabled"}</dd></div>
           </dl>
         </section>
@@ -430,6 +533,34 @@ function renderRetentionSettings(retention) {
   </section>`;
 }
 
+function renderEpisodeLifecycleSettings(settings = {}) {
+  const grace = Number.isInteger(settings.quiescent_grace_seconds)
+    ? settings.quiescent_grace_seconds
+    : 5;
+  const minimum = Number.isInteger(settings.min_quiescent_grace_seconds)
+    ? settings.min_quiescent_grace_seconds
+    : 0;
+  const maximum = Number.isInteger(settings.max_quiescent_grace_seconds)
+    ? settings.max_quiescent_grace_seconds
+    : 60;
+  const notice = settings.notice ||
+    "After a Device activity window expires, Episode keeps the Area Episode and its recordings active for this brief continuation window. A new active Event during the window continues the same Episode. This is separate from each Device's activity window.";
+  return `<section class="section system-lifecycle">
+    <div class="system-lifecycle-heading">
+      <div><h3>Episode settling grace</h3><p>Reduce tiny Episode splits when related activity arrives around the activity deadline.</p></div>
+    </div>
+    <form class="system-lifecycle-form" onsubmit="saveEpisodeLifecycle(this); return false">
+      <label class="field system-lifecycle-window">
+        <span>Continuation window (seconds)</span>
+        <input name="quiescent_grace_seconds" type="number" min="${minimum}" max="${maximum}" required value="${grace}">
+        <small>Recordings stay active during this brief Area-level window after the Device activity window expires. A new active Event continues the same Episode.</small>
+      </label>
+      <button type="submit" class="button button-primary system-lifecycle-save">Save Episode setting</button>
+      <div class="field-span configuration-note">${escHtml(notice)}</div>
+    </form>
+  </section>`;
+}
+
 function systemOverview(diagnostics, services, filesystemLabel) {
   const status = diagnostics.status;
   return `<dl class="detail-facts section system-summary-facts">
@@ -450,9 +581,10 @@ export async function systemStatus(requestedSection = "overview") {
   const section = validSections.has(requestedSection) ? requestedSection : "overview";
   showLoading();
   try {
-    const [diagnostics, retention] = await Promise.all([
+    const [diagnostics, retention, episodeSettings] = await Promise.all([
       api("/diagnostics"),
       api("/settings/retention"),
+      api("/settings/episode"),
     ]);
     const status = diagnostics.status;
     const recorder = diagnostics.services.find(service => service.id === "recorder") || {};
@@ -471,7 +603,7 @@ export async function systemStatus(requestedSection = "overview") {
     }));
     const descriptions = {
       overview: "Runtime health and the areas that may need attention.",
-      recordings: "Current capture progress, recovery, and recent incomplete recordings.",
+      recordings: "Current capture progress, recovery, and the Episode activity lifecycle.",
       integrations: "Runtime health for connectors, plugins, and Device connections.",
       storage: "Filesystem capacity and the visual Evidence retention policy.",
     };
@@ -481,7 +613,7 @@ export async function systemStatus(requestedSection = "overview") {
         diagnostics.recordings,
         recorder.metrics,
         diagnostics.recording_issues,
-      );
+      ) + renderEpisodeLifecycleSettings(episodeSettings || {});
     } else if (section === "integrations") {
       content = `<section class="section system-section">
         <div class="system-section-heading"><div><h3>Integrations</h3><p>Open technical details only when diagnosing a connection.</p></div><span class="badge badge-neutral">${diagnostics.integrations.length} configured</span></div>

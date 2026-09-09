@@ -90,10 +90,14 @@ The activity window belongs to the Device that emitted the Event. A second
 camera recording because it uses **Any Episode in this Area** follows the same
 Episode deadline even when its own configured window differs.
 
-### Optional Episode-requested snapshots
+### Optional Event-triggered snapshots
 
-Automatic ONVIF snapshot capture is a system-wide setting and remains
-disabled by default. To enable it, set this in `episode.json` and restart:
+Event-triggered snapshot capture is a system-wide setting and remains disabled
+by default. When enabled, each new active Event asks its Device's registered
+media source for a current image and preserves it as Evidence linked to that
+Event and Episode. ONVIF normally supplies the snapshot endpoint, but the Event
+may have arrived through ONVIF, ISAPI, Alarm Server, the SDK, or another input.
+To enable it, set this in `episode.json` and restart:
 
 ```json
 "actions": {

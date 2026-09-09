@@ -7,6 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from episode.domain.lifecycle import (
+    DEFAULT_QUIESCENT_GRACE_SECONDS,
+    MAX_QUIESCENT_GRACE_SECONDS,
+    MIN_QUIESCENT_GRACE_SECONDS,
+    QUIESCENT_GRACE_SETTING,
+    validate_quiescent_grace_seconds,
+)
 from episode.domain.models import (
     Episode,
     EpisodeState,
@@ -33,10 +40,17 @@ class CanonicalEventResult:
 
 
 class EpisodeEngine:
-    def __init__(self, repo: Repository, bus: EventBus, timeout: int = 30):
+    def __init__(
+        self,
+        repo: Repository,
+        bus: EventBus,
+        timeout: int = 30,
+        quiescent_grace_seconds: int = DEFAULT_QUIESCENT_GRACE_SECONDS,
+    ):
         self._repo = repo
         self._bus = bus
         self._timeout = timeout
+        self._quiescent_grace_seconds = validate_quiescent_grace_seconds(quiescent_grace_seconds)
         self._running = False
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._lifecycle_lock = asyncio.Lock()
@@ -45,6 +59,7 @@ class EpisodeEngine:
     async def start(self):
         if self._running:
             return
+        self._quiescent_grace_seconds = await self._load_quiescent_grace()
         self._running = True
         self._bus.subscribe("receipt.received", self._on_receipt_received)
         self._bus.subscribe("event.received", self._on_event_received)
@@ -77,6 +92,33 @@ class EpisodeEngine:
         _, receipt = await self._repo.persist_delivery(artifact, receipt)
         return receipt
 
+    async def _load_quiescent_grace(self) -> int:
+        return await self._repo.get_quiescent_grace_seconds(
+            default=self._quiescent_grace_seconds,
+        )
+
+    def lifecycle_settings(self) -> dict[str, int | str]:
+        return {
+            "quiescent_grace_seconds": self._quiescent_grace_seconds,
+            "default_quiescent_grace_seconds": DEFAULT_QUIESCENT_GRACE_SECONDS,
+            "min_quiescent_grace_seconds": MIN_QUIESCENT_GRACE_SECONDS,
+            "max_quiescent_grace_seconds": MAX_QUIESCENT_GRACE_SECONDS,
+            "notice": (
+                "After a Device activity window expires, Episode keeps the Area "
+                "Episode and its recordings active for this brief continuation "
+                "window. A new active Event during the window continues the same "
+                "Episode. This is separate from each Device's activity window."
+            ),
+        }
+
+    async def set_quiescent_grace(self, seconds: int) -> dict[str, int | str]:
+        value = validate_quiescent_grace_seconds(seconds)
+        await self._repo.set_system_setting(QUIESCENT_GRACE_SETTING, str(value))
+        self._quiescent_grace_seconds = value
+        if self._running:
+            await self._close_timed_out_episodes()
+        return self.lifecycle_settings()
+
     async def _on_receipt_received(self, msg: Message):
         receipt = await self._persist_delivery(msg)
         if receipt:
@@ -96,6 +138,14 @@ class EpisodeEngine:
     async def ingest_event(
         self, candidate: Event, *, receipt: IngestionReceipt | None = None
     ) -> CanonicalEventResult:
+        # Capture the observation boundary before waiting for an Area lock or
+        # database work.  Correlation must use when the delivery arrived, not
+        # when a busy worker eventually reaches the query.
+        activity_time = (
+            receipt.received_at if receipt is not None else datetime.now(tz=timezone.utc)
+        )
+        if activity_time.tzinfo is None:
+            activity_time = activity_time.replace(tzinfo=timezone.utc)
         logger.debug(
             "Event received: id=%s, area=%s, device=%s, type=%s, state=%s, ts=%s",
             candidate.id,
@@ -117,7 +167,6 @@ class EpisodeEngine:
                 candidate.id,
                 candidate.area_id,
             )
-            activity_time = datetime.now(tz=timezone.utc)
             activity_window = self._timeout
             if candidate.event_state == EventState.ACTIVE:
                 device = await self._repo.get_device(candidate.device_id)
@@ -280,7 +329,12 @@ class EpisodeEngine:
             return
 
         minimum_end_at = activity_time + timedelta(seconds=activity_window)
-        episode = await self._repo.find_open_episode_for_area(event.area_id, self._timeout)
+        episode = await self._repo.find_open_episode_for_area(
+            event.area_id,
+            self._timeout,
+            at=activity_time,
+            quiescent_grace_seconds=self._quiescent_grace_seconds,
+        )
         logger.debug(
             "find_open_episode_for_area(%s, %s) -> %s",
             event.area_id,
@@ -294,16 +348,15 @@ class EpisodeEngine:
                 episode.id,
                 _defer_manifest=True,
             )
-            completed_at = datetime.now(tz=timezone.utc)
             await self._repo.update_episode_times(
                 episode.id,
                 event.timestamp,
-                activity_time=completed_at,
+                activity_time=activity_time,
                 _defer_manifest=True,
             )
             await self._repo.extend_episode_minimum_end(
                 episode.id,
-                completed_at + timedelta(seconds=activity_window),
+                minimum_end_at,
                 _defer_manifest=True,
             )
             if episode.state == EpisodeState.QUIESCENT:
@@ -330,16 +383,15 @@ class EpisodeEngine:
             )
             await self._repo.create_episode(episode)
             await self._repo.add_event_to_episode(event.id, episode.id, _defer_manifest=True)
-            completed_at = datetime.now(tz=timezone.utc)
             await self._repo.update_episode_times(
                 episode.id,
                 event.timestamp,
-                activity_time=completed_at,
+                activity_time=activity_time,
                 _defer_manifest=True,
             )
             await self._repo.extend_episode_minimum_end(
                 episode.id,
-                completed_at + timedelta(seconds=activity_window),
+                minimum_end_at,
                 _defer_manifest=True,
             )
             event.episode_id = episode.id
@@ -364,6 +416,7 @@ class EpisodeEngine:
                 episode = await self._repo.find_open_episode_for_area(
                     evidence.area_id,
                     self._timeout,
+                    quiescent_grace_seconds=self._quiescent_grace_seconds,
                 )
             if episode:
                 evidence.episode_id = episode.id
@@ -393,9 +446,21 @@ class EpisodeEngine:
                 )
             )
 
-    async def _close_timed_out_episodes(self) -> None:
+    async def _close_timed_out_episodes(self, *, now: datetime | None = None) -> None:
         async with self._lifecycle_lock:
-            closed = await self._repo.close_timed_out_episodes(self._timeout)
+            quiescent, closed = await self._repo.transition_timed_out_episodes(
+                self._timeout,
+                self._quiescent_grace_seconds,
+                now=now,
+            )
+        for episode in quiescent:
+            logger.info("Episode %s entered quiescence", episode.id)
+            await self._bus.publish(
+                Message(
+                    type="episode.updated",
+                    data={"episode_id": episode.id, "state": EpisodeState.QUIESCENT.value},
+                )
+            )
         for episode in closed:
             logger.info("Episode %s closed (activity policy satisfied)", episode.id)
             await self._bus.publish(
@@ -414,4 +479,8 @@ class EpisodeEngine:
                 logger.exception("Error in timeout loop")
 
     def status(self) -> dict:
-        return {"running": self._running, "timeout": self._timeout}
+        return {
+            "running": self._running,
+            "timeout": self._timeout,
+            "quiescent_grace_seconds": self._quiescent_grace_seconds,
+        }

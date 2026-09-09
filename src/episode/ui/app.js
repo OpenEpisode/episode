@@ -1,6 +1,6 @@
 import { $, $$ } from "./dom.js";
 import { closeCarousel } from "./evidence-gallery.js?v=7";
-import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=15";
+import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=17";
 import { onboardingNeeded, welcome } from "./onboarding.js?v=7";
 import {
   activity,

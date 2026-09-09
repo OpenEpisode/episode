@@ -6,6 +6,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from episode.api.inventory import DeviceConfigurationResponse, IntegrationSupportResponse
+from episode.domain.lifecycle import (
+    MAX_QUIESCENT_GRACE_SECONDS,
+    MIN_QUIESCENT_GRACE_SECONDS,
+)
 from episode.domain.models import EpisodeState, EventState, ReceiptStatus
 
 OperationalState = Literal["healthy", "degraded", "unavailable", "disabled", "unknown"]
@@ -156,6 +160,21 @@ class RetentionSettingsResponse(ApiModel):
     expired_count: int = 0
     failure_count: int = 0
     last_error: str | None = None
+
+
+class EpisodeLifecycleSettingsUpdate(ApiModel):
+    quiescent_grace_seconds: int = Field(
+        ge=MIN_QUIESCENT_GRACE_SECONDS,
+        le=MAX_QUIESCENT_GRACE_SECONDS,
+    )
+
+
+class EpisodeLifecycleSettingsResponse(ApiModel):
+    quiescent_grace_seconds: int
+    default_quiescent_grace_seconds: int
+    min_quiescent_grace_seconds: int
+    max_quiescent_grace_seconds: int
+    notice: str
 
 
 class DiagnosticsResponse(ApiModel):

@@ -252,6 +252,14 @@ async def test_non_video_event_starts_area_episode_recordings(repo, bus, config)
     await bus.publish(
         Message(
             type="episode.updated",
+            data={"episode_id": episodes[0].id, "state": "quiescent"},
+        )
+    )
+    assert stopped == []
+
+    await bus.publish(
+        Message(
+            type="episode.updated",
             data={"episode_id": episodes[0].id, "state": "closed"},
         )
     )
@@ -817,6 +825,68 @@ async def test_persisted_active_episode_resumes_all_reconstructed_targets(repo, 
         (episode.id, peer.id),
     }
 
+    recorder._recordings.clear()
+    await recorder.stop()
+    await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_persisted_quiescent_episode_resumes_only_within_grace(repo, bus, config):
+    await repo.initialize()
+    await _add_areas(repo, "area-1")
+    source = _video_device("camera-a", "area-1", "on_event")
+    await repo.upsert_device(source)
+    now = _now()
+    within = Episode(
+        id="episode-within-grace",
+        primary_area_id="area-1",
+        start_time=now - timedelta(seconds=20),
+        last_event_time=now - timedelta(seconds=20),
+        last_activity_at=now - timedelta(seconds=20),
+        minimum_end_at=now - timedelta(seconds=2),
+        state=EpisodeState.QUIESCENT,
+    )
+    beyond = Episode(
+        id="episode-beyond-grace",
+        primary_area_id="area-1",
+        start_time=now - timedelta(seconds=30),
+        last_event_time=now - timedelta(seconds=30),
+        last_activity_at=now - timedelta(seconds=30),
+        minimum_end_at=now - timedelta(seconds=10),
+        state=EpisodeState.QUIESCENT,
+    )
+    await repo.create_episode(within)
+    await repo.create_episode(beyond)
+    for episode in (within, beyond):
+        await repo.create_event(
+            Event(
+                device_id=source.id,
+                area_id=source.area_id,
+                timestamp=episode.last_event_time,
+                event_type="motion_detection",
+                event_state=EventState.ACTIVE,
+                source="test",
+                episode_id=episode.id,
+            )
+        )
+
+    recorder = RecordingEngine(repo, bus, config.data_dir)
+    resumed = []
+
+    async def start_recording(episode_id, device, stream_url):
+        resumed.append(episode_id)
+        recorder._recordings[(episode_id, device.id)] = SimpleNamespace(
+            episode_id=episode_id,
+            device_id=device.id,
+            session_id=f"session-{episode_id}",
+            evidence_id=f"evidence-{episode_id}",
+        )
+
+    recorder._start_recording = start_recording
+    await recorder.start()
+    await recorder.resume_active_episodes()
+
+    assert resumed == [within.id]
     recorder._recordings.clear()
     await recorder.stop()
     await repo.close()

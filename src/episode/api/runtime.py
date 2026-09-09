@@ -196,8 +196,14 @@ class OperationalView:
                 "id": "engine",
                 "name": "Episode engine",
                 "state": status["services"]["engine"],
-                "summary": f"{int(engine.get('timeout', 0))}s default activity window",
-                "metrics": {},
+                "summary": (
+                    f"{int(engine.get('timeout', 0))}s default activity window · "
+                    f"{int(engine.get('quiescent_grace_seconds', 5))}s settling grace"
+                ),
+                "metrics": {
+                    "timeout": engine.get("timeout"),
+                    "quiescent_grace_seconds": engine.get("quiescent_grace_seconds"),
+                },
             },
             {
                 "id": "recorder",
@@ -224,9 +230,13 @@ class OperationalView:
             },
             {
                 "id": "snapshots",
-                "name": "Automatic snapshots",
+                "name": "Event-triggered snapshots",
                 "state": status["services"]["snapshots"],
-                "summary": "Enabled" if self._snapshots_enabled else "Disabled by policy",
+                "summary": (
+                    "Requests and preserves a current image for each new active Event"
+                    if self._snapshots_enabled
+                    else "Disabled — active Events do not request preserved images"
+                ),
                 "metrics": {
                     key: int(snapshots.get(key, 0))
                     for key in ("captured", "failures", "suppressed", "active")
