@@ -10,6 +10,24 @@ function statusIndicator(state) {
   return "offline";
 }
 
+export function sidebarStatusView(status) {
+  const indicator = statusIndicator(status.state);
+  const label = ({
+    healthy: "All systems operational",
+    degraded: "Attention needed",
+    unavailable: "System unavailable",
+  }[status.state] || "Status unknown");
+  const href = status.state === "degraded" ? "#system/integrations" : "#system";
+  const title = status.state === "degraded" ? "Review integration health" : "Open System status";
+  const recordings = status.active_recordings ? plural(status.active_recordings, "rec") : "";
+  return `<a class="sidebar-status sidebar-status-link" href="${href}" title="${title}">
+    <span class="dot ${indicator}" aria-hidden="true"></span>
+    <span class="label">${label}</span>
+    ${recordings ? `<span class="label sidebar-recording-count">${recordings}</span>` : ""}
+    <span class="sidebar-status-action" aria-hidden="true">${status.state === "degraded" ? "Review ›" : "›"}</span>
+  </a>`;
+}
+
 export async function updateRecentEpisodes(list = null) {
   const element = $("#recent-episodes-sidebar");
   try {
@@ -31,19 +49,11 @@ export async function updateSidebarStatus() {
   try {
     const status = await api("/status");
     $("#app-version").textContent = status.version ? `v${status.version}` : "";
-    const indicator = statusIndicator(status.state);
-    const label = ({
-      healthy: "All systems operational",
-      degraded: "Attention needed",
-      unavailable: "System unavailable",
-    }[status.state] || "Status unknown");
-    element.innerHTML = `<div class="sidebar-status">
-      <span class="dot ${indicator}" title="${label}"></span>
-      <span class="label">${label}</span>
-      <span class="label" style="margin-left:auto">${status.active_recordings ? plural(status.active_recordings, "rec") : ""}</span>
-    </div>`;
+    element.innerHTML = sidebarStatusView(status);
   } catch {
-    element.innerHTML = '<div class="sidebar-status"><span class="dot offline"></span><span class="label">Offline</span></div>';
+    element.innerHTML = `<a class="sidebar-status sidebar-status-link" href="#system" title="Open System status">
+      <span class="dot offline" aria-hidden="true"></span><span class="label">Offline</span>
+      <span class="sidebar-status-action" aria-hidden="true">Review ›</span></a>`;
   }
 }
 

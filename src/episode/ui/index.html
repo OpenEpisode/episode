@@ -8,7 +8,7 @@
 <meta http-equiv="Expires" content="0">
 <title>Episode</title>
 <link rel="icon" href="logo.svg" type="image/svg+xml">
-<link rel="stylesheet" href="style.css?v=38">
+<link rel="stylesheet" href="style.css?v=40">
 <link rel="stylesheet" href="design-system.css?v=4">
 
 </head>
@@ -42,6 +42,7 @@
     <div id="recent-episodes-sidebar"></div>
   </div>
   <div class="sidebar-footer">
+    <a id="capture-profile-status" class="capture-profile-status hidden" href="#system/capture-profiles"></a>
     <div id="sidebar-status"></div>
     <button id="theme-toggle" onclick="toggleTheme()"></button>
   </div>
@@ -51,6 +52,7 @@
   <div id="mobile-header">
     <button id="sidebar-toggle" onclick="toggleSidebar()" aria-label="Open navigation"><svg class="button-icon"><use href="icons.svg#menu"></use></svg></button>
     <span id="mobile-title">Episode</span>
+    <a id="mobile-capture-profile-status" class="capture-profile-status capture-profile-status-mobile hidden" href="#system/capture-profiles"></a>
   </div>
   <div id="policy-banner" class="policy-banner hidden" role="status"></div>
   <div id="view-loading">Loading...</div>
@@ -78,6 +80,6 @@
   src="https://cdn.jsdelivr.net/npm/hls.js@1.7.1/dist/hls.light.min.js"
   integrity="sha384-eTdmv4QJf8gkgxs06jtSPpE/gs5wyft+RJtCaUZczngODsnyr6r6QZM41hXhryo9"
   crossorigin="anonymous"></script>
-<script type="module" src="app.js?v=55"></script>
+<script type="module" src="app.js?v=62"></script>
 </body>
 </html>

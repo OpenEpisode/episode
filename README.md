@@ -40,6 +40,9 @@ technical self-hosters who want local, portable evidence.
 - Accepts normalized Events from trusted local automations through an optional
   raw-first HTTP Event API.
 - Correlates observations from multiple cameras into Episodes.
+- Lets an operator select a Capture profile that controls which Devices may
+  contribute to new capture without disconnecting them or discarding input.
+- Can send a best-effort HTTP notification when a new Episode starts.
 - Starts and stops configured recordings around Episode activity.
 - Reviews each Episode through a chronological Event timeline linked to its recordings and snapshots.
 - Optionally projects vendor detection regions over snapshots and recordings without modifying evidence.
@@ -102,10 +105,11 @@ The image version is pinned in `.env`. The commands pass that file explicitly to
 Compose for `${...}` interpolation; it is not injected into the Episode
 container. Episode reads shared service settings from the read-only
 `episode.json` mount and stores UI-managed Area and Device inventory in SQLite.
-During the pre-release lifecycle, database migrations are not guaranteed; a
-release may require a clean database and will say so in its release notes. To
-upgrade, change `EPISODE_IMAGE` to a new published version, review the release
-notes, and run
+During the pre-release lifecycle, database migrations are not guaranteed.
+Episode applies explicitly supported additive schema steps automatically; a
+release with an incompatible change may still require a clean database and will
+say so in its release notes. To upgrade, change `EPISODE_IMAGE` to a new
+published version, review the release notes, and run
 `docker compose --env-file .env pull` followed by
 `docker compose --env-file .env up -d`.
 
@@ -141,6 +145,60 @@ window returns the same Area Episode to active and extends its deadline. If no
 active Event arrives, the Episode closes and recordings finalize. This is an
 Area-level continuation window, not a replacement for a Device activity window;
 configure it under **System → Recordings**.
+
+### Capture profiles
+
+Capture profiles provide a small, explicit armed/disarmed-style control under
+**System → Capture profiles**. The built-in **All Devices** profile preserves
+the default behavior and automatically includes current and future enabled
+Devices. A custom profile selects a fixed set of Devices; an empty profile is a
+useful Disarmed state.
+
+The active profile is always shown in the application shell; select it to open
+the profile manager. Changes made through the API are reflected there without a
+page reload.
+
+Profiles govern new active Events and recording participation, not connectivity.
+An excluded Device remains connected, and Episode still preserves its raw
+deliveries, Receipts, and canonical Events. Those active Events are visibly
+marked as excluded and do not open or extend Episodes or start actions. Inactive
+Events retain their historical association behavior. Changing profile never
+interrupts an existing recording, and the targets chosen for an accepted Event
+are persisted so later configuration changes or a restart cannot reinterpret
+that decision.
+
+### Episode-start webhook
+
+Episode can send one optional HTTP POST when a new Episode is created. This is
+a lightweight, best-effort notification for trusted local automation or a
+[Discord incoming webhook](https://docs.discord.com/developers/resources/webhook#execute-webhook);
+it never delays capture and is disabled by default.
+Configure it under **System → Notifications**. Choose Generic JSON or Discord,
+enter the destination URL and timeout, save, then use **Send test** before
+enabling it. Changes apply immediately without restarting Episode. The URL is a
+write-only secret: the UI shows a fixed mask instead of returning its contents.
+Leave the mask unchanged to preserve it, paste a replacement, or delete the
+masked value to remove the destination and disable notifications.
+
+The optional global **External Episode URL** lives under **System → Overview**.
+It is not a secret and is never inferred by the server. A fresh browser suggests
+its current HTTP(S) origin for editing; save the address that operators use to
+reach Episode. Outbound integrations can then link back using the form
+`https://episode.example/#episode/{id}` and may include a deployment path.
+
+The generic versioned payload contains the Episode and triggering Event IDs,
+Area, Device, timestamps, state, and a relative Episode UI path. It adds an
+absolute `episode.url` only when the external URL is configured. The Discord
+format sends a compact cyan Episode embed with Area, Event, Device, a native
+timestamp, and a clickable title when that address is available. Test requests
+preview the embed styling without inventing an Episode or link; generated
+mentions remain disabled.
+
+This first implementation has a bounded in-memory queue, a short timeout, and
+no retries or delivery history. A slow or unavailable destination cannot stop
+Episode capture, but a notification may be lost during failure, overload, or
+shutdown. Durable delivery, retry, debounce, and additional notification
+channels belong to the planned Action Run model.
 
 Recordings are captured as rolling HLS/fMP4 bundles. Each camera contributes one
 logical Evidence item to an Episode, backed by a playlist, initialization file,

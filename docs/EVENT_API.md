@@ -56,6 +56,12 @@ extending recording time. If no Episode is active, an inactive Event does not
 open one. A matching inactive transition that arrives just after timeout may be
 attached to the recently closed Episode without reopening or extending it.
 
+The active **Capture profile** also applies to Event API observations. If it
+excludes the source Device, Episode still preserves the request, Receipt, and
+canonical Event, but returns no `episode_id`; the active Event cannot open or
+extend an Episode or start actions. Profile selection never disables this
+endpoint or disconnects the Device.
+
 ## Submit an Event
 
 Send a JSON object to `POST /api/v1/events`:

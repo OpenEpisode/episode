@@ -177,6 +177,82 @@ class EpisodeLifecycleSettingsResponse(ApiModel):
     notice: str
 
 
+class InstallationSettingsUpdate(ApiModel):
+    external_url: str = Field(default="", max_length=2048)
+
+
+class InstallationSettingsResponse(ApiModel):
+    external_url: str
+
+
+class EpisodeStartedWebhookSettingsUpdate(ApiModel):
+    """Webhook configuration fields.
+
+    ``url`` is accepted here but intentionally has no counterpart on the
+    response model. An omitted or blank URL preserves the saved credential;
+    ``clear_url`` is the explicit removal operation.
+    """
+
+    enabled: bool | None = None
+    payload_format: Literal["generic", "discord"] | None = None
+    timeout_seconds: float | None = Field(default=None, ge=0.5, le=30)
+    url: str | None = Field(
+        default=None,
+        max_length=2048,
+        json_schema_extra={"writeOnly": True},
+    )
+    clear_url: bool = False
+
+
+class EpisodeStartedWebhookSettingsResponse(ApiModel):
+    enabled: bool
+    payload_format: Literal["generic", "discord"]
+    timeout_seconds: float
+    url_configured: bool
+
+
+class EpisodeStartedWebhookTestResponse(ApiModel):
+    success: bool
+    message: str
+    status_code: int | None = None
+
+
+class CaptureProfileCreateRequest(ApiModel):
+    name: str = Field(min_length=1, max_length=100)
+    device_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+class CaptureProfileUpdateRequest(CaptureProfileCreateRequest):
+    pass
+
+
+class CaptureProfileActivationRequest(ApiModel):
+    profile_id: str = Field(min_length=1, max_length=128)
+
+
+class CaptureProfileResponse(ApiModel):
+    id: str
+    name: str
+    include_all_devices: bool
+    device_ids: list[str] = Field(default_factory=list)
+    builtin: bool
+    active: bool
+
+
+class CaptureProfileChangeResponse(ApiModel):
+    previous_profile_id: str | None
+    previous_profile_name: str | None
+    new_profile_id: str
+    new_profile_name: str
+    changed_at: datetime
+    source: str
+
+
+class ActiveCaptureProfileResponse(ApiModel):
+    profile: CaptureProfileResponse
+    recent_changes: list[CaptureProfileChangeResponse] = Field(default_factory=list)
+
+
 class DiagnosticsResponse(ApiModel):
     status: SystemStatusResponse
     services: list[ServiceResponse]
@@ -228,6 +304,14 @@ class EventOriginResponse(ApiModel):
     source: str
 
 
+class EventParticipationResponse(ApiModel):
+    allowed: bool
+    profile_id: str
+    profile_name: str
+    reason: str
+    evaluated_at: datetime
+
+
 class EventResponse(ApiModel):
     id: str
     device_id: str
@@ -240,6 +324,7 @@ class EventResponse(ApiModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     episode_id: str | None
     has_raw_payload: bool = False
+    participation: EventParticipationResponse | None = None
 
 
 class EvidenceResponse(ApiModel):

@@ -51,7 +51,7 @@ import {
   groupEvidenceBundlesByDay,
   groupEvidenceByEpisode,
 } from "./review-lists.js?v=3";
-import { updateRecentEpisodes } from "./sidebar.js?v=3";
+import { updateRecentEpisodes } from "./sidebar.js?v=4";
 import { showContent, showError, showLoading } from "./view.js?v=1";
 import { eventTitle } from "./timeline.js?v=6";
 
@@ -142,6 +142,27 @@ function eventConditionBadge(state) {
   if (normalized === "active") return '<span class="badge badge-active">Reported active</span>';
   if (normalized === "inactive") return '<span class="badge badge-inactive">Reported ended</span>';
   return `<span class="badge badge-neutral">${escHtml(titleCase(state || "Unknown condition"))}</span>`;
+}
+
+function participationProfileName(participation) {
+  return participation?.profile_name || participation?.profile_id || "active profile";
+}
+
+export function eventParticipationBadge(participation) {
+  if (participation?.allowed !== false) return "";
+  return `<span class="badge badge-capture-excluded">Capture excluded · ${escHtml(participationProfileName(participation))}</span>`;
+}
+
+export function eventParticipationNotice(participation) {
+  if (participation?.allowed !== false) return "";
+  const reason = participation.reason
+    ? `<small>Reason: ${escHtml(titleCase(participation.reason))}${participation.evaluated_at ? ` · evaluated ${escHtml(fmtShort(participation.evaluated_at))}` : ""}</small>`
+    : participation.evaluated_at
+    ? `<small>Evaluated ${escHtml(fmtShort(participation.evaluated_at))}</small>`
+    : "";
+  return `<section class="notice notice-info event-participation-notice" role="status">
+    <div><strong>Capture excluded · ${escHtml(participationProfileName(participation))}</strong><span>This observation was preserved, but it did not affect an Episode. Its active Event did not open or extend an Episode and it did not join a new recording because the active Capture profile excludes this Device.</span>${reason}</div>
+  </section>`;
 }
 
 export function closeReviewOverlays() {
@@ -393,6 +414,7 @@ export async function activity(deviceId, page = 1, parameters = new URLSearchPar
               <div class="activity-entry-body">
                 <div class="activity-entry-heading">
                   <div><h3><a href="#event/${event.id}">${escHtml(eventTitle(event))}</a></h3>
+                    ${eventParticipationBadge(event.participation)}
                     <div class="activity-context">
                       <span title="Device"><svg><use href="icons.svg#devices"></use></svg><span><small>Device</small><strong>${escHtml(deviceName)}</strong></span></span>
                       <span title="Area"><svg><use href="icons.svg#areas"></use></svg><span><small>Area</small><strong>${escHtml(areaName)}</strong></span></span>
@@ -526,7 +548,7 @@ export async function event(id) {
             <code>${escHtml(item.id)}</code>
           </div>
         </div>
-        <div class="review-detail-badges">${eventConditionBadge(item.event_state)}</div>
+        <div class="review-detail-badges">${eventConditionBadge(item.event_state)}${eventParticipationBadge(item.participation)}</div>
         <div class="review-detail-metrics">
           ${detailMetric("devices", "Device", deviceName)}
           ${detailMetric("areas", "Area", areaName)}
@@ -537,6 +559,7 @@ export async function event(id) {
         </div>
         <div class="review-detail-sources"><small>Received through</small><div>${eventSourceBadges(item)}</div></div>
       </header>
+      ${eventParticipationNotice(item.participation)}
       ${visuals}
       <section class="review-panel section">
         ${sectionHeading("evidence", "Related evidence", `Artifacts from ${deviceName} in the same Episode`, `<span class="review-section-count">${related.length}</span>`)}

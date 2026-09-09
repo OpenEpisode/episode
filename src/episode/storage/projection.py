@@ -20,6 +20,19 @@ def _utc_iso(value: datetime | None) -> str | None:
     return normalized.isoformat(timespec="microseconds")
 
 
+def _participation_data(event) -> dict[str, object] | None:
+    decision = event.participation
+    if decision is None:
+        return None
+    return {
+        "allowed": decision.allowed,
+        "profile_id": decision.profile_id,
+        "profile_name": decision.profile_name,
+        "reason": decision.reason,
+        "evaluated_at": _utc_iso(decision.evaluated_at),
+    }
+
+
 class EpisodeBundleProjector:
     """Build portable, database-independent views of an Episode."""
 
@@ -127,6 +140,8 @@ class EpisodeBundleProjector:
                     "dedup_key": event.dedup_key,
                     "receipt_ids": receipt_ids_by_event.get(event.id, []),
                     "metadata": event.metadata,
+                    "participation": _participation_data(event),
+                    "eligible_recording_device_ids": event.eligible_recording_device_ids,
                 }
                 for event in events
             ],

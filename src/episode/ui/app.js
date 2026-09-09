@@ -1,7 +1,9 @@
 import { $, $$ } from "./dom.js";
 import { closeCarousel } from "./evidence-gallery.js?v=7";
-import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=17";
+import { captureProfiles, refreshCaptureProfileNotice } from "./capture-profiles.js?v=4";
+import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=19";
 import { onboardingNeeded, welcome } from "./onboarding.js?v=7";
+import { notifications } from "./notifications.js?v=3";
 import {
   activity,
   closeReviewOverlays,
@@ -10,8 +12,8 @@ import {
   evidence,
   evidenceDetail,
   event,
-} from "./review-pages.js?v=17";
-import { startSidebar } from "./sidebar.js?v=3";
+} from "./review-pages.js?v=19";
+import { startSidebar } from "./sidebar.js?v=4";
 import { startRetentionPolicy } from "./retention-policy.js?v=1";
 import { toggleCollapse } from "./view.js?v=1";
 
@@ -80,7 +82,11 @@ function navigate() {
     devices,
     device: () => deviceView(args[0]),
     areas,
-    system: () => systemStatus(args[0]),
+    system: () => args[0] === "capture-profiles"
+      ? captureProfiles()
+      : args[0] === "notifications"
+      ? notifications()
+      : systemStatus(args[0]),
     welcome,
   };
   (routes[view] || routes.episodes)();
@@ -99,12 +105,14 @@ window.toggleSidebar = () => {
 applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || "dark");
 window.addEventListener("hashchange", navigate);
 startSidebar();
+window.setInterval(refreshCaptureProfileNotice, 10000);
 
 async function startApplication() {
   try {
     const [, needsOnboarding] = await Promise.all([
       startRetentionPolicy(),
       onboardingNeeded(),
+      refreshCaptureProfileNotice(),
     ]);
     const initialView = location.hash.slice(1).split(/[/?]/, 1)[0];
     if (needsOnboarding && (!initialView || initialView === "episodes")) {

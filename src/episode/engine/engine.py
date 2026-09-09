@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from episode.capture_profiles import CaptureProfileService
 from episode.domain.lifecycle import (
     DEFAULT_QUIESCENT_GRACE_SECONDS,
     MAX_QUIESCENT_GRACE_SECONDS,
@@ -46,11 +47,13 @@ class EpisodeEngine:
         bus: EventBus,
         timeout: int = 30,
         quiescent_grace_seconds: int = DEFAULT_QUIESCENT_GRACE_SECONDS,
+        capture_profiles: CaptureProfileService | None = None,
     ):
         self._repo = repo
         self._bus = bus
         self._timeout = timeout
         self._quiescent_grace_seconds = validate_quiescent_grace_seconds(quiescent_grace_seconds)
+        self._capture_profiles = capture_profiles or CaptureProfileService(repo)
         self._running = False
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._lifecycle_lock = asyncio.Lock()
@@ -173,7 +176,10 @@ class EpisodeEngine:
                 if device and device.activity_window_seconds is not None:
                     activity_window = device.activity_window_seconds
 
-            event, created = await self._repo.canonicalize_event(candidate)
+            if candidate.event_state == EventState.ACTIVE:
+                event, created = await self._capture_profiles.canonicalize_event(candidate)
+            else:
+                event, created = await self._repo.canonicalize_event(candidate)
             conflict = bool(
                 not created
                 and candidate.dedup_key
@@ -203,12 +209,29 @@ class EpisodeEngine:
                 )
             elif created:
                 logger.info("Persisted canonical event %s (%s)", event.id, event.event_type)
-                async with self._lifecycle_lock:
-                    await self._correlate(
-                        event,
-                        activity_time=activity_time,
-                        activity_window=activity_window,
-                    )
+                if event.event_state == EventState.ACTIVE:
+                    decision = event.participation
+                    if decision is None or not decision.allowed:
+                        logger.info(
+                            "Event %s excluded by capture profile %s (%s)",
+                            event.id,
+                            decision.profile_id if decision else "unknown",
+                            decision.reason if decision else "decision_missing",
+                        )
+                    else:
+                        async with self._lifecycle_lock:
+                            await self._correlate(
+                                event,
+                                activity_time=activity_time,
+                                activity_window=activity_window,
+                            )
+                else:
+                    async with self._lifecycle_lock:
+                        await self._correlate(
+                            event,
+                            activity_time=activity_time,
+                            activity_window=activity_window,
+                        )
             else:
                 logger.info(
                     "Linked duplicate %s delivery to canonical event %s",
@@ -371,6 +394,7 @@ class EpisodeEngine:
                 event.id,
                 episode.id,
             )
+            episode_created = False
         else:
             episode = Episode(
                 id=make_episode_id(event.timestamp),
@@ -396,7 +420,15 @@ class EpisodeEngine:
             )
             event.episode_id = episode.id
             logger.info("Created episode %s for area %s", episode.id, event.area_id)
+            episode_created = True
 
+        if episode_created:
+            await self._bus.publish(
+                Message(
+                    type="episode.created",
+                    data={"episode_id": episode.id, "event_id": event.id},
+                )
+            )
         await self._bus.publish(Message(type="episode.updated", data={"episode_id": episode.id}))
 
     async def _match_orphan_evidence(self, evidence: Evidence):

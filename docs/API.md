@@ -40,6 +40,12 @@ Areas and Devices are deliberately unpaginated because they are bounded
 configuration inventory and are returned alphabetically. Batch cover lookup is
 a mapping operation rather than a pageable collection.
 
+Capture profiles are also bounded configuration. `GET /api/v1/capture-profiles`
+returns the built-in and custom profiles, including their explicit `active`,
+`builtin`, `include_all_devices`, and `device_ids` state. The built-in
+`all-devices` profile is immutable and dynamic; an empty custom `device_ids`
+array is valid.
+
 Offset pagination is intentionally simple for the beta lifecycle. New activity
 arriving while a client walks older pages may move offsets; consumers requiring
 a stable historical export should first work from a closed Episode.
@@ -141,6 +147,44 @@ seconds. When a minimum Episode deadline passes, the Episode enters
 An active Event received within the window continues the same Episode. A value
 of zero disables the settling period. This setting is distinct from the
 per-Device `activity_window_seconds` policy.
+
+`GET /api/v1/settings/installation` returns the non-secret global
+`external_url`. `PUT` accepts the address operators use to reach this Episode
+installation, or a blank value to clear it. It must be an absolute HTTP(S) URL
+without credentials, query, or fragment; a deployment path is allowed and
+trailing slashes are removed. The backend never derives this value from a
+request host. Outbound integrations may use it to create absolute UI links.
+
+`GET /api/v1/settings/notifications/episode-started` returns the current
+best-effort webhook policy as `enabled`, `payload_format`, `timeout_seconds`,
+and `url_configured`. The credential-bearing URL is write-only and is never
+returned. `PUT` accepts those policy fields plus an optional `url`; an omitted
+or blank webhook URL preserves the saved value through the API.
+`clear_url: true` explicitly removes the webhook destination and requires
+notifications to be disabled.
+
+`POST /api/v1/settings/notifications/episode-started/test` sends a labeled,
+bounded test request using the saved URL and format without creating an Event
+or Episode. It may be used while notifications are disabled. Its response
+reports only immediate success, a sanitized message, and an optional HTTP
+status—not the destination or a persisted delivery record. Discord tests
+preview the embed style without creating an Episode or including an Episode
+link. Settings changes apply immediately and do not require an application
+restart.
+
+`POST /api/v1/capture-profiles`, and `GET`, `PUT`, or `DELETE` on
+`/api/v1/capture-profiles/{profile_id}`, manage custom profiles. The built-in or
+currently active profile cannot be deleted, and the built-in profile cannot be
+edited. `GET /api/v1/capture-profiles/active` returns `{profile,
+recent_changes}` with bounded newest-first activation history. `PUT` on that
+resource accepts `{"profile_id": "..."}` and atomically changes the active
+selection; activating the already-active profile is an idempotent no-op.
+
+The active selection is capture policy, not Device connectivity. New active
+Events from excluded Devices are still preserved and returned with a
+`participation` object containing the durable decision, but have no Episode.
+Internal recording-target IDs are not exposed in Event API projections. Profile
+changes apply to later canonical Events and never interrupt current recordings.
 
 ## Compatibility during beta
 

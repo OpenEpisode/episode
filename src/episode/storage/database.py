@@ -30,6 +30,37 @@ CREATE TABLE IF NOT EXISTS system_settings (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS capture_profiles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL COLLATE NOCASE,
+    include_all_devices INTEGER NOT NULL DEFAULT 0 CHECK (include_all_devices IN (0, 1)),
+    device_ids TEXT NOT NULL DEFAULT '[]',
+    builtin INTEGER NOT NULL DEFAULT 0 CHECK (builtin IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_capture_profiles_name
+    ON capture_profiles(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS capture_profile_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    active_profile_id TEXT NOT NULL REFERENCES capture_profiles(id)
+);
+
+CREATE TABLE IF NOT EXISTS capture_profile_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    previous_profile_id TEXT,
+    previous_profile_name TEXT,
+    new_profile_id TEXT NOT NULL,
+    new_profile_name TEXT NOT NULL,
+    changed_at TEXT NOT NULL,
+    source TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_capture_profile_changes_changed_at
+    ON capture_profile_changes(changed_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS raw_artifacts (
     id TEXT PRIMARY KEY,
     artifact_type TEXT NOT NULL,
@@ -68,6 +99,8 @@ CREATE TABLE IF NOT EXISTS events (
     dedup_key TEXT,
     raw_payload_path TEXT,
     metadata TEXT NOT NULL DEFAULT '{}',
+    participation TEXT,
+    eligible_recording_device_ids TEXT,
     episode_id TEXT REFERENCES episodes(id)
 );
 

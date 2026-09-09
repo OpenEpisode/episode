@@ -51,6 +51,8 @@ class SnapshotEngine:
         event = result.event
         if event.event_state.value != "active":
             return
+        if event.participation is not None and not event.participation.allowed:
+            return
         device_id = event.device_id
         if not event.episode_id or not self._media.get(device_id):
             return

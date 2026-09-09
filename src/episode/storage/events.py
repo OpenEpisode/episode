@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from datetime import datetime, timezone
 
 import aiosqlite
 
-from episode.domain.models import Event, EventState, make_event_dedup_key
+from episode.domain.models import Event, EventState, ParticipationDecision, make_event_dedup_key
 
 
 def _utc_iso(value: datetime) -> str:
@@ -13,6 +14,14 @@ def _utc_iso(value: datetime) -> str:
         value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
     )
     return normalized.isoformat(timespec="microseconds")
+
+
+def _participation_json(decision: ParticipationDecision | None) -> str | None:
+    if decision is None:
+        return None
+    data = asdict(decision)
+    data["evaluated_at"] = _utc_iso(decision.evaluated_at)
+    return json.dumps(data, separators=(",", ":"))
 
 
 class EventStore:
@@ -30,9 +39,10 @@ class EventStore:
             """INSERT INTO events (
                 id, device_id, area_id, timestamp,
                 event_type, event_state, source, dedup_key,
-                raw_payload_path, metadata, episode_id
+                raw_payload_path, metadata, participation,
+                eligible_recording_device_ids, episode_id
             )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 event.id,
                 event.device_id,
@@ -44,6 +54,12 @@ class EventStore:
                 event.dedup_key,
                 event.raw_payload_path,
                 json.dumps(event.metadata),
+                _participation_json(event.participation),
+                (
+                    json.dumps(event.eligible_recording_device_ids)
+                    if event.eligible_recording_device_ids is not None
+                    else None
+                ),
                 event.episode_id,
             ),
         )
@@ -68,13 +84,15 @@ class EventStore:
 
     async def get(self, event_id: str) -> Event | None:
         rows = await self._connection.execute_fetchall(
-            "SELECT * FROM events WHERE id = ?", (event_id,)
+            "SELECT * FROM events WHERE id = ?",
+            (event_id,),
         )
         return self._row_to_event(rows[0]) if rows else None
 
     async def find_by_dedup_key(self, dedup_key: str) -> Event | None:
         rows = await self._connection.execute_fetchall(
-            "SELECT * FROM events WHERE dedup_key = ? LIMIT 1", (dedup_key,)
+            "SELECT * FROM events WHERE dedup_key = ? LIMIT 1",
+            (dedup_key,),
         )
         return self._row_to_event(rows[0]) if rows else None
 
@@ -111,14 +129,16 @@ class EventStore:
             clauses.append("episode_id IS NOT NULL" if has_episode else "episode_id IS NULL")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = await self._connection.execute_fetchall(
-            f"SELECT * FROM events{where} ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?",
+            f"""SELECT * FROM events{where}
+                  ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?""",
             params + [limit, offset],
         )
         return [self._row_to_event(row) for row in rows]
 
     async def find_recent_by_device(self, device_id: str, since: datetime) -> list[Event]:
         rows = await self._connection.execute_fetchall(
-            "SELECT * FROM events WHERE device_id = ? AND timestamp >= ? ORDER BY timestamp ASC",
+            """SELECT * FROM events
+               WHERE device_id = ? AND timestamp >= ? ORDER BY timestamp ASC""",
             (device_id, _utc_iso(since)),
         )
         return [self._row_to_event(row) for row in rows]
@@ -152,6 +172,26 @@ class EventStore:
 
     @staticmethod
     def _row_to_event(row: aiosqlite.Row) -> Event:
+        participation = None
+        raw_participation = row["participation"] if "participation" in row.keys() else None
+        if raw_participation:
+            try:
+                participation = json.loads(raw_participation)
+            except (TypeError, json.JSONDecodeError):
+                participation = None
+        eligible_ids = None
+        raw_eligible_ids = (
+            row["eligible_recording_device_ids"]
+            if "eligible_recording_device_ids" in row.keys()
+            else None
+        )
+        if raw_eligible_ids:
+            try:
+                parsed_ids = json.loads(raw_eligible_ids)
+                if isinstance(parsed_ids, list):
+                    eligible_ids = [str(item) for item in parsed_ids]
+            except (TypeError, json.JSONDecodeError):
+                eligible_ids = None
         return Event(
             id=row["id"],
             device_id=row["device_id"],
@@ -164,4 +204,6 @@ class EventStore:
             raw_payload_path=row["raw_payload_path"],
             metadata=json.loads(row["metadata"]),
             episode_id=row["episode_id"],
+            participation=participation,
+            eligible_recording_device_ids=eligible_ids,
         )

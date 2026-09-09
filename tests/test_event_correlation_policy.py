@@ -127,6 +127,39 @@ async def test_triggering_devices_extend_episode_with_their_own_activity_windows
         await repo.close()
 
 
+@pytest.mark.asyncio
+async def test_episode_created_is_emitted_once_for_the_triggering_event(tmp_path):
+    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
+    repo = Repository(config)
+    bus = EventBus()
+    engine = EpisodeEngine(repo, bus, timeout=30)
+    await repo.initialize()
+    await repo.upsert_area(Area(id="entrance", name="Entrance"))
+    await repo.upsert_device(
+        Device(id="camera", name="Camera", device_type="camera", area_id="entrance")
+    )
+    created_messages = []
+
+    async def observe(message):
+        created_messages.append(message.data)
+
+    bus.subscribe("episode.created", observe)
+    try:
+        first = await engine.ingest_event(
+            Event(device_id="camera", area_id="entrance", event_type="motion_detection")
+        )
+        await engine.ingest_event(
+            Event(device_id="camera", area_id="entrance", event_type="human_detection")
+        )
+
+        assert created_messages == [
+            {"episode_id": first.event.episode_id, "event_id": first.event.id}
+        ]
+    finally:
+        await engine.stop()
+        await repo.close()
+
+
 async def _stored_receipt(repo, received_at: datetime) -> IngestionReceipt:
     receipt = IngestionReceipt(source="test", received_at=received_at)
     await repo.create_ingestion_receipt(receipt)

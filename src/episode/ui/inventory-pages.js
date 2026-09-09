@@ -21,6 +21,17 @@ import { showContent, showError, showLoading } from "./view.js?v=1";
 let inventoryAreas = [];
 let inventoryDevices = [];
 
+export function suggestedExternalUrl() {
+  const origin = globalThis.window?.location?.origin || globalThis.location?.origin || "";
+  if (!origin || origin === "null") return "";
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : "";
+  } catch {
+    return "";
+  }
+}
+
 export function operationalIndicator(state) {
   if (state === "healthy") return "online";
   if (state === "degraded") return "warning";
@@ -304,6 +315,21 @@ window.saveEpisodeLifecycle = async form => {
   }
 };
 
+window.saveInstallationSettings = async form => {
+  const data = new FormData(form);
+  const externalUrl = String(data.get("external_url") || "").trim();
+  try {
+    await apiRequest("/settings/installation", {
+      method: "PUT",
+      body: { external_url: externalUrl },
+    });
+    notify(externalUrl ? "External Episode URL updated" : "External Episode URL removed", "success");
+    await systemStatus("overview");
+  } catch (error) {
+    notify(`Could not update external Episode URL: ${error.message}`, "warning");
+  }
+};
+
 export async function devices() {
   showLoading();
   try {
@@ -494,6 +520,8 @@ function systemNavigation(active) {
     ["overview", "Overview"],
     ["recordings", "Recordings"],
     ["integrations", "Integrations"],
+    ["notifications", "Notifications"],
+    ["capture-profiles", "Capture profiles"],
     ["storage", "Storage"],
   ];
   return `<nav class="system-navigation" aria-label="System sections">
@@ -561,8 +589,11 @@ function renderEpisodeLifecycleSettings(settings = {}) {
   </section>`;
 }
 
-function systemOverview(diagnostics, services, filesystemLabel) {
+function systemOverview(diagnostics, services, filesystemLabel, installationSettings) {
   const status = diagnostics.status;
+  const savedExternalUrl = installationSettings?.external_url || "";
+  const suggestedUrl = suggestedExternalUrl();
+  const externalUrl = savedExternalUrl || suggestedUrl;
   return `<dl class="detail-facts section system-summary-facts">
       <div><dt>Version</dt><dd>v${status.version}</dd></div>
       <div><dt>Active recordings</dt><dd>${status.active_recordings}</dd></div>
@@ -570,6 +601,17 @@ function systemOverview(diagnostics, services, filesystemLabel) {
       <div><dt>Episode data</dt><dd>${fmtBytes(diagnostics.storage.data_bytes)}</dd></div>
       <div><dt>Filesystem available</dt><dd>${filesystemLabel}</dd></div>
     </dl>
+    <section class="section system-installation-settings">
+      <div class="system-section-heading"><div><h3>External Episode URL</h3><p>The address operators use to open this installation from notifications and integrations.</p></div></div>
+      <form class="system-installation-form" onsubmit="saveInstallationSettings(this); return false">
+        <label class="field">
+          <span>Installation address</span>
+          <input name="external_url" type="url" autocomplete="url" inputmode="url" value="${escHtml(externalUrl)}" placeholder="https://episode.example">
+          <small>${savedExternalUrl ? "Saved globally. Delete the value to remove links from outbound notifications." : suggestedUrl ? "Suggested from this browser. Review and save it before Episode uses it." : "Optional. Enter an absolute HTTP(S) URL if outbound notifications should link back here."}</small>
+        </label>
+        <button type="submit" class="button button-primary">Save address</button>
+      </form>
+    </section>
     <section class="section system-core-services">
       <div class="system-section-heading"><div><h3>Core services</h3><p>The components required to receive Events and preserve Evidence.</p></div></div>
       ${renderIntegrationRows(services)}
@@ -581,10 +623,11 @@ export async function systemStatus(requestedSection = "overview") {
   const section = validSections.has(requestedSection) ? requestedSection : "overview";
   showLoading();
   try {
-    const [diagnostics, retention, episodeSettings] = await Promise.all([
+    const [diagnostics, retention, episodeSettings, installationSettings] = await Promise.all([
       api("/diagnostics"),
       api("/settings/retention"),
       api("/settings/episode"),
+      api("/settings/installation"),
     ]);
     const status = diagnostics.status;
     const recorder = diagnostics.services.find(service => service.id === "recorder") || {};
@@ -626,7 +669,7 @@ export async function systemStatus(requestedSection = "overview") {
         </dl>
         ${renderRetentionSettings(retention)}`;
     } else {
-      content = systemOverview(diagnostics, services, filesystemLabel);
+      content = systemOverview(diagnostics, services, filesystemLabel, installationSettings);
     }
     showContent(`
       ${pageHeader({

@@ -21,7 +21,20 @@ class AreaRecordingTargetResolver:
     async def resolve(self, event: Event) -> list[Device]:
         if not event.area_id:
             return []
-        devices = await self._repo.list_devices(area_id=event.area_id)
+        if event.eligible_recording_device_ids is not None:
+            # Newly allowed Events carry an immutable target snapshot.  This
+            # keeps delayed dispatch and restart reconstruction deterministic
+            # after an operator changes the active profile.
+            devices = []
+            for device_id in event.eligible_recording_device_ids or []:
+                device = await self._repo.get_device(device_id)
+                if device:
+                    devices.append(device)
+            return devices
+        else:
+            # Legacy/manual Events predate capture decisions and retain the
+            # established dynamic resolver behavior.
+            devices = await self._repo.list_devices(area_id=event.area_id)
         targets = []
         for device in devices:
             video = device.get_config("video")

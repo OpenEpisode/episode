@@ -57,7 +57,7 @@ const viewUrl = moduleUrl(`
   export function showLoading() {}
 `);
 
-globalThis.window = {};
+globalThis.window = { location: { origin: "https://episode.example:8989" } };
 globalThis.FormData = class {
   constructor(form) { this.form = form; }
   get(name) { return this.form[name]; }
@@ -123,6 +123,7 @@ globalThis.systemResponses = {
     max_quiescent_grace_seconds: 60,
     notice: "Brief continuation window after the activity deadline.",
   },
+  "/settings/installation": { external_url: "" },
 };
 
 const module = await import(moduleUrl(
@@ -145,8 +146,27 @@ test("System separates overview, recording, and storage concerns", async () => {
   assert.match(globalThis.systemHtml, /href="#system\/recordings"/);
   assert.match(globalThis.systemHtml, /href="#system\/integrations"/);
   assert.match(globalThis.systemHtml, /href="#system\/storage"/);
+  assert.match(globalThis.systemHtml, /External Episode URL/);
+  assert.match(
+    globalThis.systemHtml,
+    /name="external_url"[^>]+value="https:\/\/episode\.example:8989"/,
+  );
+  assert.match(globalThis.systemHtml, /Suggested from this browser/);
   assert.doesNotMatch(globalThis.systemHtml, /name="retention_days"/);
   assert.doesNotMatch(globalThis.systemHtml, /Interrupted recordings/);
+
+  globalThis.systemRequests = [];
+  await globalThis.window.saveInstallationSettings({
+    external_url: "https://episode.example/install/",
+  });
+  assert.deepEqual(globalThis.systemRequests, [{
+    path: "/settings/installation",
+    options: {
+      method: "PUT",
+      body: { external_url: "https://episode.example/install/" },
+    },
+  }]);
+  assert.equal(globalThis.systemNotification, "External Episode URL updated");
 
   await module.systemStatus("recordings");
   assert.match(globalThis.systemHtml, /Recording activity/);

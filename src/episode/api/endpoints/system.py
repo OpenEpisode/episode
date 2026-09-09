@@ -16,10 +16,13 @@ from episode.api.schemas import (
     EpisodeLifecycleSettingsResponse,
     EpisodeLifecycleSettingsUpdate,
     HealthResponse,
+    InstallationSettingsResponse,
+    InstallationSettingsUpdate,
     RetentionSettingsResponse,
     RetentionSettingsUpdate,
     SystemStatusResponse,
 )
+from episode.installation import get_external_episode_url, set_external_episode_url
 
 _SENSITIVE_KEY = re.compile(
     r"(^|[_-])(password|passwd|secret|api[_-]?key|authorization|cookie|credentials?|private[_-]?key)([_-]|$)",
@@ -195,6 +198,27 @@ def system_router(context: ApiContext) -> APIRouter:
             return await context.engine.set_quiescent_grace(request.quiescent_grace_seconds)
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
+
+    @router.get(
+        "/api/v1/settings/installation",
+        response_model=InstallationSettingsResponse,
+    )
+    async def installation_settings():
+        return {"external_url": await get_external_episode_url(context.repository)}
+
+    @router.put(
+        "/api/v1/settings/installation",
+        response_model=InstallationSettingsResponse,
+    )
+    async def update_installation_settings(request: InstallationSettingsUpdate):
+        try:
+            external_url = await set_external_episode_url(
+                context.repository,
+                request.external_url,
+            )
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        return {"external_url": external_url}
 
     @router.get("/api/v1/diagnostics", response_model=DiagnosticsResponse)
     async def diagnostics():

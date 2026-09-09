@@ -7,7 +7,7 @@ import os
 import re
 import subprocess
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -266,7 +266,11 @@ class RecordingEngine:
                         device.id,
                     )
                     continue
-                await self._start_recording(episode.id, device, stream_url)
+                await self._start_recording(
+                    episode.id,
+                    replace(device, area_id=episode.primary_area_id),
+                    stream_url,
+                )
                 recording = self._recordings[self._rec_key(episode.id, device.id)]
                 await self._repo.append_episode_journal(
                     episode.id,
@@ -299,6 +303,8 @@ class RecordingEngine:
         event = result.event
         if event.event_state != EventState.ACTIVE or not event.episode_id:
             return
+        if event.participation is not None and not event.participation.allowed:
+            return
         for device in await self._target_resolver.resolve(event):
             key = self._rec_key(event.episode_id, device.id)
             if key in self._recordings:
@@ -306,7 +312,11 @@ class RecordingEngine:
             try:
                 url = self._stream_url(device)
                 if url:
-                    await self._start_recording(event.episode_id, device, url)
+                    await self._start_recording(
+                        event.episode_id,
+                        replace(device, area_id=event.area_id),
+                        url,
+                    )
                 else:
                     logger.warning(
                         "Skipping recording for episode %s camera %s: no stream URL",

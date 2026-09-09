@@ -13,6 +13,7 @@ from episode.actions.snapshot import SnapshotEngine
 from episode.api.routes import create_api
 from episode.api.runtime import OperationalView
 from episode.api.thumbnails import ThumbnailCache
+from episode.capture_profiles import CaptureProfileService
 from episode.config import EpisodeConfig, load_config
 from episode.connectors.base import ManagedConnector
 from episode.connectors.event_api import EventAPIConnector
@@ -27,6 +28,7 @@ from episode.lifecycle import Lifecycle
 from episode.media import MediaRegistry
 from episode.media.previews import CurrentViewService
 from episode.media.timelapse import TimelapseService
+from episode.notifications import EpisodeStartedWebhookSettingsService
 from episode.plugins import PluginContext, PluginManager, builtin_plugin_registry
 from episode.plugins.api import register_plugins_api
 from episode.plugins.deliveries import RawPluginDeliveryStore
@@ -45,7 +47,13 @@ class Application:
         self._lifecycle = Lifecycle()
         self._bus = EventBus()
         self._repo = Repository(config)
-        self._engine = EpisodeEngine(self._repo, self._bus, config.episode_timeout)
+        self._capture_profiles = CaptureProfileService(self._repo)
+        self._engine = EpisodeEngine(
+            self._repo,
+            self._bus,
+            config.episode_timeout,
+            capture_profiles=self._capture_profiles,
+        )
         self._ingress_router = IngressRouter()
         self._ingestion = IngestionService(
             config.data_dir,
@@ -72,6 +80,10 @@ class Application:
         )
         self._snapshotter = SnapshotEngine(self._bus, self._media, config.data_dir)
         self._current_views = CurrentViewService(self._media, self._recorder)
+        self._episode_started_webhook = EpisodeStartedWebhookSettingsService(
+            self._repo,
+            self._bus,
+        )
         self._configured_connector_types = {
             connector.type for connector in config.connectors if connector.enabled
         }
@@ -120,6 +132,8 @@ class Application:
             retention=self._retention,
             recorder=self._recorder,
             engine=self._engine,
+            capture_profiles=self._capture_profiles,
+            episode_started_webhook=self._episode_started_webhook,
         )
         register_plugins_api(self._fastapi_app, self._plugins)
 
@@ -176,6 +190,13 @@ class Application:
             self._recorder.stop,
         )
         await self._recorder.recover_interrupted_recordings()
+
+        logger.info("Loading Episode-started webhook settings from SQLite...")
+        await self._lifecycle.start(
+            "Episode-started webhook",
+            self._episode_started_webhook.start,
+            self._episode_started_webhook.stop,
+        )
 
         logger.info("Starting visual Evidence retention...")
         await self._lifecycle.start(

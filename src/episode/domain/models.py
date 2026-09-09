@@ -63,6 +63,48 @@ class ReceiptStatus(str, Enum):
     UNMATCHED = "unmatched"
 
 
+@dataclass(frozen=True)
+class ParticipationDecision:
+    """The core-owned capture decision persisted with a canonical Event.
+
+    Participation is intentionally separate from integration metadata.  It is
+    an operational interpretation of whether an active observation may affect
+    Episode capture, and remains useful after the active profile changes.
+    """
+
+    allowed: bool
+    profile_id: str
+    profile_name: str
+    reason: str
+    evaluated_at: datetime
+
+
+@dataclass
+class CaptureProfile:
+    """A named set of Devices eligible to participate in new capture."""
+
+    id: str = ""
+    name: str = ""
+    include_all_devices: bool = False
+    device_ids: list[str] = field(default_factory=list)
+    builtin: bool = False
+    active: bool = False
+    created_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+
+
+@dataclass(frozen=True)
+class CaptureProfileChange:
+    """One append-only active-profile transition."""
+
+    previous_profile_id: str | None
+    previous_profile_name: str | None
+    new_profile_id: str
+    new_profile_name: str
+    changed_at: datetime
+    source: str
+
+
 @dataclass
 class Area:
     id: str = ""
@@ -113,10 +155,23 @@ class Event:
     raw_payload_path: str | None = None
     metadata: dict = field(default_factory=dict)
     episode_id: str | None = None
+    participation: ParticipationDecision | None = None
+    # ``None`` means that no participation snapshot exists. An empty list is
+    # meaningful: the Event had no eligible recording targets, either because
+    # capture was excluded or no video target matched.
+    eligible_recording_device_ids: list[str] | None = None
 
     def __post_init__(self):
         if isinstance(self.event_state, str):
             self.event_state = EventState(self.event_state)
+        if isinstance(self.participation, dict):
+            decision = dict(self.participation)
+            evaluated_at = decision.get("evaluated_at")
+            if isinstance(evaluated_at, str):
+                decision["evaluated_at"] = datetime.fromisoformat(evaluated_at)
+            self.participation = ParticipationDecision(**decision)
+        if self.eligible_recording_device_ids is not None:
+            self.eligible_recording_device_ids = list(self.eligible_recording_device_ids)
 
 
 @dataclass

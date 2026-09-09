@@ -15,7 +15,8 @@ flowchart LR
     Ingress --> Receipt[Ingestion receipt]
     Ingress --> Router[Configured plugin or core handlers]
     Router --> Canonical[Normalized observation]
-    Canonical --> Engine[Episode engine]
+    Canonical --> Participation[Capture participation decision]
+    Participation --> Engine[Episode engine]
     Engine --> Bundle[Episode bundle]
     Engine --> Targets[Action target resolver]
     Targets --> Action[Recording and future actions]
@@ -39,6 +40,7 @@ claims are rejected instead of being resolved by registration order.
 | --- | --- | --- |
 | Area | Physical coverage and correlation boundary | Configuration evolves |
 | Device | Physical source role: camera, doorbell, alarm panel, sensor, or other | Discovery metadata evolves |
+| Capture Profile | Operator-selected set of Devices eligible for new capture | Configuration and active selection evolve |
 | Raw Artifact | Exact bytes received or generated | Content is sealed and checksummed |
 | Ingestion Receipt | One delivery through one connector | Associations may be added |
 | Event | Canonical observation deduplicated across receipts | Core observation is stable |
@@ -78,6 +80,28 @@ deadline, reopen it, or restart actions. Unpaired inactive Events remain
 preserved and unassigned. This lifecycle policy belongs to correlation, not to
 protocol plugins.
 
+Before a newly canonicalized active Event reaches correlation, the core records
+a Capture-profile participation decision. The built-in `all-devices` profile is
+dynamic; custom profiles contain an explicit Device set and may intentionally be
+empty. Exclusion is not an ingestion filter: the Raw Artifact, Receipt, and Event
+remain preserved and queryable, but the Event cannot create or extend an Episode
+or start actions. Inactive Events bypass this gate so a later transition can
+still attach to its preceding accepted active Event without reopening or
+extending the Episode.
+
+The decision stores the profile identity and evaluation time separately from
+plugin metadata. For an accepted Event it also snapshots the exact recording
+target IDs selected at that moment. Action dispatch and restart recovery consume
+that snapshot instead of re-evaluating the current profile, Device Area, enabled
+state, or recording mode. A later profile or inventory change therefore affects
+new Events only and cannot stop an existing capture.
+
+After a new Episode and its triggering Event association are durable, the
+engine publishes one vendor-neutral `episode.created` runtime message. Updates
+to an existing or quiescent Episode do not emit it again. This is an internal
+lifecycle signal for actions and operational integrations; it is not a second
+Event and does not alter the portable record.
+
 ## Current module boundaries
 
 ```text
@@ -94,6 +118,9 @@ src/episode/
 │       └── sdk/
 ├── media/            camera media registry and timelapse service
 ├── actions/          vendor-neutral snapshot action
+├── capture_profiles.py  core capture-participation policy
+├── installation.py   global non-secret installation identity settings
+├── notifications.py  bounded outbound Episode-start delivery
 ├── domain/           vendor-neutral models and identities
 ├── engine/           correlation and lifecycle orchestration
 ├── inventory/        persistent Device/Area configuration service and validation
@@ -178,6 +205,26 @@ cleanup is logged without preventing the remaining resources from closing.
 Asynchronous plugin startup and shutdown are bounded independently, so a hung
 plugin cannot indefinitely block later integrations or application cleanup.
 
+The optional Episode-start webhook is a deliberately small operational bridge.
+Its `episode.created` handler only writes to a bounded in-memory queue; one
+worker creates a credential-free Episode/Event projection and performs a
+bounded HTTP request. Failures are logged without exposing the configured URL
+and cannot propagate into correlation or recording. It has no retries,
+delivery ledger, or recovery guarantee. Those semantics require the planned
+durable Action Run model, which may later replace this transport without moving
+notification policy into the Episode engine.
+
+Webhook settings live in the existing SQLite `system_settings` store and are
+managed under **System → Notifications**. SQLite is the only configuration
+source. The credential-bearing webhook URL is accepted only through a
+write-only API field; public projections expose `url_configured` instead. A
+separate global, non-secret External Episode URL is managed under **System →
+Overview**, validated as an absolute HTTP(S) address, and used only for
+additive absolute links in outbound projections. The backend never derives it
+from a request or container host. Webhook updates reconfigure the subscriber
+immediately. A separate test operation uses the same bounded sender without
+publishing an Event or creating an Episode.
+
 At startup, the Episode engine restores each persisted open Episode to the state
 appropriate for the current time: active Episodes past their minimum deadline
 enter quiescence, while any Episode whose complete grace horizon has passed
@@ -194,13 +241,14 @@ SQLite is the operational index. It makes filtering and correlation efficient,
 but it is not the only way to understand an incident.
 
 SQLite runs in write-ahead-log (WAL) mode so API and engine reads can continue
-while connectors commit raw deliveries. Both connections use a bounded busy
-timeout for brief writer contention. The main operational connection enforces
-the canonical schema's foreign keys; the raw-delivery connection persists its
-receipt before the normalized Event or Evidence exists and links it afterwards.
-Raw-delivery transactions are serialized and always rolled back when interrupted,
-including task cancellation, so an abandoned connector task cannot retain the
-database write lock.
+while connectors commit raw deliveries. Connections use a bounded busy timeout
+for brief writer contention and enforce foreign keys. The raw-delivery
+connection persists its Receipt before the normalized Event or Evidence exists
+and links it afterwards. A separate capture-profile connection keeps the active
+pointer and its audit row in one transaction without an unrelated operational
+commit splitting them. Raw-delivery transactions are serialized and always
+rolled back when interrupted, including task cancellation, so an abandoned
+connector task cannot retain the database write lock.
 
 The storage layer keeps one stable repository façade for application callers,
 while inventory, canonical Event, and provenance SQL live in focused stores.
@@ -231,16 +279,23 @@ The additive tables include:
 - `raw_artifacts`: location, media type, byte length, SHA-256, and seal state.
 - `ingestion_receipts`: source, timing, parse status, and links to artifacts,
   Events, Evidence, and Episodes.
-- `events`: canonical observations with a stable deduplication key.
+- `events`: canonical observations with a stable deduplication key, immutable
+  Capture-profile decision, and exact recording-target snapshot.
+- `capture_profiles`, `capture_profile_state`, and `capture_profile_changes`:
+  bounded operator policy, the single active selection, and append-only
+  activation history.
 - `evidence`: incident material with artifact and integrity references.
 - `episodes`: lifecycle and summary index.
-- `system_settings`: UI-managed installation policy such as visual retention.
+- `system_settings`: UI-managed installation policy such as visual retention,
+  the external installation URL, and bounded notification settings.
 - `evidence_expirations`: intentional Evidence tombstones after retained bytes
   are removed.
 
 During the pre-release lifecycle, Episode supports only the current database
-schema. Schema migration guarantees begin when the stable storage contract is
-declared; until then, a development release may require a clean database.
+schema. Small, explicitly supported additive steps may be applied automatically
+when they preserve existing records without reinterpretation. General schema
+migration guarantees begin when the stable storage contract is declared; until
+then, an incompatible development release may require a clean database.
 
 ## Episode bundles
 
@@ -433,6 +488,8 @@ first-class fields without removing the underlying diagnostic metadata.
 - Recording lifetime follows Episode lifetime; ONVIF snapshot capture is
   explicit and disabled by default.
 - Broader event-to-action policy is not implemented.
+- Episode-start webhook delivery is best effort and is not replayed after
+  failure, overload, shutdown, or restart.
 - Authentication and safe Internet exposure are not implemented.
 - Annotation and processing-run persistence are planned, not yet public APIs.
 - Capture resumes after an application or host restart only while the persisted

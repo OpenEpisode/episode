@@ -147,8 +147,11 @@ class InventoryStore:
                 """SELECT
                     (SELECT COUNT(*) FROM events WHERE device_id = ?) AS events,
                     (SELECT COUNT(*) FROM evidence WHERE device_id = ?) AS evidence,
-                    (SELECT COUNT(*) FROM ingestion_receipts WHERE device_id = ?) AS receipts""",
-                (device_id, device_id, device_id),
+                    (SELECT COUNT(*) FROM ingestion_receipts WHERE device_id = ?) AS receipts,
+                    (SELECT COUNT(*)
+                       FROM capture_profiles profile, json_each(profile.device_ids) member
+                      WHERE profile.builtin = 0 AND member.value = ?) AS capture_profiles""",
+                (device_id, device_id, device_id, device_id),
             )
         )[0]
         return {key: int(row[key]) for key in row.keys()}

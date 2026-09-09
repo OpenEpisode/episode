@@ -6,19 +6,23 @@ from fastapi import FastAPI, Request
 
 from episode import __version__
 from episode.api.context import ApiContext
+from episode.api.endpoints.capture_profiles import capture_profiles_router
 from episode.api.endpoints.episodes import episodes_router
 from episode.api.endpoints.events import events_router
 from episode.api.endpoints.evidence import evidence_router
 from episode.api.endpoints.inventory import inventory_router
+from episode.api.endpoints.notifications import notifications_router
 from episode.api.endpoints.receipts import receipts_router
 from episode.api.endpoints.system import system_router
 from episode.api.errors import install_error_handlers
 from episode.api.runtime import OperationalView
 from episode.api.thumbnails import ThumbnailCache
+from episode.capture_profiles import CaptureProfileService
 from episode.engine.engine import EpisodeEngine
 from episode.inventory import DeviceValidationService, InventoryService
 from episode.media.previews import CurrentViewService
 from episode.media.timelapse import TimelapseService
+from episode.notifications import EpisodeStartedWebhookSettingsService
 from episode.recording.engine import RecordingEngine
 from episode.retention import RetentionService
 
@@ -36,6 +40,8 @@ def create_api(
     retention: RetentionService | None = None,
     recorder: RecordingEngine | None = None,
     engine: EpisodeEngine | None = None,
+    capture_profiles: CaptureProfileService | None = None,
+    episode_started_webhook: EpisodeStartedWebhookSettingsService | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Episode",
@@ -56,6 +62,8 @@ def create_api(
         retention=retention,
         recorder=recorder,
         engine=engine,
+        capture_profiles=capture_profiles,
+        episode_started_webhook=episode_started_webhook,
     )
     install_error_handlers(app)
 
@@ -69,6 +77,8 @@ def create_api(
         return response
 
     app.include_router(system_router(context))
+    app.include_router(notifications_router(context))
+    app.include_router(capture_profiles_router(context))
     app.include_router(inventory_router(context))
     app.include_router(episodes_router(context))
     app.include_router(events_router(context))

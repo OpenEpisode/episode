@@ -4,6 +4,8 @@ import os
 from dataclasses import asdict, is_dataclass
 
 from episode.api.schemas import (
+    CaptureProfileChangeResponse,
+    CaptureProfileResponse,
     EpisodeResponse,
     EventResponse,
     EvidenceResponse,
@@ -159,7 +161,29 @@ def public_event(event, receipts=(), integrations: list[dict] | None = None) -> 
     data["sources"] = sources
     data["origins"] = origins
     data["has_raw_payload"] = bool(data.pop("raw_payload_path", None))
+    # Target eligibility is an internal deterministic dispatch snapshot.  The
+    # durable operator-facing decision is projected separately and contains no
+    # storage paths, credentials, or target internals.
+    data.pop("eligible_recording_device_ids", None)
     return EventResponse.model_validate(data)
+
+
+def public_capture_profile(profile) -> CaptureProfileResponse:
+    data = _item_data(profile)
+    return CaptureProfileResponse.model_validate(
+        {
+            "id": data["id"],
+            "name": data["name"],
+            "include_all_devices": bool(data.get("include_all_devices", False)),
+            "device_ids": list(data.get("device_ids") or []),
+            "builtin": bool(data.get("builtin", False)),
+            "active": bool(data.get("active", False)),
+        }
+    )
+
+
+def public_capture_profile_change(change) -> CaptureProfileChangeResponse:
+    return CaptureProfileChangeResponse.model_validate(_item_data(change))
 
 
 def public_receipt(receipt) -> IngestionReceiptResponse:

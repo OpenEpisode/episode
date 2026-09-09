@@ -34,6 +34,17 @@
   align-items: center;
   gap: 4px;
 }
+.sidebar-status-link {
+  border-radius: var(--radius-sm);
+  color: inherit;
+  min-height: 30px;
+  padding: .35rem .4rem;
+  text-decoration: none;
+}
+.sidebar-status-link:hover { background: var(--surface-hover); }
+.sidebar-recording-count { margin-left: auto; }
+.sidebar-status-action { color: var(--text-muted); font-size: .66rem; margin-left: auto; white-space: nowrap; }
+.sidebar-recording-count + .sidebar-status-action { margin-left: .3rem; }
 .sidebar-status .dot {
   display: inline-block;
   width: 8px;

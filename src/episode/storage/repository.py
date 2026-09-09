@@ -16,6 +16,8 @@ from episode.domain.lifecycle import (
 )
 from episode.domain.models import (
     Area,
+    CaptureProfile,
+    CaptureProfileChange,
     Device,
     Episode,
     EpisodeState,
@@ -26,6 +28,7 @@ from episode.domain.models import (
     ReceiptStatus,
 )
 from episode.storage.bundles import append_journal
+from episode.storage.capture_profiles import CaptureProfileStore
 from episode.storage.database import SCHEMA_SQL
 from episode.storage.events import EventStore
 from episode.storage.files import async_move_to_episode, describe_artifact
@@ -38,6 +41,25 @@ logger = logging.getLogger(__name__)
 
 
 SQLITE_BUSY_TIMEOUT_MS = 15_000
+
+_BETA6_EVENT_COLUMNS = {
+    "id",
+    "device_id",
+    "area_id",
+    "timestamp",
+    "event_type",
+    "event_state",
+    "source",
+    "dedup_key",
+    "raw_payload_path",
+    "metadata",
+    "episode_id",
+}
+
+_CAPTURE_PROFILE_EVENT_COLUMNS = {
+    "participation": "TEXT",
+    "eligible_recording_device_ids": "TEXT",
+}
 
 _EVIDENCE_SELECT = """
 SELECT e.*,
@@ -63,6 +85,8 @@ class Repository:
         self._provenance: ProvenanceStore | None = None
         self._inventory: InventoryStore | None = None
         self._events: EventStore | None = None
+        self._capture_profile_conn: aiosqlite.Connection | None = None
+        self._capture_profiles: CaptureProfileStore | None = None
         self._delivery_conn: aiosqlite.Connection | None = None
         self._delivery_provenance: ProvenanceStore | None = None
         self._delivery_lock = asyncio.Lock()
@@ -80,12 +104,24 @@ class Repository:
         if not journal_mode or str(journal_mode[0][0]).lower() != "wal":
             raise RuntimeError("Episode requires SQLite WAL mode")
         await self._conn.execute("PRAGMA synchronous = NORMAL")
+        await self._upgrade_event_schema(self._conn)
         await self._conn.executescript(SCHEMA_SQL)
         self._provenance = ProvenanceStore(self._conn)
         self._inventory = InventoryStore(self._conn)
         self._events = EventStore(self._conn)
         await self._conn.commit()
         await self._enable_foreign_keys(self._conn)
+
+        # Capture-profile activation uses an explicit SQLite transaction. Keep
+        # it on its own connection so unrelated Event or inventory commits
+        # cannot accidentally split the active-pointer and audit-row update.
+        self._capture_profile_conn = await aiosqlite.connect(self._db_path)
+        self._capture_profile_conn.row_factory = aiosqlite.Row
+        await self._capture_profile_conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        await self._capture_profile_conn.execute("PRAGMA synchronous = NORMAL")
+        await self._enable_foreign_keys(self._capture_profile_conn)
+        self._capture_profiles = CaptureProfileStore(self._capture_profile_conn)
+        await self._capture_profiles.ensure_defaults()
         # Raw artifacts and their receipts use a dedicated connection so their
         # transaction cannot be committed accidentally by another repository
         # coroutine sharing the main connection.
@@ -103,6 +139,45 @@ class Repository:
         await reconcile_episode_counts(self._conn)
         await self.rebuild_episode_manifests()
 
+    async def _upgrade_event_schema(self, connection: aiosqlite.Connection) -> None:
+        """Apply the bounded additive Beta.6 to Beta.7 Event schema step."""
+        tables = await connection.execute_fetchall(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'events'"
+        )
+        if not tables:
+            return
+        columns = {
+            str(row["name"])
+            for row in await connection.execute_fetchall("PRAGMA table_info(events)")
+        }
+        if not _BETA6_EVENT_COLUMNS.issubset(columns):
+            await connection.close()
+            self._conn = None
+            raise RuntimeError(
+                "The Episode database uses an unsupported pre-release schema; "
+                "start this release with a clean data directory"
+            )
+
+        missing = [
+            (name, column_type)
+            for name, column_type in _CAPTURE_PROFILE_EVENT_COLUMNS.items()
+            if name not in columns
+        ]
+        if not missing:
+            return
+        try:
+            await connection.execute("BEGIN IMMEDIATE")
+            for name, column_type in missing:
+                await connection.execute(f"ALTER TABLE events ADD COLUMN {name} {column_type}")
+            await connection.commit()
+            logger.info(
+                "Applied additive Event schema step for columns: %s",
+                ", ".join(name for name, _ in missing),
+            )
+        except BaseException:
+            await connection.rollback()
+            raise
+
     @staticmethod
     async def _enable_foreign_keys(connection: aiosqlite.Connection) -> None:
         await connection.execute("PRAGMA foreign_keys = ON")
@@ -115,6 +190,10 @@ class Repository:
             await self._delivery_conn.close()
             self._delivery_conn = None
             self._delivery_provenance = None
+        if self._capture_profile_conn:
+            await self._capture_profile_conn.close()
+            self._capture_profile_conn = None
+            self._capture_profiles = None
         if self._conn:
             await self._conn.close()
             self._conn = None
@@ -391,6 +470,41 @@ class Repository:
         if self._inventory is None:
             raise RuntimeError("Repository is not initialized")
         return self._inventory
+
+    # --- Capture profiles ---
+
+    def _capture_profile_store(self) -> CaptureProfileStore:
+        if self._capture_profiles is None:
+            raise RuntimeError("Repository is not initialized")
+        return self._capture_profiles
+
+    async def list_capture_profiles(self) -> list[CaptureProfile]:
+        return await self._capture_profile_store().list()
+
+    async def get_capture_profile(self, profile_id: str) -> CaptureProfile | None:
+        return await self._capture_profile_store().get(profile_id)
+
+    async def get_active_capture_profile(self) -> CaptureProfile | None:
+        return await self._capture_profile_store().active()
+
+    async def create_capture_profile(self, profile: CaptureProfile) -> CaptureProfile:
+        return await self._capture_profile_store().create(profile)
+
+    async def update_capture_profile(self, profile: CaptureProfile) -> CaptureProfile:
+        return await self._capture_profile_store().update(profile)
+
+    async def delete_capture_profile(self, profile_id: str) -> None:
+        await self._capture_profile_store().delete(profile_id)
+
+    async def activate_capture_profile(
+        self, profile_id: str, *, source: str
+    ) -> CaptureProfileChange:
+        return await self._capture_profile_store().activate(profile_id, source)
+
+    async def list_capture_profile_changes(
+        self, *, limit: int = 20, offset: int = 0
+    ) -> list[CaptureProfileChange]:
+        return await self._capture_profile_store().list_changes(limit=limit, offset=offset)
 
     # --- Events ---
 

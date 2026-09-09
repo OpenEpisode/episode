@@ -8,9 +8,11 @@ from episode.api.projections import public_event
 from episode.api.runtime import OperationalView
 from episode.api.schemas import EventResponse
 from episode.api.thumbnails import ThumbnailCache
+from episode.capture_profiles import CaptureProfileService
 from episode.inventory import DeviceValidationService, InventoryService
 from episode.media.previews import CurrentViewService
 from episode.media.timelapse import TimelapseService
+from episode.notifications import EpisodeStartedWebhookSettingsService
 from episode.retention import RetentionService
 
 if TYPE_CHECKING:
@@ -33,6 +35,8 @@ class ApiContext:
     retention: RetentionService | None = None
     recorder: Any | None = None
     engine: EpisodeEngine | None = None
+    capture_profiles: CaptureProfileService | None = None
+    episode_started_webhook: EpisodeStartedWebhookSettingsService | None = None
 
     def __post_init__(self) -> None:
         if self.timelapses is None:
