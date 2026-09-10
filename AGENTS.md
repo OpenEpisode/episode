@@ -27,7 +27,8 @@ Then follow the document map for the area being changed:
 | ONVIF discovery, Events, media, or validation | [`docs/ONVIF_SETUP.md`](docs/ONVIF_SETUP.md) |
 | Hikvision ISAPI, Alarm Server, FTP, or HCNetSDK | [`docs/HIKVISION_SETUP.md`](docs/HIKVISION_SETUP.md) |
 | Exposure, credentials, reporting, or threat boundaries | [`docs/SECURITY.md`](docs/SECURITY.md) |
-| Packaging, deployment, or first-run behavior | [`README.md`](README.md), [`.env.example`](.env.example), and [`compose.yaml`](compose.yaml) |
+| Operator behavior, recording, notifications, or retention | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |
+| Packaging, deployment, or first-run behavior | [`docs/INSTALLATION.md`](docs/INSTALLATION.md), [`.env.example`](.env.example), and [`compose.yaml`](compose.yaml) |
 
 Read every reference relevant to a cross-cutting change. Documentation describes
 the intended system; existing code alone is not an architectural specification.
