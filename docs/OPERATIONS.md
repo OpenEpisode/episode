@@ -67,7 +67,8 @@ The webhook URL is a write-only secret. The UI displays a fixed mask:
 The global **External Episode URL** under **System → Overview** supplies
 clickable links for notifications and future outbound integrations. Episode
 does not infer or trust the HTTP request host; review and explicitly save the
-browser's suggested address.
+browser's separately labeled suggested address. Until it is saved, Overview
+shows **Not configured** and outbound notifications omit the Episode link.
 
 Generic payloads include the Episode, triggering Event, Area, Device,
 timestamps, state, and relative UI path. An absolute `episode.url` is added only
