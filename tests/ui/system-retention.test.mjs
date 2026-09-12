@@ -149,11 +149,28 @@ test("System separates overview, recording, and storage concerns", async () => {
   assert.match(globalThis.systemHtml, /External Episode URL/);
   assert.match(
     globalThis.systemHtml,
-    /name="external_url"[^>]+value="https:\/\/episode\.example:8989"/,
+    /name="external_url"[^>]+value=""/,
   );
+  assert.match(globalThis.systemHtml, /Not configured/);
+  assert.match(globalThis.systemHtml, /will not include an Episode link/);
   assert.match(globalThis.systemHtml, /Suggested from this browser/);
+  assert.match(globalThis.systemHtml, /data-external-url="https:\/\/episode\.example:8989"/);
+  assert.match(globalThis.systemHtml, /Use this address/);
   assert.doesNotMatch(globalThis.systemHtml, /name="retention_days"/);
   assert.doesNotMatch(globalThis.systemHtml, /Interrupted recordings/);
+
+  globalThis.systemRequests = [];
+  await globalThis.window.useSuggestedExternalUrl({
+    dataset: { externalUrl: "https://episode.example:8989" },
+  });
+  assert.deepEqual(globalThis.systemRequests, [{
+    path: "/settings/installation",
+    options: {
+      method: "PUT",
+      body: { external_url: "https://episode.example:8989" },
+    },
+  }]);
+  assert.equal(globalThis.systemNotification, "External Episode URL updated");
 
   globalThis.systemRequests = [];
   await globalThis.window.saveInstallationSettings({
@@ -167,6 +184,17 @@ test("System separates overview, recording, and storage concerns", async () => {
     },
   }]);
   assert.equal(globalThis.systemNotification, "External Episode URL updated");
+
+  globalThis.systemResponses["/settings/installation"] = {
+    external_url: "https://episode.example/install",
+  };
+  await module.systemStatus();
+  assert.match(globalThis.systemHtml, /Configured/);
+  assert.match(
+    globalThis.systemHtml,
+    /name="external_url"[^>]+value="https:\/\/episode\.example\/install"/,
+  );
+  assert.doesNotMatch(globalThis.systemHtml, /Use this address/);
 
   await module.systemStatus("recordings");
   assert.match(globalThis.systemHtml, /Recording activity/);

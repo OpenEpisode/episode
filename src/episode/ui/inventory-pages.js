@@ -318,6 +318,19 @@ window.saveEpisodeLifecycle = async form => {
 window.saveInstallationSettings = async form => {
   const data = new FormData(form);
   const externalUrl = String(data.get("external_url") || "").trim();
+  await updateExternalEpisodeUrl(externalUrl);
+};
+
+window.useSuggestedExternalUrl = async button => {
+  const externalUrl = String(button?.dataset?.externalUrl || "").trim();
+  if (!externalUrl) {
+    notify("No browser address is available to save", "warning");
+    return;
+  }
+  await updateExternalEpisodeUrl(externalUrl);
+};
+
+async function updateExternalEpisodeUrl(externalUrl) {
   try {
     await apiRequest("/settings/installation", {
       method: "PUT",
@@ -328,7 +341,7 @@ window.saveInstallationSettings = async form => {
   } catch (error) {
     notify(`Could not update external Episode URL: ${error.message}`, "warning");
   }
-};
+}
 
 export async function devices() {
   showLoading();
@@ -593,7 +606,19 @@ function systemOverview(diagnostics, services, filesystemLabel, installationSett
   const status = diagnostics.status;
   const savedExternalUrl = installationSettings?.external_url || "";
   const suggestedUrl = suggestedExternalUrl();
-  const externalUrl = savedExternalUrl || suggestedUrl;
+  const addressStatus = savedExternalUrl
+    ? '<span class="badge badge-healthy">Configured</span><span>Outbound notifications can link back to this installation.</span>'
+    : '<span class="badge badge-disabled">Not configured</span><span>Outbound notifications will not include an Episode link.</span>';
+  const suggestion = !savedExternalUrl && suggestedUrl
+    ? `<div class="installation-address-suggestion">
+        <div>
+          <strong>Suggested from this browser</strong>
+          <code>${escHtml(suggestedUrl)}</code>
+          <small>Confirm this is the address other notification recipients can use.</small>
+        </div>
+        <button type="button" class="button button-ghost" data-external-url="${escHtml(suggestedUrl)}" onclick="useSuggestedExternalUrl(this)">Use this address</button>
+      </div>`
+    : "";
   return `<dl class="detail-facts section system-summary-facts">
       <div><dt>Version</dt><dd>v${status.version}</dd></div>
       <div><dt>Active recordings</dt><dd>${status.active_recordings}</dd></div>
@@ -603,14 +628,16 @@ function systemOverview(diagnostics, services, filesystemLabel, installationSett
     </dl>
     <section class="section system-installation-settings">
       <div class="system-section-heading"><div><h3>External Episode URL</h3><p>The address operators use to open this installation from notifications and integrations.</p></div></div>
+      <div class="installation-address-state">${addressStatus}</div>
       <form class="system-installation-form" onsubmit="saveInstallationSettings(this); return false">
         <label class="field">
           <span>Installation address</span>
-          <input name="external_url" type="url" autocomplete="url" inputmode="url" value="${escHtml(externalUrl)}" placeholder="https://episode.example">
-          <small>${savedExternalUrl ? "Saved globally. Delete the value to remove links from outbound notifications." : suggestedUrl ? "Suggested from this browser. Review and save it before Episode uses it." : "Optional. Enter an absolute HTTP(S) URL if outbound notifications should link back here."}</small>
+          <input name="external_url" type="url" autocomplete="url" inputmode="url" value="${escHtml(savedExternalUrl)}" placeholder="https://episode.example">
+          <small>${savedExternalUrl ? "Saved globally. Delete the value to remove links from outbound notifications." : "Optional. Enter and save an absolute HTTP(S) URL if outbound notifications should link back here."}</small>
         </label>
         <button type="submit" class="button button-primary">Save address</button>
       </form>
+      ${suggestion}
     </section>
     <section class="section system-core-services">
       <div class="system-section-heading"><div><h3>Core services</h3><p>The components required to receive Events and preserve Evidence.</p></div></div>

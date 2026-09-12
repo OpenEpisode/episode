@@ -1,7 +1,7 @@
 import { $, $$ } from "./dom.js";
 import { closeCarousel } from "./evidence-gallery.js?v=7";
 import { captureProfiles, refreshCaptureProfileNotice } from "./capture-profiles.js?v=4";
-import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=19";
+import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=20";
 import { onboardingNeeded, welcome } from "./onboarding.js?v=7";
 import { notifications } from "./notifications.js?v=3";
 import {

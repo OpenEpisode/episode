@@ -456,13 +456,38 @@
 .system-retention-save { white-space: nowrap; }
 .system-retention-form .field-span { grid-column: 1 / -1; }
 .system-installation-settings { margin-top: 1rem; }
+.installation-address-state {
+  align-items: center;
+  color: var(--text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: .78rem;
+  gap: .55rem;
+}
 .system-installation-form {
   align-items: end;
   display: grid;
   gap: .75rem;
   grid-template-columns: minmax(0, 1fr) auto;
+  margin-top: .85rem;
 }
 .system-installation-form .button { margin-bottom: 1.35rem; white-space: nowrap; }
+.installation-address-suggestion {
+  align-items: center;
+  background: color-mix(in srgb, var(--brand-cyan) 5%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--brand-cyan) 16%, var(--border));
+  border-radius: var(--radius);
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  margin-top: .8rem;
+  padding: .8rem .9rem;
+}
+.installation-address-suggestion > div { display: grid; gap: .2rem; min-width: 0; }
+.installation-address-suggestion strong { font-size: .78rem; }
+.installation-address-suggestion code { color: var(--text-secondary); overflow-wrap: anywhere; }
+.installation-address-suggestion small { color: var(--text-muted); }
+.installation-address-suggestion .button { flex: 0 0 auto; white-space: nowrap; }
 .system-lifecycle { margin-top: 1rem; }
 .system-lifecycle-heading { align-items: flex-start; display: flex; gap: 1rem; justify-content: space-between; }
 .system-lifecycle-heading p { color: var(--text-muted); font-size: .78rem; margin-top: .25rem; }
@@ -548,6 +573,8 @@
   .system-retention-form > * { grid-column: 1; }
   .system-installation-form { align-items: stretch; grid-template-columns: 1fr; }
   .system-installation-form .button { margin-bottom: 0; }
+  .installation-address-suggestion { align-items: stretch; flex-direction: column; }
+  .installation-address-suggestion .button { align-self: flex-start; }
   .system-lifecycle-form { align-items: stretch; grid-template-columns: 1fr; }
   .system-lifecycle-form > * { grid-column: 1; }
   .recording-operation-row { grid-template-columns: auto minmax(0, 1fr) auto; }
