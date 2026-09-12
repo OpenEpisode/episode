@@ -61,6 +61,17 @@ _CAPTURE_PROFILE_EVENT_COLUMNS = {
     "eligible_recording_device_ids": "TEXT",
 }
 
+# Additive capture-policy columns for existing databases. ``CREATE TABLE IF NOT
+# EXISTS`` does not alter existing tables, so these are applied via idempotent
+# ``ALTER TABLE ADD COLUMN`` guarded by a column-existence check.
+_CAPTURE_POLICY_DEVICE_COLUMNS = {
+    "generic_event_filter": "TEXT NOT NULL DEFAULT 'inherit'",
+}
+
+_CAPTURE_POLICY_PROFILE_COLUMNS = {
+    "filter_generic_events": "INTEGER NOT NULL DEFAULT 0",
+}
+
 _EVIDENCE_SELECT = """
 SELECT e.*,
        x.expired_at AS retention_expired_at,
@@ -106,6 +117,7 @@ class Repository:
         await self._conn.execute("PRAGMA synchronous = NORMAL")
         await self._upgrade_event_schema(self._conn)
         await self._conn.executescript(SCHEMA_SQL)
+        await self._upgrade_capture_policy_schema(self._conn)
         self._provenance = ProvenanceStore(self._conn)
         self._inventory = InventoryStore(self._conn)
         self._events = EventStore(self._conn)
@@ -173,6 +185,53 @@ class Repository:
             logger.info(
                 "Applied additive Event schema step for columns: %s",
                 ", ".join(name for name, _ in missing),
+            )
+        except BaseException:
+            await connection.rollback()
+            raise
+
+    async def _upgrade_capture_policy_schema(self, connection: aiosqlite.Connection) -> None:
+        """Apply bounded additive capture-policy columns for existing databases."""
+        tables = await connection.execute_fetchall(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('devices', 'capture_profiles')"
+        )
+        present = {str(row["name"]) for row in tables}
+        steps: list[tuple[str, str, dict[str, str]]] = []
+        if "devices" in present:
+            columns = {
+                str(row["name"])
+                for row in await connection.execute_fetchall("PRAGMA table_info(devices)")
+            }
+            missing = [
+                (name, column_type)
+                for name, column_type in _CAPTURE_POLICY_DEVICE_COLUMNS.items()
+                if name not in columns
+            ]
+            for name, column_type in missing:
+                steps.append(("devices", name, column_type))
+        if "capture_profiles" in present:
+            columns = {
+                str(row["name"])
+                for row in await connection.execute_fetchall("PRAGMA table_info(capture_profiles)")
+            }
+            missing = [
+                (name, column_type)
+                for name, column_type in _CAPTURE_POLICY_PROFILE_COLUMNS.items()
+                if name not in columns
+            ]
+            for name, column_type in missing:
+                steps.append(("capture_profiles", name, column_type))
+        if not steps:
+            return
+        try:
+            await connection.execute("BEGIN IMMEDIATE")
+            for table, name, column_type in steps:
+                await connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {column_type}")
+            await connection.commit()
+            logger.info(
+                "Applied additive capture-policy schema steps: %s",
+                ", ".join(f"{table}.{name}" for table, name, _ in steps),
             )
         except BaseException:
             await connection.rollback()

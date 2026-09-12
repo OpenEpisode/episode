@@ -42,6 +42,9 @@ technical self-hosters who want local, portable evidence.
 - Correlates observations from multiple cameras into Episodes.
 - Lets an operator select a Capture profile that controls which Devices may
   contribute to new capture without disconnecting them or discarding input.
+- Can filter generic camera observations (System, motion, video loss, tamper,
+  audio) from opening or extending Episodes or starting recordings, with
+  per-camera overrides.
 - Can send a best-effort HTTP notification when a new Episode starts.
 - Starts and stops configured recordings around Episode activity.
 - Reviews each Episode through a chronological Event timeline linked to its recordings and snapshots.
@@ -166,6 +169,16 @@ Events retain their historical association behavior. Changing profile never
 interrupts an existing recording, and the targets chosen for an accepted Event
 are persisted so later configuration changes or a restart cannot reinterpret
 that decision.
+
+A profile can also **filter generic events** — low-signal observations such as
+System status, plain motion, video loss, tamper, or audio that do not themselves
+imply a classified detection (person, vehicle, pet, …). When filtering is
+enabled, these generic active Events are still preserved, Receipted, and
+canonical, but they do not open or extend an Episode or start actions; their
+participation is marked `generic_event_filtered`. Higher-level detections always
+participate. Each camera can override the profile default with an explicit
+**Enabled** or **Disabled** choice; the explicit per-camera setting takes
+priority over the profile value (`inherit` follows the profile).
 
 ### Episode-start webhook
 

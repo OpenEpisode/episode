@@ -67,6 +67,7 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
     assert body["capture_policy"]["activity_window_seconds"] == 90
     assert body["configuration"]["episode_policy"] == {
         "activity_window_seconds": 90,
+        "generic_event_filter": "inherit",
     }
     assert {"video", "onvif", "isapi"}.issubset(stored.configs)
     assert not stored.capabilities

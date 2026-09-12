@@ -10,6 +10,7 @@ from episode.domain.models import CapabilityConfig, Device
 RecordingMode = Literal["disabled", "on_event", "on_episode"]
 DeviceType = Literal["camera", "doorbell", "alarm_panel", "sensor", "other"]
 AuthMode = Literal["digest_wsse", "digest"]
+GenericEventFilter = Literal["inherit", "enabled", "disabled"]
 
 
 class AreaCreateRequest(BaseModel):
@@ -86,6 +87,7 @@ class ReolinkConfigurationRequest(BaseModel):
 
 class EpisodePolicyRequest(BaseModel):
     activity_window_seconds: int | None = Field(default=None, ge=1, le=3600)
+    generic_event_filter: GenericEventFilter = "inherit"
 
 
 class DeviceWriteRequest(BaseModel):
@@ -187,6 +189,7 @@ def editable_device_configuration(device: Device) -> dict:
         password_configured=bool(device.password),
         episode_policy=EpisodePolicyRequest(
             activity_window_seconds=device.activity_window_seconds,
+            generic_event_filter=device.generic_event_filter,
         ),
         video=VideoConfigurationRequest(
             enabled=video is not None,
@@ -321,6 +324,7 @@ def device_from_request(
         activity_window_seconds=request.episode_policy.activity_window_seconds,
         metadata=dict(existing.metadata) if existing else {},
         enabled=request.enabled,
+        generic_event_filter=request.episode_policy.generic_event_filter,
     )
 
 

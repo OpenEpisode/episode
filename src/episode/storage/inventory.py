@@ -49,9 +49,10 @@ class InventoryStore:
             """INSERT INTO devices (
                 id, name, device_type, area_id,
                 capabilities, ip_address, username, password,
-                configs, activity_window_seconds, metadata, enabled
+                configs, activity_window_seconds, metadata, enabled,
+                generic_event_filter
             )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name,
                    device_type=excluded.device_type,
@@ -63,7 +64,8 @@ class InventoryStore:
                    configs=excluded.configs,
                    activity_window_seconds=excluded.activity_window_seconds,
                    metadata=excluded.metadata,
-                   enabled=excluded.enabled""",
+                   enabled=excluded.enabled,
+                   generic_event_filter=excluded.generic_event_filter""",
             (
                 device.id,
                 device.name,
@@ -87,6 +89,7 @@ class InventoryStore:
                 device.activity_window_seconds,
                 json.dumps(device.metadata),
                 int(device.enabled),
+                device.generic_event_filter,
             ),
         )
         await self._connection.commit()
@@ -181,4 +184,7 @@ class InventoryStore:
             activity_window_seconds=row["activity_window_seconds"],
             metadata=json.loads(row["metadata"]),
             enabled=bool(row["enabled"]),
+            generic_event_filter=row["generic_event_filter"]
+            if "generic_event_filter" in row.keys()
+            else "inherit",
         )

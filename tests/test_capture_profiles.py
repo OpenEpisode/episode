@@ -96,6 +96,7 @@ async def test_default_profile_is_dynamic_and_custom_empty_profile_excludes_even
             "evaluated_at": stored.participation.evaluated_at.isoformat(
                 timespec="microseconds"
             ).replace("+00:00", "Z"),
+            "filtered_event_type": None,
         }
         assert "eligible_recording_device_ids" not in projected
     finally:

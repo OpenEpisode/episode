@@ -70,6 +70,10 @@ class ParticipationDecision:
     Participation is intentionally separate from integration metadata.  It is
     an operational interpretation of whether an active observation may affect
     Episode capture, and remains useful after the active profile changes.
+
+    ``filtered_event_type`` records the normalized event type suppressed by the
+    generic event filter (when ``reason == "generic_event_filtered"``) so the
+    exact suppressed observation is traceable.
     """
 
     allowed: bool
@@ -77,11 +81,18 @@ class ParticipationDecision:
     profile_name: str
     reason: str
     evaluated_at: datetime
+    filtered_event_type: str | None = None
 
 
 @dataclass
 class CaptureProfile:
-    """A named set of Devices eligible to participate in new capture."""
+    """A named set of Devices eligible to participate in new capture.
+
+    ``filter_generic_events`` controls whether generic observations (System,
+    motion, video loss, tamper, audio) are excluded from opening or extending
+    Episodes. A per-Device ``generic_event_filter`` override takes priority over
+    this profile default.
+    """
 
     id: str = ""
     name: str = ""
@@ -89,6 +100,7 @@ class CaptureProfile:
     device_ids: list[str] = field(default_factory=list)
     builtin: bool = False
     active: bool = False
+    filter_generic_events: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
 
@@ -128,8 +140,13 @@ class Device:
     activity_window_seconds: int | None = None
     metadata: dict = field(default_factory=dict)
     enabled: bool = True
+    # Tri-state generic-event filter override: "inherit" follows the active
+    # Capture Profile, "enabled"/"disabled" override it for this Device.
+    generic_event_filter: str = "inherit"
 
     def __post_init__(self):
+        if self.generic_event_filter not in ("inherit", "enabled", "disabled"):
+            raise ValueError("Device generic_event_filter must be inherit, enabled, or disabled")
         if self.activity_window_seconds is not None and self.activity_window_seconds < 1:
             raise ValueError("Device activity window must be positive")
         if self.configs and isinstance(next(iter(self.configs.values()), None), dict):

@@ -285,6 +285,7 @@
 .capture-profile-device-option small { color: var(--text-muted); font-size: .7rem; }
 .capture-profile-editor-notice { margin-top: 1rem; margin-bottom: 0; }
 .badge-capture-excluded { background: color-mix(in srgb, var(--brand-blue) 15%, transparent); color: var(--brand-blue); }
+.badge-capture-filtered { background: color-mix(in srgb, var(--brand-purple) 15%, transparent); color: var(--brand-purple); }
 .event-participation-notice { margin-bottom: 1.5rem; }
 .event-participation-notice strong { color: var(--text-primary); }
 .event-participation-notice small { color: var(--text-muted); font-size: .7rem; }

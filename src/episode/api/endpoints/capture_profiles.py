@@ -40,7 +40,11 @@ def capture_profiles_router(context: ApiContext) -> APIRouter:
     @router.post("", response_model=CaptureProfileResponse, status_code=201)
     async def create_capture_profile(payload: CaptureProfileCreateRequest):
         try:
-            profile = await service().create_profile(payload.name, payload.device_ids)
+            profile = await service().create_profile(
+                payload.name,
+                payload.device_ids,
+                filter_generic_events=payload.filter_generic_events,
+            )
         except CaptureProfileConflictError as error:
             raise HTTPException(409, str(error)) from error
         except CaptureProfileError as error:
@@ -91,7 +95,12 @@ def capture_profiles_router(context: ApiContext) -> APIRouter:
         payload: CaptureProfileUpdateRequest,
     ):
         try:
-            profile = await service().update_profile(profile_id, payload.name, payload.device_ids)
+            profile = await service().update_profile(
+                profile_id,
+                payload.name,
+                payload.device_ids,
+                filter_generic_events=payload.filter_generic_events,
+            )
         except CaptureProfileNotFoundError as error:
             raise HTTPException(404, str(error)) from error
         except CaptureProfileConflictError as error:

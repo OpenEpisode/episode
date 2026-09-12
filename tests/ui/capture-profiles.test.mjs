@@ -131,7 +131,7 @@ test("Capture profiles render active state, immutable All Devices, grouped label
   ]));
   assert.deepEqual(globalThis.captureRequests.at(-1), {
     path: "/capture-profiles",
-    options: { method: "POST", body: { name: "Disarmed", device_ids: [] } },
+    options: { method: "POST", body: { name: "Disarmed", device_ids: [], filter_generic_events: false } },
   });
 
   globalThis.window.editCaptureProfile("night");
@@ -141,7 +141,7 @@ test("Capture profiles render active state, immutable All Devices, grouped label
   });
   assert.deepEqual(globalThis.captureRequests.at(-1), {
     path: "/capture-profiles/night",
-    options: { method: "PUT", body: { name: "Night watch", device_ids: ["front", "garage"] } },
+    options: { method: "PUT", body: { name: "Night watch", device_ids: ["front", "garage"], filter_generic_events: false } },
   });
 
   globalThis.window.deleteCaptureProfile("night");
@@ -150,6 +150,46 @@ test("Capture profiles render active state, immutable All Devices, grouped label
     path: "/capture-profiles/night",
     options: { method: "DELETE" },
   });
+});
+
+test("Filter generic events toggle is reflected in the editor and submitted with the profile", async () => {
+  globalThis.captureRequests = [];
+  globalThis.captureResponses["/capture-profiles"].push({
+    id: "night-filtered",
+    name: "Night filtered",
+    include_all_devices: false,
+    device_ids: ["front"],
+    filter_generic_events: true,
+    builtin: false,
+    active: false,
+  });
+  await module.captureProfiles();
+  globalThis.window.editCaptureProfile("night-filtered");
+
+  assert.match(globalThis.captureDialog.content, /name="filter_generic_events" checked/);
+  assert.match(globalThis.captureDialog.content, /Filter generic events/);
+  assert.match(globalThis.captureDialog.content, /A per-camera override wins/);
+
+  await globalThis.captureDialog.onSubmit({
+    get(name) {
+      if (name === "name") return "Night filtered";
+      if (name === "filter_generic_events") return "on";
+      return null;
+    },
+    getAll(name) { return name === "device_id" ? ["front"] : []; },
+  });
+  const submitted = globalThis.captureRequests.at(-1);
+  assert.equal(submitted.options.method, "PUT");
+  assert.equal(submitted.options.body.filter_generic_events, true);
+
+  const unfiltered = globalThis.captureResponses["/capture-profiles"].find(item => item.id === "night");
+  globalThis.window.editCaptureProfile("night");
+  assert.match(globalThis.captureDialog.content, /name="filter_generic_events"(?! checked)/);
+  await globalThis.captureDialog.onSubmit({
+    get(name) { return name === "name" ? "Night" : null; },
+    getAll(name) { return name === "device_id" ? ["front"] : []; },
+  });
+  assert.equal(globalThis.captureRequests.at(-1).options.body.filter_generic_events, false);
 });
 
 test("Activating a restricted profile requires confirmation and preserves existing recordings", async () => {

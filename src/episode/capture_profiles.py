@@ -6,9 +6,11 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from episode.domain.event_filter import is_generic_event_type
 from episode.domain.models import (
     CaptureProfile,
     CaptureProfileChange,
+    Device,
     Event,
     EventState,
     ParticipationDecision,
@@ -81,7 +83,11 @@ class CaptureProfileService:
         )
 
     async def create_profile(
-        self, name: str, device_ids: list[str] | None = None
+        self,
+        name: str,
+        device_ids: list[str] | None = None,
+        *,
+        filter_generic_events: bool = False,
     ) -> CaptureProfile:
         normalized_name = self._validate_name(name)
         async with self._lock:
@@ -95,6 +101,7 @@ class CaptureProfileService:
                 include_all_devices=False,
                 device_ids=normalized_ids,
                 builtin=False,
+                filter_generic_events=bool(filter_generic_events),
             )
             try:
                 return await self._repository.create_capture_profile(profile)
@@ -111,6 +118,8 @@ class CaptureProfileService:
         profile_id: str,
         name: str,
         device_ids: list[str] | None = None,
+        *,
+        filter_generic_events: bool | None = None,
     ) -> CaptureProfile:
         normalized_name = self._validate_name(name)
         async with self._lock:
@@ -133,6 +142,11 @@ class CaptureProfileService:
                 existing,
                 name=normalized_name,
                 device_ids=normalized_ids,
+                filter_generic_events=(
+                    bool(filter_generic_events)
+                    if filter_generic_events is not None
+                    else existing.filter_generic_events
+                ),
                 updated_at=datetime.now(tz=timezone.utc),
             )
             try:
@@ -226,15 +240,38 @@ class CaptureProfileService:
             reason = "device_in_profile"
         else:
             reason = "device_not_in_profile"
+        filtered_event_type: str | None = None
+        if allowed and self._effective_generic_filter(device, profile):
+            if is_generic_event_type(event.event_type):
+                allowed = False
+                reason = "generic_event_filtered"
+                filtered_event_type = event.event_type
         decision = ParticipationDecision(
             allowed=allowed,
             profile_id=profile.id,
             profile_name=profile.name,
             reason=reason,
             evaluated_at=datetime.now(tz=timezone.utc),
+            filtered_event_type=filtered_event_type,
         )
         targets = await self._resolve_target_ids(event, profile) if allowed else []
         return decision, targets
+
+    @staticmethod
+    def _effective_generic_filter(device: Device | None, profile: CaptureProfile) -> bool:
+        """Resolve the effective generic-event filter for a Device.
+
+        Precedence (highest → lowest):
+        1. An explicit camera-level override (``enabled`` / ``disabled``) wins.
+        2. Otherwise the active Capture Profile's ``filter_generic_events``.
+        3. Otherwise no filtering (default false).
+        """
+        override = device.generic_event_filter if device else "inherit"
+        if override == "enabled":
+            return True
+        if override == "disabled":
+            return False
+        return bool(profile.filter_generic_events)
 
     async def _resolve_target_ids(
         self,
