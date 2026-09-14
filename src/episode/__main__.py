@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 
 import uvicorn
@@ -71,6 +72,8 @@ class Application:
             fragment_seconds=config.actions.recording.fragment_seconds,
             media=self._media,
         )
+        self._engine.set_finalizer(self._recorder.finalize_episode)
+        self._recorder.set_evidence_sink(self._engine.ingest_recording_evidence)
         self._thumbnails = ThumbnailCache(Path(config.data_dir) / "cache" / "thumbnails")
         self._retention = RetentionService(
             self._repo,
@@ -147,12 +150,29 @@ class Application:
         logging.getLogger("aiosqlite").setLevel(logging.WARNING)
         logging.getLogger("pyftpdlib").setLevel(logging.WARNING)
 
+        startup_started = time.monotonic()
+        previous_phase_completed = startup_started
+
+        def log_startup_phase(phase: str) -> None:
+            nonlocal previous_phase_completed
+            completed_at = time.monotonic()
+            logger.info(
+                "Startup phase complete: %s (%.2fs; %.2fs total)",
+                phase,
+                completed_at - previous_phase_completed,
+                completed_at - startup_started,
+            )
+            previous_phase_completed = completed_at
+
+        logger.info("Starting Episode (version %s)...", __version__)
+
         logger.info("Initializing storage...")
         await self._lifecycle.start(
             "Storage",
             self._repo.initialize,
             self._repo.close,
         )
+        log_startup_phase("storage")
 
         logger.info("Loading persistent Area and Device inventory...")
         configured_devices = await self._inventory.configured_devices()
@@ -168,13 +188,15 @@ class Application:
             ),
             self._plugin_context(configured_devices),
         )
+        log_startup_phase("inventory")
 
         logger.info("Starting Episode Engine...")
         await self._lifecycle.start(
             "Episode Engine",
-            self._engine.start,
+            lambda: self._engine.start(defer_finalization=True),
             self._engine.stop,
         )
+        log_startup_phase("episode engine")
 
         logger.info("Starting media services...")
         await self._lifecycle.start(
@@ -182,6 +204,7 @@ class Application:
             self._timelapses.start,
             self._timelapses.stop,
         )
+        log_startup_phase("media services")
 
         logger.info("Starting Recording Engine...")
         await self._lifecycle.start(
@@ -190,6 +213,8 @@ class Application:
             self._recorder.stop,
         )
         await self._recorder.recover_interrupted_recordings()
+        await self._engine.complete_finalizing_episodes()
+        log_startup_phase("recording recovery")
 
         logger.info("Loading Episode-started webhook settings from SQLite...")
         await self._lifecycle.start(
@@ -197,6 +222,7 @@ class Application:
             self._episode_started_webhook.start,
             self._episode_started_webhook.stop,
         )
+        log_startup_phase("webhook settings")
 
         logger.info("Starting visual Evidence retention...")
         await self._lifecycle.start(
@@ -204,6 +230,7 @@ class Application:
             self._retention.start,
             self._retention.stop,
         )
+        log_startup_phase("retention scheduling")
 
         if self._config.actions.snapshot.enabled:
             logger.info("Starting Snapshot Engine...")
@@ -212,8 +239,10 @@ class Application:
                 self._snapshotter.start,
                 self._snapshotter.stop,
             )
+            log_startup_phase("snapshot engine")
         else:
             logger.info("Snapshot action disabled by policy")
+            log_startup_phase("snapshot engine disabled")
 
         logger.info("Starting configured plugins...")
         await self._lifecycle.start(
@@ -221,9 +250,11 @@ class Application:
             self._plugins.start,
             self._plugins.stop,
         )
+        log_startup_phase("plugins")
 
         logger.info("Resuming capture for persisted active Episodes...")
         await self._recorder.resume_active_episodes()
+        log_startup_phase("active capture resume")
 
         logger.info("Starting connectors...")
 
@@ -241,6 +272,7 @@ class Application:
                     conn.start,
                     conn.stop,
                 )
+        log_startup_phase("connectors")
 
         # Mount static UI last so connector routes take precedence
         ui_dir = Path(__file__).resolve().parent / "ui"
@@ -248,7 +280,8 @@ class Application:
             self._fastapi_app.mount("/", StaticFiles(directory=str(ui_dir), html=True), name="ui")
 
         logger.info(
-            "Starting API on %s:%s...",
+            "Startup ready in %.2fs; starting API on %s:%s...",
+            time.monotonic() - startup_started,
             self._config.api_host,
             self._config.api_port,
         )

@@ -52,6 +52,7 @@ class EpisodeState(str, Enum):
     NEW = "new"
     ACTIVE = "active"
     QUIESCENT = "quiescent"
+    FINALIZING = "finalizing"
     CLOSED = "closed"
     ARCHIVED = "archived"
 

@@ -1,6 +1,11 @@
 import { api } from "./api.js?v=3";
 import { escHtml } from "./dom.js";
-import { attachMediaSource } from "./media-player.js?v=2";
+import {
+  attachMediaSource,
+  formatLiveOffset,
+  seekToBeginning,
+  seekToLive,
+} from "./media-player.js?v=3";
 
 let refreshTimer = null;
 let refreshGeneration = 0;
@@ -17,8 +22,13 @@ function viewCard(view) {
         : snapshotAvailable
         ? `<img alt="Current view from ${escHtml(view.device_name)}" data-preview-url="${escHtml(view.image_url)}">`
         : '<div class="current-view-unavailable"><img src="/logo.svg" alt=""><span>Preview unavailable</span></div>'}
-      <span class="current-view-live"><i></i>${streamAvailable ? "Live" : available ? "Current" : "Recording"}</span>
+      <span class="current-view-live" data-current-view-live><i></i>${streamAvailable ? "Live" : available ? "Current" : "Recording"}</span>
     </div>
+    ${streamAvailable ? `<div class="current-view-controls" aria-label="Recording playback controls">
+      <button class="button button-ghost current-view-start" type="button" disabled>From beginning</button>
+      <button class="button button-ghost current-view-live-button" type="button" hidden>Go live</button>
+      <span class="current-view-position" role="status" aria-live="polite">Preparing timeline…</span>
+    </div>` : ""}
     <div class="current-view-caption">
       <strong>${escHtml(view.device_name)}</strong>
       <span class="current-view-status">${escHtml(view.summary)}</span>
@@ -29,7 +39,7 @@ function viewCard(view) {
 function viewsMarkup(views, ended = false) {
   if (!views.length) {
     return `<div class="current-view-waiting">${ended
-      ? "This Episode has ended · current views are no longer requested."
+      ? "This Episode has ended · recordings remain available to review."
       : "Waiting for recording Devices to join this Episode…"}</div>`;
   }
   return views.map(viewCard).join("");
@@ -40,9 +50,9 @@ export function renderCurrentViews(views) {
     <div class="current-views-heading">
       <div>
         <span class="eyebrow">Happening now</span>
-        <h3 id="current-views-title">Current views</h3>
+        <h3 id="current-views-title">Ongoing recordings</h3>
       </div>
-      <span class="current-views-note">Streams from the recording already being captured</span>
+      <span class="current-views-note" data-current-views-state>Review recordings while capture continues</span>
     </div>
     <div id="current-view-grid" class="current-view-grid">${viewsMarkup(views)}</div>
   </section>`;
@@ -50,27 +60,89 @@ export function renderCurrentViews(views) {
 
 function signature(views) {
   return views.map(view => (
-    `${view.device_id}:${view.mode}:${view.recording_state || ""}:${view.stream_url || ""}`
+    `${view.device_id}:${view.mode}:${view.stream_url || ""}`
   )).join("|");
+}
+
+function bindPlaybackControls(video, card) {
+  const start = card?.querySelector(".current-view-start");
+  const live = card?.querySelector(".current-view-live-button");
+  if (!start || !live) return () => {};
+  const seekStart = () => seekToBeginning(video);
+  const seekLive = () => seekToLive(video);
+  start.addEventListener("click", seekStart);
+  live.addEventListener("click", seekLive);
+  return () => {
+    start.removeEventListener("click", seekStart);
+    live.removeEventListener("click", seekLive);
+  };
+}
+
+function updateTimeline(card, timeline) {
+  if (!timeline) return;
+  const complete = card?.classList.contains("is-complete");
+  const start = card?.querySelector(".current-view-start");
+  const live = card?.querySelector(".current-view-live-button");
+  const position = card?.querySelector(".current-view-position");
+  const badge = card?.querySelector("[data-current-view-live]");
+  if (start) start.disabled = false;
+  if (live) {
+    live.hidden = timeline.isLive;
+    live.disabled = timeline.isLive;
+  }
+  if (position) {
+    position.textContent = complete && timeline.isLive
+      ? "At end"
+      : complete
+      ? formatLiveOffset(timeline.behindLive).replace("behind live", "from end")
+      : formatLiveOffset(timeline.behindLive);
+  }
+  if (badge) badge.lastChild.textContent = complete
+    ? "Complete"
+    : timeline.isLive ? "Live" : "Reviewing";
+  card?.classList.toggle("is-reviewing", !timeline.isLive);
 }
 
 function attachStreams() {
   streamDetachers.forEach(detach => detach());
   streamDetachers = [];
   document.querySelectorAll("#current-view-grid video[data-stream-url]").forEach(video => {
-    streamDetachers.push(
-      attachMediaSource(video, video.dataset.streamUrl, {
-        live: true,
-        onState: ({ state, message }) => {
-          const card = video.closest(".current-view-card");
-          card?.classList.toggle("has-error", ["error", "unavailable"].includes(state));
-          card?.classList.toggle("is-loading", ["loading", "buffering", "reconnecting"].includes(state));
-          const status = card?.querySelector(".current-view-status");
-          if (status && state !== "ready") status.textContent = message;
-          if (status && state === "ready") status.textContent = "Streaming the recording as it is captured";
-        },
-      }),
-    );
+    const card = video.closest(".current-view-card");
+    const detachControls = bindPlaybackControls(video, card);
+    const detachMedia = attachMediaSource(video, video.dataset.streamUrl, {
+      live: true,
+      onState: ({ state, message }) => {
+        card?.classList.toggle("has-error", ["error", "unavailable"].includes(state));
+        card?.classList.toggle("is-loading", ["loading", "buffering", "reconnecting"].includes(state));
+        const status = card?.querySelector(".current-view-status");
+        if (status && !card?.classList.contains("is-complete") && state !== "ready") {
+          status.textContent = message;
+        }
+        if (status && !card?.classList.contains("is-complete") && state === "ready") {
+          status.textContent = "Streaming the recording as it is captured";
+        }
+      },
+      onTimeline: timeline => updateTimeline(card, timeline),
+    });
+    streamDetachers.push(() => {
+      detachControls();
+      detachMedia();
+    });
+  });
+}
+
+function markEpisodeComplete() {
+  document.querySelector("[data-current-views-state]")?.replaceChildren(
+    "Episode closed · recordings remain available to review",
+  );
+  document.querySelectorAll("#current-view-grid .current-view-card").forEach(card => {
+    card.classList.add("is-complete");
+    const badge = card.querySelector("[data-current-view-live]");
+    const status = card.querySelector(".current-view-status");
+    const live = card.querySelector(".current-view-live-button");
+    if (badge) badge.lastChild.textContent = "Complete";
+    if (status) status.textContent = "Episode closed · recording available to review";
+    if (live) live.textContent = "Go to end";
   });
 }
 
@@ -120,7 +192,7 @@ async function refresh(episodeId, generation, previousSignature, intervalSeconds
 
   const grid = document.getElementById("current-view-grid");
   let nextSignature = previousSignature;
-  if (grid && views) {
+  if (grid && views && !ended) {
     nextSignature = signature(views);
     if (nextSignature !== previousSignature) {
       grid.innerHTML = viewsMarkup(views, ended);
@@ -130,7 +202,10 @@ async function refresh(episodeId, generation, previousSignature, intervalSeconds
   document.querySelectorAll("#current-view-grid img[data-preview-url]")
     .forEach(image => loadPreview(image, generation));
 
-  if (ended) return;
+  if (ended) {
+    markEpisodeComplete();
+    return;
+  }
 
   refreshTimer = window.setTimeout(
     () => refresh(episodeId, generation, nextSignature, intervalSeconds),

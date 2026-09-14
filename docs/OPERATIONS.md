@@ -27,9 +27,17 @@ deadline, and duplicate connector deliveries do not restart actions.
 
 When the minimum deadline passes, an Episode enters a short **quiescent**
 settling state. Recordings continue during this configurable grace period. A
-new active Event returns the same Area Episode to active; otherwise it closes
-and its recordings finalize. Configure the grace period under **System →
-Recordings**.
+new active Event returns the same Area Episode to active. If the grace expires,
+the Episode enters **finalizing**: normal Events and Evidence can no longer
+extend or join it, while recording output already in progress is finalized.
+Episode writes one final atomic manifest and then becomes **closed**. A failure
+or restart leaves it finalizing for a later retry. Configure the grace period
+under **System → Recordings**.
+
+Events or Evidence that arrive after the grace period remain preserved and
+searchable, but unassigned. They never reopen or amend a finalizing or closed
+Episode. This keeps a closed Episode a stable, sealed account of what was
+observed within its lifecycle.
 
 ## Capture profiles
 
@@ -98,6 +106,12 @@ access for fallback playback. H.264 with AAC has the broadest compatibility;
 HEVC/H.265 is preserved without transcoding and plays only when the browser and
 operating system provide a decoder.
 
+While an Episode is active, **Ongoing recordings** start at the live edge but
+remain seekable back to the beginning of captured media. **From beginning** and
+**Go live** let an operator review earlier activity without interrupting capture;
+the UI shows how far playback is behind the live edge. When the Episode closes,
+the same playlist remains loaded for review and becomes finalized Evidence.
+
 Current camera views are operational previews. They become Evidence only
 through an explicit preservation action.
 
@@ -106,8 +120,16 @@ through an explicit preservation action.
 During shutdown, Episode signals all active FFmpeg processes together and
 leaves their HLS bundles recoverable. On startup, capture can continue in the
 same logical recording with a discontinuity marker when its Episode remains
-active. Otherwise, Episode finalizes the bundle or exposes it as incomplete
-Evidence instead of silently abandoning it.
+active. Finalizing Episodes are retried after recorder recovery; a failed
+finalization remains visible as finalizing instead of being silently marked
+closed. Closed Episodes are trusted sealed history and are not scanned or
+rebuilt during normal startup.
+
+Startup loads the retention policy synchronously, then runs the initial visual
+cleanup in the background. Plugin activation remains synchronous so configured
+capture paths are ready before connectors begin delivering. Phase timing logs
+identify slow startup work without making old Episode directories part of the
+critical path.
 
 Use **System → Recordings** to inspect active, reconnecting, stalled, or
 interrupted captures.
@@ -123,6 +145,11 @@ Original Evidence is immutable and checksummed. Detection regions, thumbnails,
 timelapses, transcodes, and future AI results are derived material and never
 replace the original bytes.
 
+Each Episode records a safe historical snapshot of its Area and participating
+Device identities at capture time, including recording targets selected by
+`on_episode`. Names or addresses changed later in Devices do not rewrite that
+history. Credentials, integration configuration, and stream URLs are excluded.
+
 Back up or synchronize `./data` separately when its contents matter. Copies
 outside Episode are not governed by Episode's retention policy.
 
@@ -133,7 +160,10 @@ default. First-run setup requires an administrator to confirm that policy or
 choose another period under **System → Storage**.
 
 Disabling automatic deletion requires confirmation and leaves a persistent UI
-warning. Cleanup runs at startup and hourly, removes original and derived visual
-files together, and leaves an integrity-bearing expiration tombstone in the
+warning. Cleanup runs initially in the background after startup recovery and
+then hourly. It removes original and derived visual files together and leaves
+an integrity-bearing expiration tombstone. Retention is the deliberate
+post-closure Evidence lifecycle: it may remove managed bytes and record their
+expiry, but it does not add Events, Evidence, or associations to a sealed
 Episode. Legal and operational requirements vary; exported Evidence and
 external backups need their own lifecycle policy.

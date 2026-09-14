@@ -58,12 +58,17 @@ class RetentionService:
         self._expired_count = 0
         self._failure_count = 0
         self._policy = RetentionPolicy()
+        self._initial_cleanup_state = "pending"
 
     async def start(self) -> None:
         if self._running:
             return
+        # Load the policy before returning from startup.  The potentially
+        # expensive filesystem sweep is supervised by the background task
+        # below, after the recorder has completed its recovery step.
+        await self.get_policy()
         self._running = True
-        await self.run_once()
+        self._initial_cleanup_state = "pending"
         self._task = asyncio.create_task(self._cleanup_loop(), name="visual-retention-loop")
 
     async def stop(self) -> None:
@@ -264,6 +269,19 @@ class RetentionService:
                 continue
 
     async def _cleanup_loop(self) -> None:
+        self._initial_cleanup_state = "running"
+        try:
+            await self.run_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._initial_cleanup_state = "failed"
+            self._failure_count += 1
+            self._last_error = str(error)[:240]
+            logger.exception("Initial visual Evidence retention cleanup failed")
+        else:
+            self._initial_cleanup_state = "failed" if self._last_error else "completed"
+
         while self._running:
             try:
                 await asyncio.sleep(self._interval_seconds)
@@ -290,6 +308,7 @@ class RetentionService:
                 self._policy.confirmed_at.isoformat() if self._policy.confirmed_at else None
             ),
             "last_cleanup_at": self._last_cleanup_at.isoformat() if self._last_cleanup_at else None,
+            "initial_cleanup": self._initial_cleanup_state,
             "expired_count": self._expired_count,
             "failure_count": self._failure_count,
             "last_error": self._last_error,

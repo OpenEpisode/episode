@@ -133,7 +133,11 @@ async def test_startup_reconciliation_keeps_hls_entrypoint_inside_bundle(tmp_pat
     await repository.upsert_area(Area(id="area-hls", name="Area"))
     await repository.upsert_device(Device(id="camera-hls", name="Camera", area_id="area-hls"))
     await repository.create_episode(
-        Episode(id="episode-hls", primary_area_id="area-hls", state=EpisodeState.CLOSED)
+        Episode(
+            id="episode-hls",
+            primary_area_id="area-hls",
+            state=EpisodeState.FINALIZING,
+        )
     )
     bundle = _bundle(tmp_path)
     _write_playable_bundle(bundle)
@@ -177,7 +181,11 @@ async def test_startup_reconciliation_repairs_flattened_hls_entrypoint(tmp_path)
     await repository.upsert_area(Area(id="area-hls", name="Area"))
     await repository.upsert_device(Device(id="camera-hls", name="Camera", area_id="area-hls"))
     await repository.create_episode(
-        Episode(id="episode-hls", primary_area_id="area-hls", state=EpisodeState.CLOSED)
+        Episode(
+            id="episode-hls",
+            primary_area_id="area-hls",
+            state=EpisodeState.FINALIZING,
+        )
     )
     bundle = _bundle(tmp_path)
     _write_playable_bundle(bundle)
@@ -243,7 +251,7 @@ async def test_linking_incomplete_hls_evidence_keeps_whole_bundle_in_recordings(
         Episode(
             id="episode-hls",
             primary_area_id="area-hls",
-            state=EpisodeState.CLOSED,
+            state=EpisodeState.ACTIVE,
         )
     )
     bundle = _bundle(tmp_path)

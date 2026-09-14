@@ -107,6 +107,8 @@ class EventStore:
         event_type: str | None = None,
         event_state: str | None = None,
         has_episode: bool | None = None,
+        observed_from: datetime | None = None,
+        observed_before: datetime | None = None,
     ) -> list[Event]:
         clauses: list[str] = []
         params: list[str | int] = []
@@ -127,6 +129,22 @@ class EventStore:
             params.append(event_state)
         if has_episode is not None:
             clauses.append("episode_id IS NOT NULL" if has_episode else "episode_id IS NULL")
+        if observed_from is not None:
+            if observed_from.tzinfo is None or observed_from.utcoffset() is None:
+                raise ValueError("observed_from must be timezone-aware")
+            clauses.append("timestamp >= ?")
+            params.append(_utc_iso(observed_from))
+        if observed_before is not None:
+            if observed_before.tzinfo is None or observed_before.utcoffset() is None:
+                raise ValueError("observed_before must be timezone-aware")
+            clauses.append("timestamp < ?")
+            params.append(_utc_iso(observed_before))
+        if (
+            observed_from is not None
+            and observed_before is not None
+            and observed_before <= observed_from
+        ):
+            raise ValueError("observed_before must be later than observed_from")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = await self._connection.execute_fetchall(
             f"""SELECT * FROM events{where}

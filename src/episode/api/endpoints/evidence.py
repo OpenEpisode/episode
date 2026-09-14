@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -11,6 +12,7 @@ from episode.api.errors import PUBLIC_ERROR_RESPONSES
 from episode.api.pagination import DEFAULT_LIMIT, PageLimit, PageOffset
 from episode.api.projections import event_annotations, public_evidence
 from episode.api.schemas import ClosestEventResponse, EvidenceResponse
+from episode.api.time_ranges import normalize_datetime_range
 from episode.recording.hls import HLSRecordingBundle
 
 
@@ -39,9 +41,17 @@ def evidence_router(context: ApiContext) -> APIRouter:
         area_id: str | None = None,
         evidence_type: str | None = None,
         has_episode: bool | None = None,
+        captured_from: datetime | None = None,
+        captured_before: datetime | None = None,
         limit: PageLimit = DEFAULT_LIMIT,
         offset: PageOffset = 0,
     ):
+        captured_from, captured_before = normalize_datetime_range(
+            captured_from,
+            captured_before,
+            start_name="captured_from",
+            end_name="captured_before",
+        )
         evidence = await repo.list_evidence(
             episode_id,
             event_id,
@@ -51,6 +61,8 @@ def evidence_router(context: ApiContext) -> APIRouter:
             area_id=area_id,
             evidence_type=evidence_type,
             has_episode=has_episode,
+            captured_from=captured_from,
+            captured_before=captured_before,
         )
         return [public_evidence(item) for item in evidence]
 

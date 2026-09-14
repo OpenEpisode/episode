@@ -28,7 +28,7 @@ const galleryUrl = moduleUrl(
     .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
     .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
-    .replace('"./media-player.js?v=2"', JSON.stringify(mediaUrl)),
+    .replace('"./media-player.js?v=3"', JSON.stringify(mediaUrl)),
 );
 const { renderEvidenceGrid } = await import(galleryUrl);
 

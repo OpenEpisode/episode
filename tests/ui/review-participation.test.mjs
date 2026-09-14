@@ -2,19 +2,26 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+process.env.TZ = "Europe/Lisbon";
+
 const moduleUrl = source =>
   "data:text/javascript;base64," + Buffer.from(source).toString("base64");
 const source = await readFile(
   new URL("../../src/episode/ui/review-pages.js", import.meta.url),
   "utf8",
 );
+const timeRangeSource = await readFile(
+  new URL("../../src/episode/ui/time-range.js", import.meta.url),
+  "utf8",
+);
 
 const apiUrl = moduleUrl(`
   export const API = "/api/v1";
-  export async function api() { return []; }
+  export async function api(path) { globalThis.apiCalls?.push(path); return []; }
   export async function apiAll() { return []; }
   export async function apiBlob() { return new Blob(); }
 `);
+const timeRangeUrl = moduleUrl(timeRangeSource);
 const componentsUrl = moduleUrl(`
   export function detailMetric() { return ""; }
   export function episodeStateBadge() { return ""; }
@@ -50,7 +57,7 @@ const emptyUrl = moduleUrl(`
   export function groupEvidenceBundlesByDay() { return []; }
   export function groupEvidenceByEpisode() { return []; }
   export function updateRecentEpisodes() {}
-  export function showContent() {}
+  export function showContent(html) { globalThis.activityHtml = html; }
   export function showError() {}
   export function showLoading() {}
   export function eventTitle() { return "Event"; }
@@ -74,14 +81,15 @@ const module = await import(moduleUrl(
     .replace('"./components.js?v=6"', JSON.stringify(componentsUrl))
     .replace('"./delivery-viewer.js?v=1"', JSON.stringify(emptyUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./current-views.js?v=3"', JSON.stringify(emptyUrl))
+    .replace('"./current-views.js?v=4"', JSON.stringify(emptyUrl))
     .replace('"./episode-list.js?v=3"', JSON.stringify(emptyUrl))
-    .replace('"./media-player.js?v=2"', JSON.stringify(emptyUrl))
-    .replace('"./evidence-gallery.js?v=7"', JSON.stringify(emptyUrl))
-    .replace('"./episode-view.js?v=13"', JSON.stringify(emptyUrl))
+    .replace('"./media-player.js?v=3"', JSON.stringify(emptyUrl))
+    .replace('"./evidence-gallery.js?v=8"', JSON.stringify(emptyUrl))
+    .replace('"./episode-view.js?v=14"', JSON.stringify(emptyUrl))
     .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
     .replace('"./review-lists.js?v=3"', JSON.stringify(emptyUrl))
     .replace('"./sidebar.js?v=4"', JSON.stringify(emptyUrl))
+    .replace('"./time-range.js?v=1"', JSON.stringify(timeRangeUrl))
     .replace('"./view.js?v=1"', JSON.stringify(emptyUrl))
     .replace('"./timeline.js?v=6"', JSON.stringify(emptyUrl)),
 ));
@@ -110,4 +118,54 @@ test("excluded participation is explicit in badges and Event detail guidance", (
   assert.match(notice, /did not join a new recording/);
   assert.match(notice, /device not in profile/i);
   assert.match(notice, /2026-09-09T10:00:00Z/);
+});
+
+test("Activity sends calculated UTC bounds to the Event API", async () => {
+  globalThis.apiCalls = [];
+  await module.activity("", 1, new URLSearchParams({ time_range: "yesterday" }));
+
+  const eventRequest = globalThis.apiCalls.find(path => path.startsWith("/events?"));
+  assert.ok(eventRequest);
+  const query = new URLSearchParams(eventRequest.split("?", 2)[1]);
+  assert.match(query.get("observed_from"), /Z$/);
+  assert.match(query.get("observed_before"), /Z$/);
+  assert.ok(new Date(query.get("observed_before")) > new Date(query.get("observed_from")));
+});
+
+test("Activity renders the selected custom range controls", async () => {
+  await module.activity("", 1, new URLSearchParams({
+    time_range: "custom",
+    custom_from: "2026-09-12",
+    custom_to: "2026-09-14",
+  }));
+
+  assert.match(globalThis.activityHtml, /<span>Time<\/span>/);
+  assert.match(globalThis.activityHtml, /value="2026-09-12"/);
+  assert.match(globalThis.activityHtml, /value="2026-09-14"/);
+  assert.doesNotMatch(globalThis.activityHtml, /Choose a valid start/);
+});
+
+test("Evidence sends capture bounds to the Evidence API", async () => {
+  globalThis.apiCalls = [];
+  await module.evidence("", 1, new URLSearchParams({ time_range: "yesterday" }));
+
+  const evidenceRequest = globalThis.apiCalls.find(path => path.startsWith("/evidence?"));
+  assert.ok(evidenceRequest);
+  const query = new URLSearchParams(evidenceRequest.split("?", 2)[1]);
+  assert.match(query.get("captured_from"), /Z$/);
+  assert.match(query.get("captured_before"), /Z$/);
+  assert.equal(query.get("observed_from"), null);
+});
+
+test("Evidence renders the selected custom range controls", async () => {
+  await module.evidence("", 1, new URLSearchParams({
+    time_range: "custom",
+    custom_from: "2026-09-12",
+    custom_to: "2026-09-14",
+  }));
+
+  assert.match(globalThis.activityHtml, /<span>Time<\/span>/);
+  assert.match(globalThis.activityHtml, /value="2026-09-12"/);
+  assert.match(globalThis.activityHtml, /value="2026-09-14"/);
+  assert.doesNotMatch(globalThis.activityHtml, /Choose a valid start/);
 });

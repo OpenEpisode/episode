@@ -24,6 +24,7 @@ from episode.domain.models import (
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
 from episode.recording.engine import RecordingEngine
+from episode.recording.hls import HLSCaptureState, HLSRecordingBundle
 from episode.storage.repository import Repository
 
 
@@ -722,7 +723,7 @@ async def test_startup_reconciles_playable_and_invalid_recording_partials(
     episode = Episode(
         id="episode-1",
         primary_area_id="area-1",
-        state=EpisodeState.CLOSED,
+        state=EpisodeState.FINALIZING,
     )
     await repo.create_episode(episode)
     recordings_dir = os.path.join(config.data_dir, "episodes", episode.id, "recordings")
@@ -749,7 +750,8 @@ async def test_startup_reconciles_playable_and_invalid_recording_partials(
     )
     engine = EpisodeEngine(repo, bus, timeout=config.episode_timeout)
     recorder = RecordingEngine(repo, bus, config.data_dir)
-    await engine.start()
+    recorder.set_evidence_sink(engine.ingest_recording_evidence)
+    await engine.start(defer_finalization=True)
     await recorder.start()
     await recorder.recover_interrupted_recordings()
 
@@ -771,6 +773,87 @@ async def test_startup_reconciles_playable_and_invalid_recording_partials(
 
     await recorder.stop()
     await engine.stop()
+    await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_startup_ignores_recording_partials_under_closed_episodes(repo, bus, config):
+    await repo.initialize()
+    await _add_areas(repo, "area-1")
+    await repo.upsert_device(_video_device("camera-x", "area-1", "on_event"))
+    episode = Episode(id="sealed-episode", primary_area_id="area-1", state=EpisodeState.CLOSED)
+    await repo.create_episode(episode)
+    partial = (
+        Path(config.data_dir)
+        / "episodes"
+        / episode.id
+        / "recordings"
+        / "rec_camera-x_20260824_120000_000000_aaaaaaaaaaaa_000000.mp4.part"
+    )
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b"sealed working output")
+
+    recorder = RecordingEngine(repo, bus, config.data_dir)
+    await recorder.start()
+    await recorder.recover_interrupted_recordings()
+
+    assert partial.exists()
+    assert await repo.list_evidence(episode_id=episode.id, limit=10) == []
+    await recorder.stop()
+    await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_startup_defers_recovered_bundle_to_retryable_episode_finalizer(repo, bus, config):
+    await repo.initialize()
+    await _add_areas(repo, "area-1")
+    await repo.upsert_device(_video_device("camera-x", "area-1", "on_event"))
+    episode = Episode(
+        id="episode-finalizing",
+        primary_area_id="area-1",
+        state=EpisodeState.FINALIZING,
+    )
+    await repo.create_episode(episode)
+    root = Path(config.data_dir, "episodes", episode.id, "recordings", "evidence-1")
+    bundle = HLSRecordingBundle.create(
+        root,
+        HLSCaptureState(
+            evidence_id="evidence-1",
+            episode_id=episode.id,
+            device_id="camera-x",
+            area_id="area-1",
+            session_id="aaaaaaaaaaaa",
+            started_at=_now() - timedelta(seconds=10),
+        ),
+    )
+    bundle.playlist_path.write_text(
+        "#EXTM3U\n#EXTINF:4,\nsegments/segment-000000.m4s\n",
+        encoding="utf-8",
+    )
+    (bundle.root / "segments" / "segment-000000.m4s").write_bytes(b"video")
+
+    async def fail_publication(_evidence):
+        raise RuntimeError("database unavailable")
+
+    recorder = RecordingEngine(
+        repo,
+        bus,
+        config.data_dir,
+        evidence_sink=fail_publication,
+    )
+    await recorder.start()
+
+    await recorder.recover_interrupted_recordings()
+
+    assert (episode.id, "camera-x") in recorder._recoverable
+    assert bundle.capture_state_path.exists()
+    assert str(bundle.capture_state_path) in recorder.active_file_paths()
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await recorder.finalize_episode(episode.id)
+    assert (episode.id, "camera-x") in recorder._recoverable
+    assert (await repo.get_episode(episode.id)).state == EpisodeState.FINALIZING
+
+    await recorder.stop()
     await repo.close()
 
 

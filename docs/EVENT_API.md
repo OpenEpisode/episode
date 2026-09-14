@@ -52,9 +52,10 @@ appropriate for this source.
 An active Event opens or updates the Device's Area Episode. Video Devices in
 that Area configured as **Any Episode in this Area** (`on_episode`) start
 recording. An inactive Event is retained in the Episode timeline without
-extending recording time. If no Episode is active, an inactive Event does not
-open one. A matching inactive transition that arrives just after timeout may be
-attached to the recently closed Episode without reopening or extending it.
+extending recording time while its Episode is still mutable. If no mutable
+Episode is active, an inactive Event does not open one. Events and Evidence
+that arrive after the quiescent grace remain preserved and unassigned; they do
+not attach to a finalizing or closed Episode, reopen it, or amend its bundle.
 
 The active **Capture profile** also applies to Event API observations. If it
 excludes the source Device, Episode still preserves the request, Receipt, and
@@ -121,6 +122,11 @@ The activity window is persisted on the Episode as `minimum_end_at` when the
 active Event is processed. Editing the Device later does not rewrite that
 decision. Other recording Devices that join through Area policy follow the
 Episode deadline; they do not substitute their own configured window.
+
+Episode also snapshots the safe Area and Device identity used at capture time,
+including Devices selected by `on_episode`. Later inventory edits do not rewrite
+that historical identity. Credentials, integration configuration, and stream
+URLs are never included in the snapshot.
 
 ## Idempotency
 

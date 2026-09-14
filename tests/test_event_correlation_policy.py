@@ -204,7 +204,11 @@ async def test_engine_notifies_quiescent_then_closed_transitions(tmp_path):
         assert (await repo.get_episode(created.event.episode_id)).state == EpisodeState.QUIESCENT
         await engine._close_timed_out_episodes(now=base + timedelta(seconds=7))
         assert (await repo.get_episode(created.event.episode_id)).state == EpisodeState.CLOSED
-        assert transitions[-2:] == [EpisodeState.QUIESCENT.value, EpisodeState.CLOSED.value]
+        assert transitions[-3:] == [
+            EpisodeState.QUIESCENT.value,
+            EpisodeState.FINALIZING.value,
+            EpisodeState.CLOSED.value,
+        ]
     finally:
         await engine.stop()
         await repo.close()
@@ -530,7 +534,7 @@ async def test_inactive_event_does_not_open_episode(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_late_inactive_attaches_to_matching_closed_episode_without_reopening(tmp_path):
+async def test_late_inactive_stays_unassigned_after_episode_closes(tmp_path):
     config = EpisodeConfig(
         data_dir=str(tmp_path),
         db_path=str(tmp_path / "episode.db"),
@@ -574,12 +578,12 @@ async def test_late_inactive_attaches_to_matching_closed_episode_without_reopeni
         )
 
         closed_after = await repo.get_episode(episode_id)
-        assert inactive.event.episode_id == episode_id
+        assert inactive.event.episode_id is None
         assert closed_after.state == EpisodeState.CLOSED
         assert closed_after.end_time == closed_before.end_time
         assert closed_after.last_activity_at == closed_before.last_activity_at
-        assert closed_after.last_event_time == inactive_timestamp
-        assert closed_after.event_count == 2
+        assert closed_after.last_event_time == closed_before.last_event_time
+        assert closed_after.event_count == 1
     finally:
         await engine.stop()
         await repo.close()

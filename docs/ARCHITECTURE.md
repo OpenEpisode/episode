@@ -45,7 +45,7 @@ claims are rejected instead of being resolved by registration order.
 | Ingestion Receipt | One delivery through one connector | Associations may be added |
 | Event | Canonical observation deduplicated across receipts | Core observation is stable |
 | Evidence | Snapshot, recording, or other incident material | Original bytes are stable |
-| Episode | Correlated interpretation of related activity | Evolves until closed |
+| Episode | Correlated interpretation of related activity | Evolves until sealed |
 | Annotation | Derived interpretation from a processing run | Append-only; planned |
 | Action Run | One policy-triggered operation and its result | Append-only; planned |
 
@@ -67,27 +67,30 @@ configured five-second settling grace by default. Recordings and current views
 remain active during this short Area-level horizon. An active Event whose
 reception time falls within the horizon joins the same Episode, returns it to
 `ACTIVE`, and contributes its Device activity window. If the horizon expires
-without active activity, the Episode becomes `CLOSED`; closure does not reopen
-or merge finalized recordings. The grace is persisted as an installation
+without active activity, the Episode enters `FINALIZING`. It cannot be extended
+or receive normal Event/Evidence associations in this state. The recording
+engine finishes output that was already in progress, then the repository writes
+one final atomic manifest and marks the Episode `CLOSED`. A failure leaves it
+`FINALIZING` so startup recovery can retry it; it never silently presents an
+incomplete capture as closed history. The grace is persisted as an installation
 setting and can be changed under **System → Recordings**. Lifecycle correlation
 uses the Event's ingress reception time captured before database processing so
 queue or database latency does not create an artificial split.
 
-An inactive Event is paired with the latest preceding active Event from the same
-Area, Device, and normalized Event type. It inherits that Event's Episode even
-when the Episode has already closed, but does not shorten its persisted minimum
-deadline, reopen it, or restart actions. Unpaired inactive Events remain
-preserved and unassigned. This lifecycle policy belongs to correlation, not to
-protocol plugins.
+An inactive Event is paired with the latest preceding active Event only while
+that Episode is still mutable (`ACTIVE` or `QUIESCENT`). After the grace period,
+late inactive Events and Evidence remain preserved and unassigned. They never
+reopen or amend a `FINALIZING` or `CLOSED` Episode. This lifecycle policy
+belongs to correlation, not to protocol plugins.
 
 Before a newly canonicalized active Event reaches correlation, the core records
 a Capture-profile participation decision. The built-in `all-devices` profile is
 dynamic; custom profiles contain an explicit Device set and may intentionally be
 empty. Exclusion is not an ingestion filter: the Raw Artifact, Receipt, and Event
 remain preserved and queryable, but the Event cannot create or extend an Episode
-or start actions. Inactive Events bypass this gate so a later transition can
-still attach to its preceding accepted active Event without reopening or
-extending the Episode.
+or start actions. Inactive Events bypass this gate so a transition received
+while its preceding Episode is still mutable can be preserved alongside that
+accepted Event without opening a new Episode or extending its deadline.
 
 The decision stores the profile identity and evaluation time separately from
 plugin metadata. For an accepted Event it also snapshots the exact recording
@@ -225,14 +228,22 @@ from a request or container host. Webhook updates reconfigure the subscriber
 immediately. A separate test operation uses the same bounded sender without
 publishing an Event or creating an Episode.
 
-At startup, the Episode engine restores each persisted open Episode to the state
-appropriate for the current time: active Episodes past their minimum deadline
-enter quiescence, while any Episode whose complete grace horizon has passed
-closes directly. After plugins restore media registrations, the recording engine
-reconstructs targets for Episodes whose deadline or quiescent horizon remains in
-the future. An interrupted HLS recording resumes in its existing Evidence
-workspace with an explicit playlist discontinuity; it does not create a second
-logical recording.
+At startup, storage bootstraps SQLite and the required directories, then scopes
+correctness recovery and filesystem inspection to unsealed Episodes
+(`ACTIVE`, `QUIESCENT`, and `FINALIZING`). Closed Episodes are trusted sealed
+history: their receipts, artifacts, Evidence, counters, and manifests are not
+globally scanned or rebuilt during normal startup. The Episode engine restores
+open lifecycle state; the recording engine recovers interrupted workspaces and
+retries persisted `FINALIZING` Episodes after recorder recovery. An interrupted
+HLS recording resumes in its existing Evidence workspace with an explicit
+playlist discontinuity; it does not create a second logical recording.
+
+Retention policy is loaded synchronously so the running service knows its
+effective safety policy, while the initial visual cleanup runs in the
+background after recorder recovery. Plugin activation remains synchronous and
+capture-safe. Startup logs phase timings so slow storage, recovery, plugins, or
+connectors are diagnosable without making closed-history scans part of the
+critical path.
 
 
 ## Persistence model
@@ -255,9 +266,10 @@ while inventory, canonical Event, and provenance SQL live in focused stores.
 Raw Artifacts describe immutable content; Receipts exclusively describe how,
 when, and from where that content arrived.
 
-Startup recovery also derives each Episode's Event and Evidence counters from
-the canonical rows before rebuilding portable manifests. Interrupted or older
-write paths therefore cannot leave collection summaries permanently stale.
+Startup recovery derives Event and Evidence counters from canonical rows and
+rebuilds portable manifests only for unsealed Episodes. Interrupted writes can
+therefore be repaired while sealed history is left untouched and out of the
+normal startup path.
 
 Area and Device inventory is persistent configuration stored in SQLite and
 managed through the UI. `episode.json` remains responsible only for system-wide
@@ -318,9 +330,20 @@ data/episodes/<episode-id>/
 └── timelapses/
 ```
 
-`manifest.json` is an atomic, rebuildable index containing the Episode, safe
-area and device identity, canonical Events, receipts, Evidence, relative file
-paths, byte lengths, and SHA-256 checksums.
+`manifest.json` is an atomic index containing the Episode, historical safe Area
+and Device identity, canonical Events, receipts, Evidence, relative file paths,
+byte lengths, and SHA-256 checksums. Unsealed manifests may be rebuilt while
+capture is recovering. The finalization barrier writes the last manifest before
+the Episode becomes closed, so a closed bundle is not silently reconstructed
+from current inventory.
+
+Area and Device identity snapshots are recorded when an Event is accepted into
+an Episode and when participating Evidence is associated. They preserve the
+name, physical role, area relationship, address, and other safe display identity
+observed at capture time, including Devices selected through `on_episode` before
+their recording is finalized. Credentials, integration configuration, and
+stream URLs are never copied into these snapshots. Later inventory edits do not
+rewrite Episode history.
 
 `journal.ndjson` is append-only history for important bundle changes. A copied
 Episode directory therefore retains its relationships even when `episode.db` is
@@ -369,19 +392,22 @@ proxies or transcodes must be separate derived presentation artifacts.
 One global visual Evidence retention policy defaults to an active but
 unconfirmed 30-day period and is managed from the System UI. An administrator
 must explicitly confirm the default, select another period, or disable automatic
-deletion. Disabled retention remains persistently visible in the UI. Startup and
-hourly cleanup remove complete expired recording bundles, snapshots, embedded pictures, thumbnails,
+deletion. Disabled retention remains persistently visible in the UI. Initial
+cleanup runs in the background after startup recovery, then hourly; it removes
+complete expired recording bundles, snapshots, embedded pictures, thumbnails,
 timelapses, and other Episode-managed visual copies. The canonical Evidence row,
 Raw Artifact, and portable manifest retain identity and integrity metadata while
 removing recoverable file paths. Files currently being written are deferred until
 a later cleanup, and failures degrade System status for operator action.
+Retention is a deliberate post-closure Evidence lifecycle: it may remove
+managed bytes and record their expiry, but it does not add Events, Evidence, or
+associations to a sealed Episode.
 
-Evidence correlation uses the source observation timestamp and Area. Delayed
-uploads can therefore join an already-closed Episode when they were captured
-inside its recorded lifespan; this updates provenance and the portable bundle
-without reopening the Episode or restarting actions. If no lifespan contains
-the timestamp, an active same-Area Episode remains the fallback for small clock
-differences between independent sources.
+Evidence correlation uses the source observation timestamp and Area while the
+Episode remains mutable. Delayed uploads that arrive after the grace period are
+still preserved as Evidence and receipts, but remain unassigned; they cannot
+update a closed bundle. An active same-Area Episode remains the fallback for
+small clock differences between independent sources only while it is mutable.
 
 ## Canonical event identity
 
@@ -404,7 +430,8 @@ receipt, and derives the canonical key without changing the Event representation
 - Episode association is committed before files are relocated, making an
   interrupted operation recoverable.
 - Startup reconciles database paths, receipt links, and checksum-identical files
-  already moved into Episode folders, then rebuilds manifests.
+  already moved into folders only for unsealed Episodes, then rebuilds their
+  manifests. Closed bundles are not rescanned as part of normal startup.
 - Public APIs expose checksums and provenance, not internal absolute paths.
 - Overlays and future AI output belong in annotations or derived artifacts.
 
@@ -492,8 +519,9 @@ first-class fields without removing the underlying diagnostic metadata.
   failure, overload, shutdown, or restart.
 - Authentication and safe Internet exposure are not implemented.
 - Annotation and processing-run persistence are planned, not yet public APIs.
-- Capture resumes after an application or host restart only while the persisted
-  Episode remains active and its recording target can be reconstructed. A
+- Capture resumes after an application or host restart while the persisted
+  Episode remains mutable and its recording target can be reconstructed.
+  Persisted `FINALIZING` Episodes are retried after recorder recovery. A
   restart may still create a capture gap or leave an unfinished fragment; these
   conditions remain explicit instead of being presented as continuous media.
 

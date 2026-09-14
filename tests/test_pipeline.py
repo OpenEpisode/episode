@@ -532,18 +532,16 @@ async def test_delayed_evidence_uses_capture_time_to_join_closed_episode(
     stored_receipt = await repo.get_ingestion_receipt(receipt.id)
     stored_evidence = await repo.get_evidence(evidence.id)
     updated_episode = await repo.get_episode(episode.id)
-    assert evidence.episode_id == episode.id
-    assert stored_receipt.episode_id == episode.id
+    assert evidence.episode_id is None
+    assert stored_receipt.episode_id is None
     assert stored_receipt.evidence_id == evidence.id
     assert updated_episode.state == EpisodeState.CLOSED
-    assert updated_episode.evidence_count == 1
-    assert stored_evidence.file_path.startswith(
-        os.path.join(config.data_dir, "episodes", episode.id, "snapshots")
-    )
+    assert updated_episode.evidence_count == 0
+    assert stored_evidence.episode_id is None
 
 
 @pytest.mark.asyncio
-async def test_delayed_evidence_prefers_containing_closed_episode_over_new_open_episode(
+async def test_delayed_evidence_uses_current_open_correlation_after_seal(
     engine,
     repo,
     bus,
@@ -594,9 +592,9 @@ async def test_delayed_evidence_prefers_containing_closed_episode_over_new_open_
         )
     )
 
-    assert evidence.episode_id == first_episode.id
-    assert (await repo.get_episode(first_episode.id)).evidence_count == 1
-    assert (await repo.get_episode(open_episode.id)).evidence_count == 0
+    assert evidence.episode_id == open_episode.id
+    assert (await repo.get_episode(first_episode.id)).evidence_count == 0
+    assert (await repo.get_episode(open_episode.id)).evidence_count == 1
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,23 @@ authorization layer and should not be published directly to the Internet.
 - Credentials, private storage paths, and raw payload bytes are excluded from
   normal JSON resource responses.
 
+Episode resources use these lifecycle states:
+
+- `active`: accepts related active Events and Evidence associations;
+- `quiescent`: within the configured settling grace and still mutable;
+- `finalizing`: the grace has expired; normal Events and Evidence are preserved
+  but cannot extend or join the Episode while already-started recording output
+  is finalized;
+- `closed`: a sealed historical Episode whose final manifest has been written;
+- `archived`: retained historical metadata outside the active lifecycle.
+
+`finalizing` is transient during successful operation, but may remain visible
+after a failure or restart until recovery retries it. Late or inactive
+observations that arrive after the grace period are returned as preserved,
+unassigned resources; they do not reopen or amend `finalizing` or `closed`
+Episodes. Retention may later expire managed Evidence bytes while preserving
+the Evidence identity and integrity metadata.
+
 ## Collections
 
 Time-based collections—Episodes, Events, Evidence, and ingestion Receipts—use:
@@ -51,12 +68,23 @@ arriving while a client walks older pages may move offsets; consumers requiring
 a stable historical export should first work from a closed Episode.
 
 The global Event collection accepts `episode_id`, `area_id`, `device_id`,
-`event_type`, `event_state`, and `has_episode` filters. The global Evidence
-collection accepts `episode_id`, `event_id`, `area_id`, `device_id`,
-`evidence_type`, and `has_episode`. `has_episode=false` is the supported way to
-find observations or artifacts that have not been associated with an Episode;
-absence of a direct `event_id` is not itself an error because recordings and
-other Episode-level Evidence need not belong to one Event.
+`event_type`, `event_state`, and `has_episode` filters. It also accepts the
+optional `observed_from` and `observed_before` RFC 3339 bounds. The lower bound
+is inclusive (`timestamp >= observed_from`) and the upper bound is exclusive
+(`timestamp < observed_before`); both values must include a timezone offset,
+and `observed_before` must be later than `observed_from`. The Activity view
+uses these bounds for local-calendar presets and custom whole-day ranges. The
+global Evidence collection accepts `episode_id`, `event_id`, `area_id`,
+`device_id`, `evidence_type`, and `has_episode`. It also accepts optional
+`captured_from` and `captured_before` RFC 3339 bounds with the same inclusive
+lower and exclusive upper semantics and timezone requirements. These bounds
+filter the Evidence `timestamp`, which is the capture/start timestamp. A long
+recording is selected by its start time only; the filter does not use interval
+overlap. The Evidence view uses these bounds for the same local-calendar
+presets and custom whole-day ranges. `has_episode=false` is the supported way
+to find observations or artifacts that have not been associated with an
+Episode; absence of a direct `event_id` is not itself an error because
+recordings and other Episode-level Evidence need not belong to one Event.
 
 ## Errors
 
