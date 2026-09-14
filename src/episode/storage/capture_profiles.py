@@ -90,14 +90,16 @@ class CaptureProfileStore:
     async def create(self, profile: CaptureProfile) -> CaptureProfile:
         await self._connection.execute(
             """INSERT INTO capture_profiles
-               (id, name, include_all_devices, device_ids, builtin, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (id, name, include_all_devices, device_ids, builtin,
+                filter_generic_events, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 profile.id,
                 profile.name,
                 int(profile.include_all_devices),
                 json.dumps(sorted(set(profile.device_ids)), separators=(",", ":")),
                 int(profile.builtin),
+                int(profile.filter_generic_events),
                 _utc_iso(profile.created_at),
                 _utc_iso(profile.updated_at),
             ),
@@ -108,12 +110,14 @@ class CaptureProfileStore:
     async def update(self, profile: CaptureProfile) -> CaptureProfile:
         await self._connection.execute(
             """UPDATE capture_profiles
-               SET name = ?, include_all_devices = ?, device_ids = ?, updated_at = ?
+               SET name = ?, include_all_devices = ?, device_ids = ?,
+                   filter_generic_events = ?, updated_at = ?
                WHERE id = ?""",
             (
                 profile.name,
                 int(profile.include_all_devices),
                 json.dumps(sorted(set(profile.device_ids)), separators=(",", ":")),
+                int(profile.filter_generic_events),
                 _utc_iso(profile.updated_at),
                 profile.id,
             ),
@@ -234,6 +238,9 @@ class CaptureProfileStore:
             include_all_devices=bool(row["include_all_devices"]),
             device_ids=[str(item) for item in device_ids],
             builtin=bool(row["builtin"]),
+            filter_generic_events=bool(row["filter_generic_events"])
+            if "filter_generic_events" in row.keys()
+            else False,
             active=row["id"] == active_id,
             created_at=_parse_datetime(row["created_at"]),
             updated_at=_parse_datetime(row["updated_at"]),

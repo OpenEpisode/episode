@@ -92,6 +92,24 @@ or start actions. Inactive Events bypass this gate so a transition received
 while its preceding Episode is still mutable can be preserved alongside that
 accepted Event without opening a new Episode or extending its deadline.
 
+The same gate applies a configurable **generic event filter**. The core classifies
+canonical, vendor-neutral `event_type` strings (`src/episode/domain/event_filter.py`)
+into a generic set (System, motion, video loss, tamper, audio, …) and treats
+everything else—including unknown types—as high-level and unfiltered, so
+uncertain messages fail safe and remain preserved. When filtering is enabled for
+an active Event whose type is generic, the Event keeps `allowed=False` with
+reason `generic_event_filtered` and the exact suppressed type recorded on the
+participation; it cannot open or extend an Episode or start actions, but is
+still persisted, queryable, and auditable.
+
+Effective filtering resolves by precedence: an explicit per-Device
+`generic_event_filter` (`"enabled"` / `"disabled"`) overrides the active Capture
+Profile's `filter_generic_events` default; `"inherit"` (the default) follows the
+profile. This specific-over-general rule means a camera-level choice always wins
+over the profile-level policy. Like all participation decisions, the filter is
+evaluated at canonicalization time and snapshotted with the Event, so later
+profile or camera changes affect only new Events.
+
 The decision stores the profile identity and evaluation time separately from
 plugin metadata. For an accepted Event it also snapshots the exact recording
 target IDs selected at that moment. Action dispatch and restart recovery consume
@@ -121,7 +139,8 @@ src/episode/
 │       └── sdk/
 ├── media/            camera media registry and timelapse service
 ├── actions/          vendor-neutral snapshot action
-├── capture_profiles.py  core capture-participation policy
+├── capture_profiles.py  core capture-participation policy and generic event filter
+├── domain/event_filter.py  vendor-neutral generic/high-level event classification
 ├── installation.py   global non-secret installation identity settings
 ├── notifications.py  bounded outbound Episode-start delivery
 ├── domain/           vendor-neutral models and identities

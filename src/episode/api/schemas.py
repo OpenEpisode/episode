@@ -220,6 +220,7 @@ class EpisodeStartedWebhookTestResponse(ApiModel):
 class CaptureProfileCreateRequest(ApiModel):
     name: str = Field(min_length=1, max_length=100)
     device_ids: list[str] = Field(default_factory=list, max_length=500)
+    filter_generic_events: bool = False
 
 
 class CaptureProfileUpdateRequest(CaptureProfileCreateRequest):
@@ -237,6 +238,7 @@ class CaptureProfileResponse(ApiModel):
     device_ids: list[str] = Field(default_factory=list)
     builtin: bool
     active: bool
+    filter_generic_events: bool = False
 
 
 class CaptureProfileChangeResponse(ApiModel):
@@ -310,6 +312,7 @@ class EventParticipationResponse(ApiModel):
     profile_name: str
     reason: str
     evaluated_at: datetime
+    filtered_event_type: str | None = None
 
 
 class EventResponse(ApiModel):

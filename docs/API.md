@@ -59,9 +59,9 @@ a mapping operation rather than a pageable collection.
 
 Capture profiles are also bounded configuration. `GET /api/v1/capture-profiles`
 returns the built-in and custom profiles, including their explicit `active`,
-`builtin`, `include_all_devices`, and `device_ids` state. The built-in
-`all-devices` profile is immutable and dynamic; an empty custom `device_ids`
-array is valid.
+`builtin`, `include_all_devices`, `device_ids`, and `filter_generic_events`
+state. The built-in `all-devices` profile is immutable and dynamic; an empty
+custom `device_ids` array is valid.
 
 Offset pagination is intentionally simple for the beta lifecycle. New activity
 arriving while a client walks older pages may move offsets; consumers requiring
@@ -208,11 +208,23 @@ recent_changes}` with bounded newest-first activation history. `PUT` on that
 resource accepts `{"profile_id": "..."}` and atomically changes the active
 selection; activating the already-active profile is an idempotent no-op.
 
+Capture profile create and update payloads accept an optional boolean
+`filter_generic_events` (default `false`). When enabled, generic observations
+(System, motion, video loss, tamper, audio) that do not imply a classified
+detection are excluded from opening or extending Episodes and from starting
+actions, while higher-level detections (person, vehicle, pet, …) still
+participate. Each Device carries a tri-state `generic_event_filter` in its
+`episode_policy` (`"inherit"`, `"enabled"`, or `"disabled"`); an explicit
+per-camera value overrides the profile default, and `"inherit"` follows it.
+
 The active selection is capture policy, not Device connectivity. New active
 Events from excluded Devices are still preserved and returned with a
 `participation` object containing the durable decision, but have no Episode.
-Internal recording-target IDs are not exposed in Event API projections. Profile
-changes apply to later canonical Events and never interrupt current recordings.
+A generic Event suppressed by the filter is returned with `participation`
+`reason: "generic_event_filtered"` and a `filtered_event_type` naming the exact
+normalized type that was suppressed. Internal recording-target IDs are not
+exposed in Event API projections. Profile changes apply to later canonical
+Events and never interrupt current recordings.
 
 ## Compatibility during beta
 

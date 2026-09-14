@@ -178,6 +178,7 @@ def public_capture_profile(profile) -> CaptureProfileResponse:
             "device_ids": list(data.get("device_ids") or []),
             "builtin": bool(data.get("builtin", False)),
             "active": bool(data.get("active", False)),
+            "filter_generic_events": bool(data.get("filter_generic_events", False)),
         }
     )
 

@@ -63,6 +63,7 @@ function deviceDefaults(device) {
   return {
     episodePolicy: {
       activity_window_seconds: policy.activity_window_seconds ?? 30,
+      generic_event_filter: policy.generic_event_filter || "inherit",
     },
     video: { enabled: true, manual_endpoint: false, protocol: "rtsp", port: 554, path: "/Streaming/Channels/101", recording_mode: "on_event", ...(config.video || {}) },
     onvif: { enabled: true, protocol: "http", port: 80, path: "/onvif/device_service", auth_mode: "digest_wsse", events_enabled: false, relaxed_xml: false, ...(config.onvif || {}) },
@@ -121,6 +122,7 @@ function devicePayload(data, editing, device) {
     clear_credentials: isChecked(data, "clear_credentials"),
     episode_policy: {
       activity_window_seconds: Number(field(data, "activity_window_seconds")),
+      generic_event_filter: field(data, "generic_event_filter") || "inherit",
     },
     video: {
       enabled: isChecked(data, "video_enabled"),
@@ -196,6 +198,11 @@ export function openDeviceEditor(device, areas, onSaved) {
       <div class="form-section"><h3>Capture</h3>
         <div class="form-grid capture-policy-fields">
           <label class="field"><span>Episode activity window</span><input name="activity_window_seconds" type="number" min="1" max="3600" required value="${values.episodePolicy.activity_window_seconds}"><small>Seconds this Device keeps an Episode open after each Event. Other recording Devices follow the Episode.</small></label>
+          <label class="field"><span>Generic event filtering</span><select name="generic_event_filter">
+            <option value="inherit"${selected(values.episodePolicy.generic_event_filter === "inherit")}>Inherit from Capture profile</option>
+            <option value="enabled"${selected(values.episodePolicy.generic_event_filter === "enabled")}>Enabled</option>
+            <option value="disabled"${selected(values.episodePolicy.generic_event_filter === "disabled")}>Disabled</option>
+          </select><small>Explicit camera settings override the active Capture Profile. Generic events (System, motion, video loss, tamper, audio) do not open or extend Episodes when filtering is enabled; higher-level detections (person, vehicle, pet, …) still participate.</small></label>
         </div>
         ${integrationToggle("video", "Video recording", "Capture this Device when its Area is active.", values.video.enabled, `
           <div class="form-grid">

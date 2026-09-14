@@ -15,6 +15,14 @@ let profileState = {
 
 const MAX_HISTORY_ITEMS = 10;
 
+function isChecked(formData, name) {
+  return formData.get?.(name) === "on";
+}
+
+function checked(value) {
+  return value ? " checked" : "";
+}
+
 function profileName(profile, fallback = "Unknown profile") {
   if (profile && typeof profile === "object") {
     return profile.name || profile.id || fallback;
@@ -146,6 +154,7 @@ function profileEditorContent(profile, devices, areas) {
   return `<label class="field capture-profile-name-field"><span>Profile name</span>
     <input name="name" required maxlength="100" value="${escHtml(profile?.name || "")}" placeholder="Night">
   </label>
+  <label class="toggle-row capture-profile-filter-toggle"><input type="checkbox" name="filter_generic_events"${checked(Boolean(profile?.filter_generic_events))}><span><strong>Filter generic events</strong><small>Generic observations (System, motion, video loss, tamper, audio) will not open or extend Episodes or start recordings. Higher-level detections (person, vehicle, pet, …) still participate. A per-camera override wins.</small></span></label>
   <fieldset class="capture-profile-device-selection">
     <legend>Devices that may participate</legend>
     <p class="configuration-note">Select the Devices whose active Events may open or extend Episodes and whose cameras may join new recordings. Leave every box clear for a Disarmed profile.</p>
@@ -175,9 +184,10 @@ export function openCaptureProfileEditor(profile = null, devices = profileState.
     onSubmit: async data => {
       const name = String(data.get?.("name") || "").trim();
       const device_ids = deviceIdsFromForm(data);
+      const filter_generic_events = isChecked(data, "filter_generic_events");
       await apiRequest(editing ? `/capture-profiles/${encodeURIComponent(profile.id)}` : "/capture-profiles", {
         method: editing ? "PUT" : "POST",
-        body: { name, device_ids },
+        body: { name, device_ids, filter_generic_events },
       });
       closeDialog();
       notify(editing ? "Capture profile updated" : "Capture profile created");
@@ -193,6 +203,9 @@ function profileRow(profile) {
   const selection = builtin
     ? "All current and future enabled Devices participate"
     : `${plural((profile.device_ids || []).length, "Device")} selected`;
+  const filterNote = profile.filter_generic_events
+    ? " · generic events filtered"
+    : "";
   const activationControl = active
     ? '<span class="badge badge-active">Active</span>'
     : `<button type="button" class="button button-ghost capture-profile-activate" data-capture-profile-action="activate" data-profile-id="${escHtml(profile.id)}">Activate</button>`;
@@ -211,7 +224,7 @@ function profileRow(profile) {
   return `<div class="resource-row capture-profile-row ${active ? "capture-profile-row-active" : ""}">
     <span class="status-indicator ${active ? "online" : "idle"}" aria-hidden="true"></span>
     <div class="resource-main"><strong>${escHtml(profileName(profile))}</strong>
-      <span>${escHtml(selection)}${restricted ? " · restricted" : ""}</span>
+      <span>${escHtml(selection)}${restricted ? " · restricted" : ""}${escHtml(filterNote)}</span>
     </div>
     ${controls}
   </div>`;

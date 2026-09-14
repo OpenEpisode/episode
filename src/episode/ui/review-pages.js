@@ -151,18 +151,26 @@ function participationProfileName(participation) {
 
 export function eventParticipationBadge(participation) {
   if (participation?.allowed !== false) return "";
-  return `<span class="badge badge-capture-excluded">Capture excluded · ${escHtml(participationProfileName(participation))}</span>`;
+  const filtered = participation?.reason === "generic_event_filtered";
+  const label = filtered
+    ? `Generic event filtered · ${escHtml(participationProfileName(participation))}`
+    : `Capture excluded · ${escHtml(participationProfileName(participation))}`;
+  return `<span class="badge ${filtered ? "badge-capture-filtered" : "badge-capture-excluded"}">${label}</span>`;
 }
 
 export function eventParticipationNotice(participation) {
   if (participation?.allowed !== false) return "";
+  const filtered = participation?.reason === "generic_event_filtered";
   const reason = participation.reason
-    ? `<small>Reason: ${escHtml(titleCase(participation.reason))}${participation.evaluated_at ? ` · evaluated ${escHtml(fmtShort(participation.evaluated_at))}` : ""}</small>`
+    ? `<small>Reason: ${escHtml(titleCase(participation.reason))}${participation.filtered_event_type ? ` · ${escHtml(participation.filtered_event_type)}` : ""}${participation.evaluated_at ? ` · evaluated ${escHtml(fmtShort(participation.evaluated_at))}` : ""}</small>`
     : participation.evaluated_at
     ? `<small>Evaluated ${escHtml(fmtShort(participation.evaluated_at))}</small>`
     : "";
+  const message = filtered
+    ? `<span>This observation was preserved, but it did not affect an Episode. Its generic event type (${escHtml(participation.filtered_event_type || "unknown")}) was filtered by the generic event policy and did not open or extend an Episode or join a new recording. Higher-level detections (person, vehicle, pet, …) still participate.</span>${reason}`
+    : `<span>This observation was preserved, but it did not affect an Episode. Its active Event did not open or extend an Episode and it did not join a new recording because the active Capture profile excludes this Device.</span>${reason}`;
   return `<section class="notice notice-info event-participation-notice" role="status">
-    <div><strong>Capture excluded · ${escHtml(participationProfileName(participation))}</strong><span>This observation was preserved, but it did not affect an Episode. Its active Event did not open or extend an Episode and it did not join a new recording because the active Capture profile excludes this Device.</span>${reason}</div>
+    <div><strong>${filtered ? "Generic event filtered" : `Capture excluded`} · ${escHtml(participationProfileName(participation))}</strong>${message}</div>
   </section>`;
 }
 
