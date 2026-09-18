@@ -153,6 +153,9 @@ Hikvision devices:
 - `COMM_ALARM_VIDEO_INTERCOM` (`0x1133`) subtype `17` creates an active
   canonical `doorbell` Event;
 - subtype `18` creates the matching inactive doorbell observation;
+- subtype `2` creates an active `tamper_detection` Event. This mapping follows
+  Hikvision's documented anti-tamper alarm type; it has not yet been verified
+  with a physical tamper alarm on a Doorbell;
 - `COMM_UPLOAD_VIDEO_INTERCOM_EVENT` (`0x1132`) unlock records create
   `door_access` Events with the reported method, lock and embedded-picture
   fingerprint. HCNetSDK does not report the unlock outcome, so Episode does

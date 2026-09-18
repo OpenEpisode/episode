@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 
 from episode.plugins.hikvision.sdk.events import (
+    ANTI_TAMPER,
     COMM_ALARM_VIDEO_INTERCOM,
     COMM_UPLOAD_VIDEO_INTERCOM_EVENT,
     DISMISS_CALL,
@@ -79,6 +80,54 @@ def test_interprets_dismiss_as_inactive_doorbell_event():
     assert event.event_type == "doorbell"
     assert event.event_state == "inactive"
     assert event.metadata["phase"] == "dismissed"
+
+
+def test_interprets_anti_tamper_alarm_without_doorbell_fields():
+    received_at = datetime(2026, 8, 3, 11, 35, 16, tzinfo=timezone.utc)
+
+    event = interpret_event(
+        COMM_ALARM_VIDEO_INTERCOM,
+        _video_intercom_payload(ANTI_TAMPER),
+        "front-doorbell",
+        received_at,
+    )
+
+    assert event is not None
+    assert event.timestamp == received_at
+    assert event.event_type == "tamper_detection"
+    assert event.event_state == "active"
+    assert event.source == "hikvision:sdk"
+    assert event.metadata == {
+        "vendor": "hikvision",
+        "sdk_command": COMM_ALARM_VIDEO_INTERCOM,
+        "sdk_structure": "NET_DVR_VIDEO_INTERCOM_ALARM",
+        "structure_size": 560,
+        "device_number": "10010100000",
+        "alarm_type": ANTI_TAMPER,
+        "iot_channel_number": 0,
+        "sdk_alarm_name": "anti_tamper",
+        "device_timestamp": "2026-08-03T12:33:17",
+    }
+
+
+def test_repeated_anti_tamper_alarm_has_stable_identity():
+    payload = _video_intercom_payload(ANTI_TAMPER)
+    first = interpret_event(
+        COMM_ALARM_VIDEO_INTERCOM,
+        payload,
+        "front-doorbell",
+        datetime(2026, 8, 3, 11, 35, 16, tzinfo=timezone.utc),
+    )
+    repeated = interpret_event(
+        COMM_ALARM_VIDEO_INTERCOM,
+        payload,
+        "front-doorbell",
+        datetime(2026, 8, 3, 11, 35, 16, tzinfo=timezone.utc) + timedelta(milliseconds=50),
+    )
+
+    assert first is not None
+    assert repeated is not None
+    assert first.dedup_key == repeated.dedup_key
 
 
 def test_interprets_unlock_record_and_embedded_picture_without_claiming_success():
@@ -162,6 +211,18 @@ def test_unknown_or_invalid_callbacks_remain_uninterpreted():
         interpret_event(
             COMM_ALARM_VIDEO_INTERCOM,
             b"short",
+            "front-doorbell",
+            received_at,
+        )
+        is None
+    )
+
+    invalid_tamper = bytearray(_video_intercom_payload(ANTI_TAMPER))
+    invalid_tamper[:4] = (len(invalid_tamper) + 1).to_bytes(4, "little")
+    assert (
+        interpret_event(
+            COMM_ALARM_VIDEO_INTERCOM,
+            bytes(invalid_tamper),
             "front-doorbell",
             received_at,
         )

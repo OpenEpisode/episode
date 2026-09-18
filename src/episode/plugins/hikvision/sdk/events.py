@@ -7,6 +7,7 @@ from episode.plugins.models import PluginEvent
 
 COMM_UPLOAD_VIDEO_INTERCOM_EVENT = 0x1132
 COMM_ALARM_VIDEO_INTERCOM = 0x1133
+ANTI_TAMPER = 2
 DOORBELL_RINGING = 17
 DISMISS_CALL = 18
 UNLOCK_RECORD = 1
@@ -80,7 +81,7 @@ def _event_identity(device_id: str, observed_key: str, *parts: object) -> str:
     return sha256(identity.encode()).hexdigest()
 
 
-def _interpret_doorbell_alarm(
+def _interpret_video_intercom_alarm(
     payload: bytes,
     device_id: str,
     received_at: datetime,
@@ -92,10 +93,16 @@ def _interpret_doorbell_alarm(
         return None
 
     alarm_type = payload[_ALARM_TYPE_OFFSET]
-    if alarm_type == DOORBELL_RINGING:
+    if alarm_type == ANTI_TAMPER:
+        event_type = "tamper_detection"
+        state = "active"
+        phase = None
+    elif alarm_type == DOORBELL_RINGING:
+        event_type = "doorbell"
         state = "active"
         phase = "ringing"
     elif alarm_type == DISMISS_CALL:
+        event_type = "doorbell"
         state = "inactive"
         phase = "dismissed"
     else:
@@ -110,24 +117,27 @@ def _interpret_doorbell_alarm(
         "structure_size": declared_size,
         "device_number": _text_field(payload, _DEVICE_NUMBER_OFFSET, _DEVICE_NUMBER_LENGTH),
         "alarm_type": alarm_type,
-        "phase": phase,
-        "lock_id": int.from_bytes(
-            payload[_ALARM_LOCK_ID_OFFSET : _ALARM_LOCK_ID_OFFSET + 2], "little"
-        ),
         "iot_channel_number": int.from_bytes(
             payload[_ALARM_IOT_CHANNEL_OFFSET : _ALARM_IOT_CHANNEL_OFFSET + 4],
             "little",
         ),
     }
+    if event_type == "tamper_detection":
+        metadata["sdk_alarm_name"] = "anti_tamper"
+    else:
+        metadata["phase"] = phase
+        metadata["lock_id"] = int.from_bytes(
+            payload[_ALARM_LOCK_ID_OFFSET : _ALARM_LOCK_ID_OFFSET + 2], "little"
+        )
     if device_timestamp:
         metadata["device_timestamp"] = device_timestamp.isoformat()
 
     return PluginEvent(
         timestamp=received_at,
-        event_type="doorbell",
+        event_type=event_type,
         event_state=state,
         source="hikvision:sdk",
-        dedup_key=_event_identity(device_id, observed_key, "doorbell", state),
+        dedup_key=_event_identity(device_id, observed_key, event_type, state),
         metadata=metadata,
     )
 
@@ -216,7 +226,7 @@ def interpret_event(
     Unknown commands and subtypes remain raw deliveries and are never guessed.
     """
     if command == COMM_ALARM_VIDEO_INTERCOM:
-        return _interpret_doorbell_alarm(payload, device_id, received_at)
+        return _interpret_video_intercom_alarm(payload, device_id, received_at)
     if command == COMM_UPLOAD_VIDEO_INTERCOM_EVENT:
         return _interpret_unlock_record(payload, device_id, received_at)
     return None
