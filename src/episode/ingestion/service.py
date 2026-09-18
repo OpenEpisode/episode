@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from episode.domain.models import Event, Evidence, IngestionReceipt, RawArtifact, ReceiptStatus
-from episode.engine.engine import CanonicalEventResult, EpisodeEngine
+from episode.engine.engine import CanonicalEventResult, DeviceNeedsSetupError, EpisodeEngine
 from episode.ingestion.models import FileIngressDelivery, IngressDelivery, StoredIngressEnvelope
 from episode.ingestion.router import IngressDispatchResult, IngressRouter
 from episode.storage.files import describe_artifact, move_received_file, save_bytes
@@ -224,9 +224,13 @@ class IngestionService:
             device, device_id, area_id = await self._resolve_device(observation, delivery)
             receipt.device_id = device_id
             receipt.area_id = area_id
-            if device and not device.enabled:
+            if device and not device.can_participate:
                 status = ReceiptStatus.UNMATCHED
-                diagnostic_metadata["reason"] = "device_disabled"
+                diagnostic_metadata["reason"] = (
+                    "device_needs_setup"
+                    if device.setup_state == "needs_setup"
+                    else "device_disabled"
+                )
             elif device is None or not device_id or not area_id:
                 status = ReceiptStatus.UNMATCHED
                 diagnostic_metadata["reason"] = "device_not_resolved"
@@ -245,20 +249,29 @@ class IngestionService:
                         "ingress_handler": claimed.handler_id,
                     },
                 )
-                canonical = await self._engine.ingest_event(event, receipt=receipt)
-                if canonical.conflict:
-                    canonical = None
-                    status = ReceiptStatus.REJECTED
-                    diagnostic_metadata["reason"] = "event_identity_conflict"
+                try:
+                    canonical = await self._engine.ingest_event(event, receipt=receipt)
+                except DeviceNeedsSetupError:
+                    status = ReceiptStatus.UNMATCHED
+                    diagnostic_metadata["reason"] = "device_needs_setup"
+                else:
+                    if canonical.conflict:
+                        canonical = None
+                        status = ReceiptStatus.REJECTED
+                        diagnostic_metadata["reason"] = "event_identity_conflict"
         elif handler_result and handler_result.evidence:
             observation = handler_result.evidence
             receipt.observed_at = observation.timestamp
             device, device_id, area_id = await self._resolve_device(observation, delivery)
             receipt.device_id = device_id
             receipt.area_id = area_id
-            if device and not device.enabled:
+            if device and not device.can_participate:
                 status = ReceiptStatus.UNMATCHED
-                diagnostic_metadata["reason"] = "device_disabled"
+                diagnostic_metadata["reason"] = (
+                    "device_needs_setup"
+                    if device.setup_state == "needs_setup"
+                    else "device_disabled"
+                )
             elif device is None or not device_id or not area_id:
                 status = ReceiptStatus.UNMATCHED
                 diagnostic_metadata["reason"] = "device_not_resolved"
@@ -280,7 +293,12 @@ class IngestionService:
                         "ingress_handler": claimed.handler_id,
                     },
                 )
-                await self._engine.ingest_evidence(evidence, receipt=receipt)
+                try:
+                    await self._engine.ingest_evidence(evidence, receipt=receipt)
+                except DeviceNeedsSetupError:
+                    evidence = None
+                    status = ReceiptStatus.UNMATCHED
+                    diagnostic_metadata["reason"] = "device_needs_setup"
 
         receipt.status = status
         receipt.metadata = diagnostic_metadata

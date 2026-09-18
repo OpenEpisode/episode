@@ -1,7 +1,7 @@
 import { api, apiRequest } from "./api.js?v=3";
 import { pageHeader } from "./components.js?v=3";
 import { closeDialog, confirmDialog, notify } from "./dialogs.js?v=1";
-import { openAreaEditor, openDeviceEditor } from "./inventory.js?v=6";
+import { openAreaEditor, openDeviceEditor } from "./inventory.js?v=7";
 import { refreshRetentionPolicy } from "./retention-policy.js?v=1";
 import { showContent, showError, showLoading } from "./view.js?v=1";
 
@@ -13,7 +13,8 @@ export async function onboardingNeeded() {
     api("/devices?include_disabled=true"),
     api("/settings/retention"),
   ]);
-  return inventory.length === 0 || retention.policy_state === "unconfirmed";
+  return !inventory.some(device => device.setup_state !== "needs_setup" && device.enabled !== false)
+    || retention.policy_state === "unconfirmed";
 }
 
 function step(number, title, description, state, action = "") {
@@ -36,7 +37,9 @@ export async function welcome() {
     devices = deviceList;
     const activeAreas = areas.filter(area => area.enabled);
     const hasArea = activeAreas.length > 0;
-    const hasDevice = devices.length > 0;
+    const readyDevices = devices.filter(device => device.setup_state !== "needs_setup" && device.enabled !== false);
+    const draftDevices = devices.filter(device => device.setup_state === "needs_setup");
+    const hasDevice = readyDevices.length > 0;
     const retentionConfirmed = retention.policy_state !== "unconfirmed";
     const ready = hasDevice && retentionConfirmed;
 
@@ -47,7 +50,9 @@ export async function welcome() {
           ? "Your evidence workspace is ready"
           : hasDevice
             ? "Confirm your evidence policy"
-            : "Connect your first Device",
+            : draftDevices.length
+              ? "Finish setting up a Device"
+              : "Connect your first Device",
         description: "Create one physical Area, add a Device, validate what it supports, and let Episode handle correlation and capture.",
         actions: ready ? '<a href="#episodes" class="button button-primary">Review Episodes</a>' : "",
       })}
@@ -76,10 +81,12 @@ export async function welcome() {
             2,
             "Add and validate a Device",
             hasDevice
-              ? `${devices.length} ${devices.length === 1 ? "Device is" : "Devices are"} saved. Configured integrations activate automatically.`
-              : "Enter the Device address and credentials, then use Validate and discover before choosing its integrations.",
+              ? `${readyDevices.length} ${readyDevices.length === 1 ? "Device is" : "Devices are"} ready. Configured integrations activate automatically.`
+              : draftDevices.length
+                ? `${draftDevices.length} Device${draftDevices.length === 1 ? " is" : "s are"} saved for later. Finish one before expecting Episodes or capture.`
+                : "Enter the Device address and credentials, then use Validate and discover before choosing its integrations.",
             hasDevice ? "complete" : hasArea ? "active" : "pending",
-            !hasDevice && hasArea ? '<button class="button button-primary" type="button" onclick="startOnboardingDevice()">Add first Device</button>' : "",
+            !hasDevice && hasArea ? `<div class="onboarding-actions"><button class="button button-primary" type="button" onclick="startOnboardingDevice()">${draftDevices.length ? "Add another Device" : "Add first Device"}</button>${draftDevices.length ? '<a class="button button-ghost" href="#devices">Finish Device setup</a>' : ""}</div>` : "",
           )}
           ${step(
             3,
@@ -101,7 +108,9 @@ export async function welcome() {
               ? `${status.integrations.healthy}/${status.integrations.total} integrations are healthy. Episode is ready for its first Event.`
               : hasDevice
                 ? "Confirm the retention policy to complete setup."
-                : "Saving a Device also activates its selected integrations.",
+                : draftDevices.length
+                  ? "Finish Device setup before expecting its Events or recordings to participate."
+                  : "Saving a Device also activates its selected integrations.",
             ready ? "complete" : hasDevice ? "active" : "pending",
             ready
               ? '<div class="onboarding-actions"><a href="#devices" class="button button-ghost">View Device health</a><a href="#episodes" class="button button-primary">Open Episode</a></div>'

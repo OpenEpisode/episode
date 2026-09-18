@@ -36,8 +36,12 @@ firewall or a trusted reverse proxy.
 
 ## Create the source Device
 
-Every submitted Event must reference an active Device already assigned to an
-Area:
+Every submitted Event must reference a ready, enabled Device already assigned
+to an Area. A Device saved as **Needs setup** is visible in inventory but cannot
+produce a canonical Event; its request remains preserved as an unmatched raw
+delivery.
+
+To create a Device for this input:
 
 1. Open **Devices → Add a Device**.
 2. Choose `Sensor`, `Alarm panel`, `Doorbell`, or another appropriate physical

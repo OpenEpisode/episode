@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import httpx
@@ -96,7 +97,10 @@ async def test_validation_reports_protocol_evidence_without_enabling_integration
         integration_registrations=builtin_plugin_registry().device_integrations(),
     )
 
-    results = await service.validate(device)
+    results = await service.validate(
+        device,
+        integration_ids=["onvif", "hikvision-isapi", "hikvision-sdk"],
+    )
 
     assert results["onvif"]["status"] == "supported"
     assert results["onvif"]["capabilities"] == [
@@ -110,6 +114,101 @@ async def test_validation_reports_protocol_evidence_without_enabling_integration
     assert results["isapi"]["capabilities"] == ["device-information"]
     assert results["hikvision_sdk"]["status"] == "supported"
     assert device.capabilities == []
+
+
+@pytest.mark.asyncio
+async def test_validation_defaults_to_generic_onvif_only():
+    called = []
+
+    async def validate_onvif_only(_device, _checked_at, _timeout):
+        called.append("onvif")
+        return {"status": "supported", "summary": "ONVIF works"}
+
+    service = DeviceValidationService(
+        integration_validators={"onvif": validate_onvif_only},
+        integration_registrations=builtin_plugin_registry().device_integrations(),
+    )
+    device = Device(
+        id="camera",
+        name="Camera",
+        device_type="camera",
+        area_id="yard",
+        ip_address="192.0.2.10",
+    )
+
+    results = await service.validate(device)
+
+    assert tuple(results) == ("onvif",)
+    assert called == ["onvif"]
+
+
+@pytest.mark.asyncio
+async def test_validation_rejects_unknown_or_shared_integrations():
+    service = DeviceValidationService(
+        integration_registrations=builtin_plugin_registry().device_integrations(),
+    )
+    device = Device(
+        id="camera",
+        name="Camera",
+        device_type="camera",
+        area_id="yard",
+    )
+
+    with pytest.raises(ValueError, match="Unknown or unavailable"):
+        await service.validate(device, integration_ids=["ftp"])
+
+    with pytest.raises(ValueError, match="Unknown or unavailable"):
+        await service.validate(device, integration_ids=["not-installed"])
+
+
+@pytest.mark.asyncio
+async def test_validation_deduplicates_registration_id_and_integration_type():
+    calls = 0
+
+    async def validate_isapi(_device, _checked_at, _timeout):
+        nonlocal calls
+        calls += 1
+        return {"status": "supported", "summary": "ISAPI works"}
+
+    service = DeviceValidationService(
+        integration_validators={"isapi": validate_isapi},
+        integration_registrations=builtin_plugin_registry().device_integrations(),
+    )
+    device = Device(
+        id="camera",
+        name="Camera",
+        device_type="camera",
+        area_id="yard",
+    )
+
+    result = await service.validate(device, integration_ids=["hikvision-isapi", "isapi"])
+
+    assert list(result) == ["isapi"]
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_validation_bounds_a_hanging_selected_validator():
+    async def hanging_validator(_device, _checked_at, _timeout):
+        await asyncio.sleep(1)
+        return {"status": "supported", "summary": "unexpected"}
+
+    service = DeviceValidationService(
+        integration_validators={"onvif": hanging_validator},
+        integration_registrations=builtin_plugin_registry().device_integrations(),
+        timeout=0.01,
+    )
+    device = Device(
+        id="camera",
+        name="Camera",
+        device_type="camera",
+        area_id="yard",
+    )
+
+    result = await service.validate(device)
+
+    assert result["onvif"]["status"] == "unavailable"
+    assert "validation timeout" in result["onvif"]["summary"]
 
 
 def test_validation_failure_states_do_not_call_timeouts_unsupported():
@@ -138,3 +237,23 @@ def test_validation_failure_states_do_not_call_timeouts_unsupported():
         "now",
     )
     assert authentication["status"] == "authentication_failed"
+
+
+def test_builtin_catalog_matches_manufacturer_and_keeps_onvif_universal():
+    service = DeviceValidationService(
+        integration_registrations=builtin_plugin_registry().device_integrations(),
+    )
+
+    hikvision = {
+        entry["id"] for entry in service.catalog(manufacturer="Hikvision", device_type="camera")
+    }
+    reolink = {
+        entry["id"] for entry in service.catalog(manufacturer="Reolink", device_type="camera")
+    }
+    unknown = {
+        entry["id"] for entry in service.catalog(manufacturer="Unknown", device_type="camera")
+    }
+
+    assert hikvision == {"onvif", "hikvision-isapi"}
+    assert reolink == {"onvif", "reolink"}
+    assert unknown == {"onvif"}

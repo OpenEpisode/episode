@@ -47,7 +47,11 @@ const inventoryUrl = moduleUrl(
     .replace('"./dom.js"', JSON.stringify(domUrl))
     .replace('"./format.js"', JSON.stringify(formatUrl)),
 );
-const { openDeviceEditor } = await import(inventoryUrl);
+const {
+  applicableValidationKeys,
+  openDeviceEditor,
+  preferredManufacturer,
+} = await import(inventoryUrl);
 
 function captureEditor(device = null) {
   assert.throws(
@@ -88,6 +92,67 @@ test("ONVIF malformed XML recovery is explicit and included in onboarding valida
 
   assert.equal(globalThis.inventoryRequests.length, 1);
   assert.equal(globalThis.inventoryRequests[0].options.body.onvif.relaxed_xml, true);
+  assert.equal(globalThis.inventoryRequests[0].options.body.setup_state, "ready");
+});
+
+test("Save for later marks a Device as setup-incomplete", async () => {
+  globalThis.inventoryRequests = [];
+  const dialog = captureEditor();
+  const data = new Map([
+    ["name", "Unidentified sensor"],
+    ["device_type", "sensor"],
+    ["area_id", "entrance"],
+    ["activity_window_seconds", "30"],
+    ["save_for_later", "on"],
+  ]);
+  await dialog.onSubmit(data);
+
+  assert.equal(globalThis.inventoryRequests[0].options.body.setup_state, "needs_setup");
+  assert.match(dialog.content, /Save for later/);
+  assert.match(dialog.content, /will not participate in new activity/);
+});
+
+test("discovered identity is not persisted as a manual override unless selected", async () => {
+  globalThis.inventoryRequests = [];
+  const dialog = captureEditor({
+    id: "camera",
+    name: "Camera",
+    device_type: "camera",
+    area_id: "entrance",
+    enabled: true,
+    identity: { manufacturer: "Hikvision Digital Technology" },
+    configuration: { setup_state: "ready", video: {}, onvif: {} },
+  });
+  const data = new Map([
+    ["name", "Camera"],
+    ["device_type", "camera"],
+    ["area_id", "entrance"],
+    ["activity_window_seconds", "30"],
+    ["manufacturer", ""],
+    ["manufacturer_explicit", "false"],
+  ]);
+  await dialog.onSubmit(data);
+  assert.equal(Object.hasOwn(globalThis.inventoryRequests[0].options.body, "manufacturer"), false);
+
+  globalThis.inventoryRequests = [];
+  const cleared = captureEditor({
+    id: "camera",
+    name: "Camera",
+    device_type: "camera",
+    area_id: "entrance",
+    enabled: true,
+    identity: { manufacturer: "Hikvision" },
+    configuration: { manufacturer: "Hikvision", setup_state: "ready", video: {}, onvif: {} },
+  });
+  await cleared.onSubmit(new Map([
+    ["name", "Camera"],
+    ["device_type", "camera"],
+    ["area_id", "entrance"],
+    ["activity_window_seconds", "30"],
+    ["manufacturer", ""],
+    ["manufacturer_explicit", "true"],
+  ]));
+  assert.equal(globalThis.inventoryRequests[0].options.body.manufacturer, null);
 });
 
 test("Reolink settings are explicit and included in the Device payload", async () => {
@@ -122,4 +187,137 @@ test("Reolink settings are explicit and included in the Device payload", async (
     media_enabled: true,
     events_enabled: true,
   });
+});
+
+test("HCNetSDK is presented as catalogue-gated vendor integration", () => {
+  const dialog = captureEditor();
+
+  assert.match(dialog.content, /anti-tamper mapping is not yet device-tested/);
+  assert.match(dialog.content, /Available for Doorbell Devices/);
+  assert.doesNotMatch(dialog.content, /experimental camera callbacks/i);
+  assert.doesNotMatch(dialog.content, /Camera mode is diagnostic-only/);
+  assert.match(dialog.content, /name="hikvision_sdk_enabled"\>/);
+  assert.match(source, /devices\/integrations\/catalog/);
+  assert.match(source, /catalogEntryMatches/);
+});
+
+test("onboarding exposes scoped discovery and a credential-safe video test", () => {
+  const dialog = captureEditor();
+  assert.match(dialog.content, /Discover with ONVIF/);
+  assert.doesNotMatch(dialog.content, /name="onvif_enabled" checked/);
+  assert.doesNotMatch(dialog.content, /name="video_enabled" checked/);
+  assert.match(dialog.content, /data-test-video/);
+  assert.match(dialog.content, /manual stream provides recording only/);
+  assert.match(dialog.content, /data-manual-manufacturer/);
+  assert.match(dialog.content, /data-integration-id="hikvision-isapi"/);
+  assert.match(dialog.content, /data-integration-id="reolink"/);
+  assert.match(source, /devices\/integrations\/catalog/);
+  assert.doesNotMatch(source, /const integrationDefinitions/);
+  assert.match(source, /payload\.integration_ids/);
+  assert.match(source, /validationStatuses\.has\(result\.status\)/);
+  assert.match(source, /validationStatuses\.has\(response\.status\)/);
+});
+
+test("manual unknown choice clears stale manufacturer recommendations", () => {
+  const failed = { status: "unreachable", details: { manufacturer: "Hikvision" } };
+  assert.equal(preferredManufacturer(failed, "", true, "Hikvision", "Hikvision"), "");
+  assert.equal(preferredManufacturer(failed, "Reolink", true, "Hikvision", "Hikvision"), "Reolink");
+  const discovered = { status: "supported", details: { manufacturer: "Reolink" } };
+  assert.equal(preferredManufacturer(discovered, "", true, "Hikvision", "Hikvision"), "Reolink");
+});
+
+const validationCatalog = [
+  {
+    id: "onvif",
+    type: "onvif",
+    available: true,
+    manufacturer_scope_kind: "universal",
+    device_types: ["camera", "doorbell", "sensor"],
+  },
+  {
+    id: "hikvision-isapi",
+    type: "isapi",
+    available: true,
+    manufacturer_scope_kind: "targeted",
+    manufacturer_scope: ["hikvision"],
+    device_types: ["camera", "doorbell"],
+  },
+  {
+    id: "hikvision-sdk",
+    type: "hikvision_sdk",
+    available: true,
+    manufacturer_scope_kind: "targeted",
+    manufacturer_scope: ["hikvision"],
+    device_types: ["doorbell"],
+  },
+  {
+    id: "reolink",
+    type: "reolink",
+    available: true,
+    manufacturer_scope_kind: "targeted",
+    manufacturer_scope: ["reolink"],
+    device_types: ["camera", "doorbell"],
+  },
+];
+
+test("validation results follow current manufacturer and device type", () => {
+  assert.deepEqual(
+    [...applicableValidationKeys({
+      catalog: validationCatalog,
+      deviceType: "camera",
+      manufacturer: "Hikvision Digital Technology",
+    })],
+    ["onvif", "isapi"],
+  );
+});
+
+test("the Device editor hides stale validation from unrelated integrations", () => {
+  const dialog = captureEditor({
+    id: "garage",
+    name: "Garage camera",
+    device_type: "camera",
+    area_id: "entrance",
+    identity: { manufacturer: "Hikvision" },
+    configuration: {
+      onvif: { enabled: true },
+      isapi: { enabled: true },
+      hikvision_sdk: { enabled: false },
+      reolink: { enabled: false },
+    },
+    integration_support: {
+      onvif: { status: "supported", summary: "ONVIF works" },
+      isapi: { status: "supported", summary: "ISAPI works" },
+      hikvision_sdk: { status: "unavailable", summary: "SDK configured but unavailable" },
+      reolink: { status: "authentication_failed", summary: "Authentication Failed" },
+    },
+  });
+  const validation = dialog.content.split('class="validation-results" data-validation-results>')[1]
+    .split('class="validation-empty')[0];
+
+  assert.match(validation, /ONVIF works/);
+  assert.match(validation, /ISAPI works/);
+  assert.doesNotMatch(validation, /SDK configured but unavailable/);
+  assert.doesNotMatch(validation, /Authentication Failed/);
+});
+
+test("configured mismatched integrations remain visible for diagnosis", () => {
+  const keys = applicableValidationKeys({
+    catalog: validationCatalog,
+    configured: new Set(["reolink"]),
+    deviceType: "camera",
+    manufacturer: "Hikvision",
+  });
+
+  assert.deepEqual([...keys], ["onvif", "isapi", "reolink"]);
+});
+
+test("selected mismatched integrations remain visible while being validated", () => {
+  const keys = applicableValidationKeys({
+    catalog: validationCatalog,
+    deviceType: "camera",
+    manufacturer: "Hikvision",
+    selected: new Set(["reolink"]),
+  });
+
+  assert.deepEqual([...keys], ["onvif", "isapi", "reolink"]);
 });

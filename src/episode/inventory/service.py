@@ -42,7 +42,7 @@ class InventoryService:
             raise KeyError(area.id)
         if not area.enabled:
             devices = await self._repo.list_devices(area.id, include_disabled=True)
-            if any(device.enabled for device in devices):
+            if any(device.can_participate for device in devices):
                 raise InventoryConflictError(
                     "Disable or move active Devices before disabling this Area."
                 )

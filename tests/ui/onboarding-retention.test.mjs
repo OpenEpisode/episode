@@ -60,7 +60,7 @@ const module = await import(moduleUrl(
     .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
     .replace('"./components.js?v=3"', JSON.stringify(componentsUrl))
     .replace('"./dialogs.js?v=1"', JSON.stringify(dialogsUrl))
-    .replace('"./inventory.js?v=6"', JSON.stringify(inventoryUrl))
+    .replace('"./inventory.js?v=7"', JSON.stringify(inventoryUrl))
     .replace('"./retention-policy.js?v=1"', JSON.stringify(retentionUrl))
     .replace('"./view.js?v=1"', JSON.stringify(viewUrl)),
 ));

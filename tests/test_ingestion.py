@@ -15,6 +15,7 @@ from episode.engine.bus import EventBus
 from episode.engine.engine import EpisodeEngine
 from episode.ingestion.models import (
     EventObservation,
+    EvidenceObservation,
     FileIngressDelivery,
     IngressDelivery,
     IngressHandlerResult,
@@ -81,6 +82,94 @@ async def test_delivery_is_durable_before_handler_runs(tmp_path):
             )
         )
         assert observed == [outcome.receipt.id]
+    finally:
+        await engine.stop()
+        await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_draft_device_preserves_delivery_without_creating_event(tmp_path):
+    _config, repository, engine, router, ingestion = await _pipeline(tmp_path)
+    device = await repository.get_device("gate-camera")
+    device.setup_state = "needs_setup"
+    await repository.upsert_device(device)
+    observed_at = datetime.now(tz=timezone.utc)
+
+    async def interpret(_envelope):
+        return IngressHandlerResult(
+            claimed=True,
+            event=EventObservation(
+                timestamp=observed_at,
+                event_type="motion_detection",
+                event_state="active",
+                source="test:camera",
+                device_id="gate-camera",
+                area_id="gate",
+            ),
+        )
+
+    router.register(IngressHandlerRegistration("test-camera", interpret, lambda _item: True))
+    try:
+        outcome = await ingestion.accept(
+            IngressDelivery(
+                source="test:camera",
+                transport="test",
+                received_at=observed_at,
+                payload=b"exact draft delivery",
+            )
+        )
+        artifact = await repository.get_raw_artifact(outcome.receipt.artifact_id)
+        assert Path(artifact.file_path).read_bytes() == b"exact draft delivery"
+        assert outcome.receipt.status == ReceiptStatus.UNMATCHED
+        assert outcome.receipt.metadata["reason"] == "device_needs_setup"
+        assert outcome.canonical_event is None
+        assert await repository.list_events() == []
+        assert await repository.list_episodes() == []
+    finally:
+        await engine.stop()
+        await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_draft_device_preserves_uploaded_file_without_creating_evidence(tmp_path):
+    _config, repository, engine, router, ingestion = await _pipeline(tmp_path)
+    device = await repository.get_device("gate-camera")
+    device.setup_state = "needs_setup"
+    await repository.upsert_device(device)
+    observed_at = datetime.now(tz=timezone.utc)
+    upload = tmp_path / "camera-upload.jpg"
+    upload.write_bytes(b"exact JPEG delivery")
+
+    async def interpret(_envelope):
+        return IngressHandlerResult(
+            claimed=True,
+            evidence=EvidenceObservation(
+                timestamp=observed_at,
+                evidence_type="snapshot",
+                source="test:ftp",
+                mime_type="image/jpeg",
+                device_id="gate-camera",
+                area_id="gate",
+            ),
+        )
+
+    router.register(IngressHandlerRegistration("test-ftp", interpret, lambda _item: True))
+    try:
+        outcome = await ingestion.accept_file(
+            FileIngressDelivery(
+                source="test:ftp",
+                transport="ftp",
+                received_at=observed_at,
+                file_path=upload,
+                media_type="image/jpeg",
+            )
+        )
+        artifact = await repository.get_raw_artifact(outcome.receipt.artifact_id)
+        assert Path(artifact.file_path).read_bytes() == b"exact JPEG delivery"
+        assert outcome.receipt.status == ReceiptStatus.UNMATCHED
+        assert outcome.receipt.metadata["reason"] == "device_needs_setup"
+        assert outcome.evidence is None
+        assert await repository.list_evidence() == []
     finally:
         await engine.stop()
         await repository.close()

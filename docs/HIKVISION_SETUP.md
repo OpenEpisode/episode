@@ -40,10 +40,12 @@ from that Device should keep its Area Episode and participating recordings open.
 
 ## ISAPI event stream
 
-For enhanced vendor Event monitoring, edit the Device and select **Validate
-and discover**. Episode safely requests Hikvision device information to verify
-ISAPI independently from ONVIF. Enable **ISAPI Event stream** when supported,
-then save the Device. Credentials entered for the
+For enhanced vendor Event monitoring, first run **Discover with ONVIF** in the
+Device editor. When the discovered identity is Hikvision, Episode offers ISAPI
+for Cameras and Doorbells, and HCNetSDK for Doorbells only. Select **ISAPI Event stream**,
+validate the selected connection, and save the Device only when supported.
+Episode safely requests Hikvision device information to verify ISAPI
+independently from ONVIF. Credentials entered for the
 Device are shared with its enabled integrations and are never returned to the
 browser.
 
@@ -172,11 +174,10 @@ same Area using **Any Episode in this Area** join the same Episode.
 
 ### Activate the plugin
 
-Installing SDK files alone does not activate or load the integration. HCNetSDK
-is currently exposed for Doorbell Devices, where its callback flow has been
-validated. Edit the Doorbell, enable **HCNetSDK**, set its login port (default
-`8000`) under manual connection overrides, then save the Device. The backend
-plugin contract does not impose that Device-type limitation.
+Installing SDK files alone does not activate or load the integration; HCNetSDK
+is disabled by default. It is available for Hikvision Doorbell Devices, where its callback
+flow has been validated. Edit the Doorbell, enable **HCNetSDK**, set its login
+port (default `8000`) under manual connection overrides, then save the Device.
 
 The Device name, Area, IP address, username, and password are required.
 Credentials are sent to the isolated worker over standard input; they are not

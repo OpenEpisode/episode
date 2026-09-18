@@ -14,7 +14,7 @@ import {
   confirmDeviceDelete,
   openAreaEditor,
   openDeviceEditor,
-} from "./inventory.js?v=6";
+} from "./inventory.js?v=7";
 import { refreshRetentionPolicy } from "./retention-policy.js?v=1";
 import { showContent, showError, showLoading } from "./view.js?v=1";
 
@@ -370,15 +370,17 @@ export async function devices() {
           const identity = device.identity || {};
           return `<div class="resource-row inventory-row ${device.enabled ? "" : "resource-disabled"}">
             <span class="status-indicator ${operationalIndicator(device.state)}"></span>
-            <a href="#device/${device.id}" class="resource-main resource-primary-link">
-              <strong>${device.name || device.id}</strong>
-              <span>${titleCase(device.device_type)} · ${[identity.manufacturer, identity.model].filter(Boolean).join(" ") || "Manufacturer not detected"}</span>
+            <a href="#device/${encodeURIComponent(device.id)}" class="resource-main resource-primary-link">
+              <strong>${escHtml(device.name || device.id)}</strong>
+              <span>${escHtml(titleCase(device.device_type))} · ${escHtml([identity.manufacturer, identity.model].filter(Boolean).join(" ") || "Manufacturer not detected")}</span>
             </a>
-            <div class="resource-context">${areaNames[device.area_id] || device.area_id || "No Area"}</div>
-            <div class="resource-badges">${integrationBadges(device.integrations) || '<span class="meta">No integrations</span>'}</div>
+            <div class="resource-context">${escHtml(areaNames[device.area_id] || device.area_id || "No Area")}</div>
+            <div class="resource-badges">${device.setup_state === "needs_setup"
+              ? '<span class="badge badge-warning">Needs setup</span>'
+              : integrationBadges(device.integrations) || '<span class="meta">No integrations</span>'}</div>
             <div class="resource-actions">
-              <button class="icon-button" onclick="editDevice('${device.id}')" aria-label="Edit ${device.name}">Edit</button>
-              <button class="icon-button danger-text" onclick="deleteDevice('${device.id}')" aria-label="Delete ${device.name}">Delete</button>
+              <button class="icon-button" onclick="editDevice('${escHtml(device.id)}')" aria-label="Edit ${escHtml(device.name || device.id)}">Edit</button>
+              <button class="icon-button danger-text" onclick="deleteDevice('${escHtml(device.id)}')" aria-label="Delete ${escHtml(device.name || device.id)}">Delete</button>
             </div>
           </div>`;
         }).join("")}
@@ -423,7 +425,7 @@ export async function deviceView(id) {
           </div>
         </div>
         <div class="review-detail-controls">
-          <div class="review-detail-badges"><span class="badge badge-neutral">${escHtml(titleCase(item.device_type))}</span>${operationalBadge(item.state)}</div>
+          <div class="review-detail-badges"><span class="badge badge-neutral">${escHtml(titleCase(item.device_type))}</span>${item.setup_state === "needs_setup" ? '<span class="badge badge-warning">Needs setup</span>' : ""}${operationalBadge(item.state)}</div>
           <div class="page-actions">
             <button class="button button-ghost" onclick="editDevice('${escHtml(item.id)}')">Edit Device</button>
             <button class="button button-ghost danger-text" onclick="deleteDevice('${escHtml(item.id)}')">Delete</button>
@@ -436,6 +438,7 @@ export async function deviceView(id) {
           ${detailMetric("system", "Integrations", plural(item.integrations.length, "connection"))}
         </div>
       </header>
+      ${item.setup_state === "needs_setup" ? `<div class="notice notice-warning"><div><strong>This Device is saved for later</strong><span>It remains visible for configuration, but its Events cannot open Episodes and it will not join new recordings until setup is completed.</span></div><button class="button button-ghost" onclick="editDevice('${escHtml(item.id)}')">Finish setup</button></div>` : ""}
       <div class="device-detail-overview section">
         <section class="review-panel">
           ${sectionHeading("devices", "Identity and capture", manufacturerModel)}

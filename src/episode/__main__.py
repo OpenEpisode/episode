@@ -33,7 +33,7 @@ from episode.notifications import EpisodeStartedWebhookSettingsService
 from episode.plugins import PluginContext, PluginManager, builtin_plugin_registry
 from episode.plugins.api import register_plugins_api
 from episode.plugins.deliveries import RawPluginDeliveryStore
-from episode.plugins.external import discover_external_plugins
+from episode.plugins.external import discover_external_plugins, external_plugin_catalog
 from episode.recording.engine import RecordingEngine
 from episode.retention import RetentionService
 from episode.storage.repository import Repository
@@ -121,6 +121,7 @@ class Application:
             ],
             integration_validators=self._plugin_registry.validators(),
             integration_registrations=self._plugin_registry.device_integrations(),
+            catalog_entries=external_plugin_catalog(Path(config.plugins_dir)),
         )
         self._fastapi_app = create_api(
             self._repo,

@@ -8,6 +8,8 @@ from pathlib import Path
 
 MANIFEST_FILENAME = "episode-plugin.json"
 MAX_MANIFEST_BYTES = 64 * 1024
+MAX_TARGETING_ITEMS = 16
+MAX_TARGETING_TEXT = 64
 SUPPORTED_KINDS = {"device", "ingress"}
 _KNOWN_KINDS = {*SUPPORTED_KINDS, "action", "processor"}
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
@@ -25,6 +27,9 @@ class ExternalPluginManifest:
     entrypoint_symbol: str
     capabilities: tuple[str, ...]
     configuration_schema: Mapping[str, object]
+    manufacturer_scope: tuple[str, ...]
+    manufacturer_scope_kind: str
+    device_types: tuple[str, ...]
 
 
 def _required_string(document: Mapping[str, object], field: str) -> str:
@@ -81,6 +86,40 @@ def parse_manifest(root: Path) -> ExternalPluginManifest:
     if not isinstance(configuration_schema, dict):
         raise ValueError("manifest configuration_schema must be an object")
 
+    manufacturer_scope_value = document.get("manufacturer_scope", None)
+    manufacturer_scope_kind = "unspecified"
+    manufacturer_scope: tuple[str, ...] = ()
+    if manufacturer_scope_value is not None:
+        if manufacturer_scope_value == "universal":
+            manufacturer_scope_kind = "universal"
+        elif (
+            isinstance(manufacturer_scope_value, list)
+            and manufacturer_scope_value
+            and all(
+                isinstance(value, str)
+                and value.strip()
+                and len(value.strip()) <= MAX_TARGETING_TEXT
+                for value in manufacturer_scope_value
+            )
+        ):
+            if len(manufacturer_scope_value) > MAX_TARGETING_ITEMS:
+                raise ValueError("manifest manufacturer_scope has too many entries")
+            manufacturer_scope = tuple(value.strip() for value in manufacturer_scope_value)
+            manufacturer_scope_kind = "targeted"
+        else:
+            raise ValueError("manifest manufacturer_scope must be 'universal' or an array of names")
+    device_types_value = document.get("device_types", [])
+    if (
+        not isinstance(device_types_value, list)
+        or len(device_types_value) > MAX_TARGETING_ITEMS
+        or not all(
+            isinstance(value, str) and value.strip() and len(value.strip()) <= MAX_TARGETING_TEXT
+            for value in device_types_value
+        )
+    ):
+        raise ValueError("manifest device_types must be a bounded array of non-empty strings")
+    device_types = tuple(value.strip() for value in device_types_value)
+
     return ExternalPluginManifest(
         root=root,
         id=plugin_id,
@@ -92,4 +131,7 @@ def parse_manifest(root: Path) -> ExternalPluginManifest:
         entrypoint_symbol=symbol,
         capabilities=tuple(capabilities),
         configuration_schema=configuration_schema,
+        manufacturer_scope=manufacturer_scope,
+        manufacturer_scope_kind=manufacturer_scope_kind,
+        device_types=device_types,
     )

@@ -57,6 +57,43 @@ Areas and Devices are deliberately unpaginated because they are bounded
 configuration inventory and are returned alphabetically. Batch cover lookup is
 a mapping operation rather than a pageable collection.
 
+## Device onboarding
+
+`GET /api/v1/devices/integrations/catalog` returns bounded, non-secret metadata
+for Device integrations. Pass `manufacturer` and `device_type` to receive
+matching recommendations. The response includes each integration's declared
+capabilities and targeting scope; it never includes credentials or plugin
+configuration. An external plugin may be listed as informational, but the
+version-1 external plugin contract has no onboarding validation hook; catalogue
+visibility never authorizes a probe or activates plugin code.
+
+`POST /api/v1/devices/validate` performs the initial generic ONVIF-only probe
+when `integration_ids` is omitted. After discovery, clients may send an
+explicit list of approved built-in Device integration IDs (for example `onvif`
+and `hikvision-isapi`) to request only those probes. Unknown, shared-transport,
+or integrations without a validation contract are rejected. Multiple selected
+integrations are allowed and each result remains separate. Validation changes
+stored support metadata only; it does not enable an integration or modify the
+Device.
+
+Credentials are used only by the explicitly selected validators and are never
+returned in the response or included in validation errors.
+
+`POST /api/v1/devices/validate-video` tests an explicitly configured manual
+RTSP/RTSPS endpoint with a bounded probe. It does not save a Device, create
+Evidence, or retain stream bytes. The response reports only a safe status,
+summary, and basic stream details such as a codec when available.
+
+Devices also expose a separate `setup_state`: `ready` or `needs_setup`.
+`needs_setup` is an intentional draft state for inventory onboarding and is
+independent from the operator-controlled `enabled` flag. Draft Devices are
+excluded from new canonical Event, Evidence, Episode, and recording target
+selection, while raw deliveries addressed to them are still preserved and
+remain unmatched for auditability. The state is stored in the existing Device
+metadata envelope; no database migration or reset is required. A manual
+manufacturer value is only an operator-provided catalogue hint and is never
+treated as proof that a vendor protocol is supported.
+
 Capture profiles are also bounded configuration. `GET /api/v1/capture-profiles`
 returns the built-in and custom profiles, including their explicit `active`,
 `builtin`, `include_all_devices`, and `device_ids` state. The built-in

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from hashlib import sha256
+from urllib.parse import quote
 from uuid import uuid4
 
 
@@ -38,9 +39,11 @@ class CapabilityConfig:
     def build_url(self, host: str, username: str = "", password: str = "") -> str:
         if not self.protocol or not host:
             return ""
-        auth = f"{username}:{password}@" if username else ""
+        # An IPv6 address is a single URL host only when enclosed in brackets.
+        address = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        auth = f"{quote(username, safe='')}:{quote(password, safe='')}@" if username else ""
         port_str = f":{self.port}" if self.port else ""
-        return f"{self.protocol}://{auth}{host}{port_str}{self.path}"
+        return f"{self.protocol}://{auth}{address}{port_str}{self.path}"
 
 
 class EventState(str, Enum):
@@ -129,8 +132,11 @@ class Device:
     activity_window_seconds: int | None = None
     metadata: dict = field(default_factory=dict)
     enabled: bool = True
+    setup_state: str = "ready"
 
     def __post_init__(self):
+        if self.setup_state not in {"ready", "needs_setup"}:
+            raise ValueError("Device setup state must be ready or needs_setup")
         if self.activity_window_seconds is not None and self.activity_window_seconds < 1:
             raise ValueError("Device activity window must be positive")
         if self.configs and isinstance(next(iter(self.configs.values()), None), dict):
@@ -141,6 +147,11 @@ class Device:
 
     def get_config(self, capability: str) -> CapabilityConfig | None:
         return self.configs.get(capability)
+
+    @property
+    def can_participate(self) -> bool:
+        """Whether this Device may contribute to new capture work."""
+        return self.enabled and self.setup_state == "ready"
 
 
 @dataclass

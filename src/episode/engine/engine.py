@@ -24,6 +24,7 @@ from episode.domain.models import (
     Evidence,
     IngestionReceipt,
     RawArtifact,
+    ReceiptStatus,
     make_episode_id,
 )
 from episode.engine.bus import EventBus, Message
@@ -41,6 +42,10 @@ class CanonicalEventResult:
     event: Event
     created: bool
     conflict: bool = False
+
+
+class DeviceNeedsSetupError(ValueError):
+    """A Device draft cannot contribute a new canonical observation."""
 
 
 class EpisodeEngine:
@@ -154,11 +159,37 @@ class EpisodeEngine:
         """Compatibility adapter for connectors not yet using IngestionService."""
         receipt = await self._persist_delivery(msg)
         candidate = Event(**msg.data["event"])
+        if await self._reject_draft_delivery(candidate.device_id, receipt):
+            return
         await self.ingest_event(candidate, receipt=receipt)
+
+    async def _reject_draft_delivery(
+        self, device_id: str, receipt: IngestionReceipt | None
+    ) -> bool:
+        device = await self._repo.get_device(device_id)
+        if device is None or device.setup_state != "needs_setup":
+            return False
+        if receipt is not None:
+            receipt.status = ReceiptStatus.UNMATCHED
+            receipt.device_id = device.id
+            receipt.area_id = device.area_id
+            receipt.metadata = {**receipt.metadata, "reason": "device_needs_setup"}
+            await self._repo.update_ingestion_receipt(
+                receipt.id,
+                status=receipt.status,
+                observed_at=receipt.observed_at,
+                device_id=receipt.device_id,
+                area_id=receipt.area_id,
+                external_id=receipt.external_id,
+                metadata=receipt.metadata,
+            )
+        return True
 
     async def ingest_event(
         self, candidate: Event, *, receipt: IngestionReceipt | None = None
     ) -> CanonicalEventResult:
+        if await self._reject_draft_delivery(candidate.device_id, receipt):
+            raise DeviceNeedsSetupError("Device needs setup before it can create Events")
         # Capture the observation boundary before waiting for an Area lock or
         # database work.  Correlation must use when the delivery arrived, not
         # when a busy worker eventually reaches the query.
@@ -274,6 +305,8 @@ class EpisodeEngine:
         """Compatibility adapter for connectors not yet using IngestionService."""
         receipt = await self._persist_delivery(msg)
         evidence = Evidence(**msg.data["evidence"])
+        if await self._reject_draft_delivery(evidence.device_id, receipt):
+            return
         await self.ingest_evidence(evidence, receipt=receipt)
 
     async def ingest_evidence(
@@ -282,6 +315,8 @@ class EpisodeEngine:
         *,
         receipt: IngestionReceipt | None = None,
     ) -> Evidence:
+        if await self._reject_draft_delivery(evidence.device_id, receipt):
+            raise DeviceNeedsSetupError("Device needs setup before it can create Evidence")
         async with self._lifecycle_lock:
             return await self._ingest_evidence(
                 evidence,

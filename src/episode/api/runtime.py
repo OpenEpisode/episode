@@ -289,6 +289,7 @@ class OperationalView:
             "capabilities": product_capabilities(device.capabilities),
             "state": "disabled" if not device.enabled else self._device_state(integrations),
             "identity": self._device_identity(device),
+            "setup_state": getattr(device, "setup_state", "ready"),
             "integrations": integrations,
         }
 
@@ -403,11 +404,16 @@ class OperationalView:
         def first(key: str) -> str | None:
             return next((str(item[key]) for item in candidates if item.get(key)), None)
 
-        return {
+        identity = {
             "manufacturer": first("manufacturer"),
             "model": first("model"),
             "firmware_version": first("firmware_version"),
         }
+        if not identity["manufacturer"]:
+            override = device.metadata.get("_manufacturer_override")
+            if isinstance(override, str) and override:
+                identity["manufacturer"] = override
+        return identity
 
     @staticmethod
     def _connector_integration(

@@ -284,6 +284,16 @@ inventory. Existing recording processes remain owned by the
 recording engine and continue until their Episode closes; newly added Devices
 participate in later qualifying Events.
 
+A Device can be saved as `needs_setup` without claiming it is operational. This
+is distinct from an intentionally disabled Device. It remains visible in
+inventory but is excluded from new plugin activation, canonical Events,
+Evidence, Episodes, and recording-target selection. Opaque deliveries still
+cross the raw-first boundary and remain as unmatched Receipts and Raw Artifacts.
+Existing recordings and historical associations are not rewritten when a
+Device's setup state changes. The state is stored as a managed inventory
+metadata value to preserve the current pre-1.0 database schema; callers use the
+typed Device field rather than interpreting metadata directly.
+
 The additive tables include:
 
 - `areas` and `devices`: authoritative inventory, capability configuration,

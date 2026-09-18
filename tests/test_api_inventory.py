@@ -10,6 +10,8 @@ from episode.api.routes import create_api
 from episode.config import EpisodeConfig
 from episode.domain.models import Event
 from episode.inventory import InventoryService
+from episode.inventory.validation import DeviceValidationService
+from episode.plugins.registry import builtin_plugin_registry
 from episode.storage.repository import Repository
 
 
@@ -47,6 +49,7 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
             "ip_address": "192.0.2.10",
             "username": "admin",
             "password": "top-secret",
+            "manufacturer": "Hikvision",
             "episode_policy": {
                 "activity_window_seconds": 90,
             },
@@ -68,6 +71,8 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
     assert body["configuration"]["episode_policy"] == {
         "activity_window_seconds": 90,
     }
+    assert body["configuration"]["manufacturer"] == "Hikvision"
+    assert body["identity"]["manufacturer"] == "Hikvision"
     assert {"video", "onvif", "isapi"}.issubset(stored.configs)
     assert not stored.capabilities
 
@@ -95,6 +100,156 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
     assert stored.get_config("onvif").settings["events_enabled"] is True
     assert stored.get_config("onvif").settings["relaxed_xml"] is True
     assert update.json()["configuration"]["onvif"]["relaxed_xml"] is True
+
+
+@pytest.mark.asyncio
+async def test_device_catalog_and_validation_selection_are_bounded(tmp_path):
+    repository = Repository(EpisodeConfig(data_dir=str(tmp_path)))
+    await repository.initialize()
+
+    async def fake_onvif(_device, _checked_at, _timeout):
+        return {
+            "status": "supported",
+            "summary": "ONVIF works",
+            "capabilities": ["discovery"],
+        }
+
+    validator = DeviceValidationService(
+        integration_validators={"onvif": fake_onvif},
+        integration_registrations=builtin_plugin_registry().device_integrations(),
+    )
+    app = create_api(
+        repository,
+        str(tmp_path),
+        inventory=InventoryService(repository),
+        validator=validator,
+    )
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            catalog = await client.get(
+                "/api/v1/devices/integrations/catalog",
+                params={"manufacturer": "Hikvision", "device_type": "camera"},
+            )
+            assert catalog.status_code == 200
+            assert {entry["id"] for entry in catalog.json()} == {"onvif", "hikvision-isapi"}
+
+            await client.post("/api/v1/areas", json={"id": "yard", "name": "Yard"})
+            created = await client.post(
+                "/api/v1/devices",
+                json={
+                    "id": "camera",
+                    "name": "Camera",
+                    "area_id": "yard",
+                    "ip_address": "192.0.2.50",
+                },
+            )
+            assert created.status_code == 201
+            stored = await repository.get_device("camera")
+            stored.metadata["integration_support"] = {
+                "isapi": {"status": "supported", "summary": "ISAPI works"}
+            }
+            await repository.upsert_device(stored)
+
+            payload = {
+                "id": "camera",
+                "name": "Camera",
+                "area_id": "yard",
+                "ip_address": "192.0.2.50",
+                "integration_ids": [],
+            }
+            no_probe = await client.post("/api/v1/devices/validate", json=payload)
+            assert no_probe.status_code == 200
+            assert no_probe.json()["results"] == {}
+
+            invalid = await client.post(
+                "/api/v1/devices/validate",
+                json={**payload, "integration_ids": ["ftp"]},
+            )
+            assert invalid.status_code == 422
+            assert "Unknown or unavailable" in invalid.text
+
+            initial = await client.post(
+                "/api/v1/devices/validate",
+                json={**payload, "integration_ids": None},
+            )
+            assert initial.status_code == 200
+            assert list(initial.json()["results"]) == ["onvif"]
+            stored = await repository.get_device("camera")
+            assert set(stored.metadata["integration_support"]) == {"isapi", "onvif"}
+    finally:
+        await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_manual_video_validation_does_not_persist_device(tmp_path, monkeypatch):
+    repository = Repository(EpisodeConfig(data_dir=str(tmp_path)))
+    await repository.initialize()
+
+    async def fake_video_validation(device):
+        assert device.ip_address == "192.0.2.51"
+        assert device.username == "admin"
+        assert device.password == "secret"
+        return {"status": "supported", "summary": "Stream works", "details": {"codec": "h264"}}
+
+    monkeypatch.setattr(
+        "episode.api.endpoints.inventory.validate_manual_video",
+        fake_video_validation,
+    )
+    app = create_api(repository, str(tmp_path), inventory=InventoryService(repository))
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/devices/validate-video",
+                json={
+                    "name": "Manual camera",
+                    "area_id": "yard",
+                    "ip_address": "192.0.2.51",
+                    "username": "admin",
+                    "password": "secret",
+                    "onvif": {"enabled": False},
+                    "video": {
+                        "enabled": True,
+                        "manual_endpoint": True,
+                        "path": "/stream",
+                    },
+                },
+            )
+            assert response.status_code == 200
+            assert response.json()["status"] == "supported"
+            assert await repository.get_device("manual-camera") is None
+
+            await client.post("/api/v1/areas", json={"id": "yard", "name": "Yard"})
+            saved = await client.post(
+                "/api/v1/devices",
+                json={
+                    "id": "manual-camera",
+                    "name": "Manual camera",
+                    "area_id": "yard",
+                    "ip_address": "192.0.2.51",
+                    "username": "admin",
+                    "password": "secret",
+                    "onvif": {"enabled": False},
+                    "video": {"enabled": True, "manual_endpoint": True, "path": "/stream"},
+                },
+            )
+            assert saved.status_code == 201
+            with_saved_credentials = await client.post(
+                "/api/v1/devices/validate-video",
+                json={
+                    "id": "manual-camera",
+                    "name": "Manual camera",
+                    "area_id": "yard",
+                    "ip_address": "192.0.2.51",
+                    "onvif": {"enabled": False},
+                    "video": {"enabled": True, "manual_endpoint": True, "path": "/stream"},
+                },
+            )
+            assert with_saved_credentials.status_code == 200
+            assert with_saved_credentials.json()["status"] == "supported"
+    finally:
+        await repository.close()
 
 
 @pytest.mark.asyncio

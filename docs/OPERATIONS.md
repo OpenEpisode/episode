@@ -15,6 +15,19 @@ Each video Device has a recording behavior:
 - `on_episode` records whenever an active Event opens or updates an Episode in
   its Area, including Events from doorbells and non-video sensors.
 
+A Device saved as **Needs setup** is an inventory draft, not an active capture
+source or recording target. It cannot create canonical Events, Evidence, or
+Episodes until marked ready. Incoming deliveries remain preserved as Raw
+Artifacts and unmatched Receipts for diagnosis. This is different from
+deliberately disabling a ready Device, and neither change erases historical
+activity or interrupts a recording already in progress.
+
+Media and triggering are separate: a camera may record **Any Episode in this
+Area** using a validated manual RTSP stream without receiving Events itself.
+ONVIF media discovery does not imply ONVIF Events are enabled. Conversely, an
+Event API or SDK-only Device can trigger an Episode without a video stream of
+its own.
+
 Each Device also has an **Episode activity window**. When it emits an active
 Event, the Device guarantees that the Episode remains open for at least that
 many seconds. Later Events can extend the deadline but never shorten it.

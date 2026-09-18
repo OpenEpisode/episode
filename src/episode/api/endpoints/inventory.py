@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from episode.api.context import ApiContext
 from episode.api.errors import PUBLIC_ERROR_RESPONSES
 from episode.api.inventory import (
     AreaCreateRequest,
     AreaUpdateRequest,
+    DeviceType,
     DeviceValidationResponse,
     DeviceWriteRequest,
     device_from_request,
@@ -14,9 +15,16 @@ from episode.api.inventory import (
     validation_device_from_request,
 )
 from episode.api.runtime import product_capabilities
-from episode.api.schemas import AreaResponse, DeviceDetailResponse, DeviceSummaryResponse
+from episode.api.schemas import (
+    AreaResponse,
+    DeviceDetailResponse,
+    DeviceIntegrationCatalogEntry,
+    DeviceSummaryResponse,
+    DeviceVideoValidationResponse,
+)
 from episode.domain.models import Area
 from episode.inventory import InventoryConflictError, InventoryService, stored_support
+from episode.inventory.video_validation import validate_manual_video
 
 
 def inventory_router(context: ApiContext) -> APIRouter:
@@ -54,11 +62,13 @@ def inventory_router(context: ApiContext) -> APIRouter:
             "capabilities": product_capabilities(device.capabilities),
             "state": "disabled" if not device.enabled else "unknown",
             "identity": {
-                "manufacturer": metadata.get("manufacturer"),
+                "manufacturer": metadata.get("manufacturer")
+                or device.metadata.get("_manufacturer_override"),
                 "model": metadata.get("model"),
                 "firmware_version": metadata.get("firmware_version"),
             },
             "enabled": device.enabled,
+            "setup_state": getattr(device, "setup_state", "ready"),
             "integrations": [],
         }
 
@@ -196,17 +206,49 @@ def inventory_router(context: ApiContext) -> APIRouter:
         devices = await repo.list_devices(area_id, include_disabled=include_disabled)
         return [device_summary(device) for device in devices]
 
+    @router.get(
+        "/devices/integrations/catalog",
+        response_model=list[DeviceIntegrationCatalogEntry],
+    )
+    async def list_device_integration_candidates(
+        manufacturer: str | None = Query(default=None, max_length=100),
+        device_type: DeviceType = "camera",
+    ):
+        if not context.validator:
+            raise HTTPException(503, "Device validation is unavailable")
+        return context.validator.catalog(
+            manufacturer=manufacturer,
+            device_type=device_type,
+        )[:100]
+
     @router.post("/devices/validate", response_model=DeviceValidationResponse)
     async def validate_device(payload: DeviceWriteRequest):
         if not context.validator:
             raise HTTPException(503, "Device validation is unavailable")
         existing = await repo.get_device(payload.id) if payload.id else None
         candidate = validation_device_from_request(payload, existing)
-        results = await context.validator.validate(candidate)
+        try:
+            results = await context.validator.validate(
+                candidate,
+                integration_ids=payload.integration_ids,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         if existing:
-            existing.metadata["integration_support"] = results
+            support = stored_support(existing)
+            support.update(results)
+            existing.metadata["integration_support"] = support
             await repo.upsert_device(existing)
         return {"device_id": existing.id if existing else None, "results": results}
+
+    @router.post(
+        "/devices/validate-video",
+        response_model=DeviceVideoValidationResponse,
+    )
+    async def validate_video(payload: DeviceWriteRequest):
+        existing = await repo.get_device(payload.id) if payload.id else None
+        candidate = validation_device_from_request(payload, existing)
+        return await validate_manual_video(candidate)
 
     @router.post("/devices", response_model=DeviceDetailResponse, status_code=201)
     async def create_device(payload: DeviceWriteRequest):
