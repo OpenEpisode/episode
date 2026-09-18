@@ -1,11 +1,6 @@
 import { api } from "./api.js?v=3";
 import { escHtml } from "./dom.js";
-import {
-  attachMediaSource,
-  formatLiveOffset,
-  seekToBeginning,
-  seekToLive,
-} from "./media-player.js?v=3";
+import { attachMediaSource } from "./media-player.js?v=7";
 
 let refreshTimer = null;
 let refreshGeneration = 0;
@@ -18,17 +13,12 @@ function viewCard(view) {
   return `<article class="current-view-card ${available ? "is-loading" : "is-unavailable"}" data-device-id="${escHtml(view.device_id)}">
     <div class="current-view-frame">
       ${streamAvailable
-        ? `<video muted autoplay playsinline controls data-stream-url="${escHtml(view.stream_url)}"></video>`
+        ? `<video muted autoplay playsinline controls aria-label="Current recording from ${escHtml(view.device_name)}" data-stream-url="${escHtml(view.stream_url)}"></video>`
         : snapshotAvailable
         ? `<img alt="Current view from ${escHtml(view.device_name)}" data-preview-url="${escHtml(view.image_url)}">`
         : '<div class="current-view-unavailable"><img src="/logo.svg" alt=""><span>Preview unavailable</span></div>'}
-      <span class="current-view-live" data-current-view-live><i></i>${streamAvailable ? "Live" : available ? "Current" : "Recording"}</span>
+      <span class="current-view-live" data-current-view-live aria-live="polite"><i></i>${streamAvailable ? "Live" : available ? "Current" : "Recording"}</span>
     </div>
-    ${streamAvailable ? `<div class="current-view-controls" aria-label="Recording playback controls">
-      <button class="button button-ghost current-view-start" type="button" disabled>From beginning</button>
-      <button class="button button-ghost current-view-live-button" type="button" hidden>Go live</button>
-      <span class="current-view-position" role="status" aria-live="polite">Preparing timeline…</span>
-    </div>` : ""}
     <div class="current-view-caption">
       <strong>${escHtml(view.device_name)}</strong>
       <span class="current-view-status">${escHtml(view.summary)}</span>
@@ -52,7 +42,7 @@ export function renderCurrentViews(views) {
         <span class="eyebrow">Happening now</span>
         <h3 id="current-views-title">Ongoing recordings</h3>
       </div>
-      <span class="current-views-note" data-current-views-state>Review recordings while capture continues</span>
+      <span class="current-views-note" data-current-views-state>Live preview · recording continues</span>
     </div>
     <div id="current-view-grid" class="current-view-grid">${viewsMarkup(views)}</div>
   </section>`;
@@ -64,56 +54,17 @@ function signature(views) {
   )).join("|");
 }
 
-function bindPlaybackControls(video, card) {
-  const start = card?.querySelector(".current-view-start");
-  const live = card?.querySelector(".current-view-live-button");
-  if (!start || !live) return () => {};
-  const seekStart = () => seekToBeginning(video);
-  const seekLive = () => seekToLive(video);
-  start.addEventListener("click", seekStart);
-  live.addEventListener("click", seekLive);
-  return () => {
-    start.removeEventListener("click", seekStart);
-    live.removeEventListener("click", seekLive);
-  };
-}
-
-function updateTimeline(card, timeline) {
-  if (!timeline) return;
-  const complete = card?.classList.contains("is-complete");
-  const start = card?.querySelector(".current-view-start");
-  const live = card?.querySelector(".current-view-live-button");
-  const position = card?.querySelector(".current-view-position");
-  const badge = card?.querySelector("[data-current-view-live]");
-  if (start) start.disabled = false;
-  if (live) {
-    live.hidden = timeline.isLive;
-    live.disabled = timeline.isLive;
-  }
-  if (position) {
-    position.textContent = complete && timeline.isLive
-      ? "At end"
-      : complete
-      ? formatLiveOffset(timeline.behindLive).replace("behind live", "from end")
-      : formatLiveOffset(timeline.behindLive);
-  }
-  if (badge) badge.lastChild.textContent = complete
-    ? "Complete"
-    : timeline.isLive ? "Live" : "Reviewing";
-  card?.classList.toggle("is-reviewing", !timeline.isLive);
-}
-
 function attachStreams() {
   streamDetachers.forEach(detach => detach());
   streamDetachers = [];
   document.querySelectorAll("#current-view-grid video[data-stream-url]").forEach(video => {
     const card = video.closest(".current-view-card");
-    const detachControls = bindPlaybackControls(video, card);
     const detachMedia = attachMediaSource(video, video.dataset.streamUrl, {
       live: true,
       onState: ({ state, message }) => {
-        card?.classList.toggle("has-error", ["error", "unavailable"].includes(state));
-        card?.classList.toggle("is-loading", ["loading", "buffering", "reconnecting"].includes(state));
+        const complete = card?.classList.contains("is-complete");
+        card?.classList.toggle("has-error", !complete && ["error", "unavailable"].includes(state));
+        card?.classList.toggle("is-loading", !complete && ["loading", "buffering", "reconnecting"].includes(state));
         const status = card?.querySelector(".current-view-status");
         if (status && !card?.classList.contains("is-complete") && state !== "ready") {
           status.textContent = message;
@@ -122,27 +73,22 @@ function attachStreams() {
           status.textContent = "Streaming the recording as it is captured";
         }
       },
-      onTimeline: timeline => updateTimeline(card, timeline),
     });
-    streamDetachers.push(() => {
-      detachControls();
-      detachMedia();
-    });
+    streamDetachers.push(detachMedia);
   });
 }
 
-function markEpisodeComplete() {
+export function markEpisodeComplete() {
   document.querySelector("[data-current-views-state]")?.replaceChildren(
     "Episode closed · recordings remain available to review",
   );
   document.querySelectorAll("#current-view-grid .current-view-card").forEach(card => {
     card.classList.add("is-complete");
+    card.classList.remove("is-loading");
     const badge = card.querySelector("[data-current-view-live]");
     const status = card.querySelector(".current-view-status");
-    const live = card.querySelector(".current-view-live-button");
     if (badge) badge.lastChild.textContent = "Complete";
     if (status) status.textContent = "Episode closed · recording available to review";
-    if (live) live.textContent = "Go to end";
   });
 }
 
@@ -181,7 +127,7 @@ async function refresh(episodeId, generation, previousSignature, intervalSeconds
   let ended = false;
   try {
     views = await api(`/episodes/${encodeURIComponent(episodeId)}/current-views`);
-    if (!views.length && previousSignature) {
+    if (views?.length === 0) {
       const episode = await api(`/episodes/${encodeURIComponent(episodeId)}`);
       ended = ["closed", "archived"].includes(episode.state);
     }
@@ -192,7 +138,7 @@ async function refresh(episodeId, generation, previousSignature, intervalSeconds
 
   const grid = document.getElementById("current-view-grid");
   let nextSignature = previousSignature;
-  if (grid && views && !ended) {
+  if (grid && views?.length && !ended) {
     nextSignature = signature(views);
     if (nextSignature !== previousSignature) {
       grid.innerHTML = viewsMarkup(views, ended);
@@ -203,6 +149,9 @@ async function refresh(episodeId, generation, previousSignature, intervalSeconds
     .forEach(image => loadPreview(image, generation));
 
   if (ended) {
+    if (grid && !grid.querySelector(".current-view-card")) {
+      grid.innerHTML = viewsMarkup([], true);
+    }
     markEpisodeComplete();
     return;
   }

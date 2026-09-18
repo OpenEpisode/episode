@@ -529,24 +529,6 @@
   width: 100%;
 }
 .current-view-frame > video { display: block; }
-.current-view-controls {
-  align-items: center;
-  background: rgba(5, 9, 12, .88);
-  display: flex;
-  gap: .4rem;
-  padding: .4rem .5rem;
-}
-.current-view-controls .button {
-  font-size: .63rem;
-  padding: .3rem .45rem;
-}
-.current-view-position {
-  color: #f5fbfc;
-  font-size: .62rem;
-  margin-left: auto;
-  text-align: right;
-}
-.current-view-card.is-reviewing .current-view-live i { background: var(--warning); }
 .current-view-card.is-complete .current-view-live i { background: var(--text-muted); }
 .current-view-card.is-complete .current-view-live { color: var(--text-muted); }
 .current-view-card.is-loading .current-view-frame::after {
@@ -585,7 +567,6 @@
   width: 6px;
 }
 .current-view-card.is-unavailable .current-view-live i { background: var(--warning); }
-
 .current-view-unavailable {
   align-items: center;
   color: var(--text-muted);

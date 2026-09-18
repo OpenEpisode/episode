@@ -33,7 +33,7 @@ const episodeViewUrl = moduleUrl(
     .replace('"./dom.js"', JSON.stringify(domUrl))
     .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
     .replace('"./timeline.js?v=6"', JSON.stringify(timelineUrl))
-    .replace('"./media-player.js?v=3"', JSON.stringify(mediaUrl)),
+    .replace('"./media-player.js?v=7"', JSON.stringify(mediaUrl)),
 );
 const { renderEpisodeWorkspace } = await import(episodeViewUrl);
 

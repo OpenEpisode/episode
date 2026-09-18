@@ -16,7 +16,7 @@ import {
   activateCurrentViews,
   deactivateCurrentViews,
   renderCurrentViews,
-} from "./current-views.js?v=4";
+} from "./current-views.js?v=12";
 import {
   episodeDisplayEnd,
   episodeRailTime,
@@ -27,15 +27,15 @@ import {
   evidenceMediaUrl,
   isHlsEvidence,
   updateMediaStatus,
-} from "./media-player.js?v=3";
+} from "./media-player.js?v=7";
 import {
   originBadge,
   renderEvidenceArchive,
   renderEpisodeEvidence,
   renderEvidenceGrid,
   showCarousel,
-} from "./evidence-gallery.js?v=8";
-import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js?v=14";
+} from "./evidence-gallery.js?v=9";
+import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js?v=15";
 import {
   fmt,
   fmtBytes,

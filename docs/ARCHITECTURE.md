@@ -384,10 +384,14 @@ compatibility recovery path.
 
 The recording action copies the camera video bitstream and transcodes audio to
 AAC when present; it does not silently transcode video Evidence for browser
-compatibility. The UI uses native HLS first and a pinned, integrity-checked
-hls.js CDN fallback. H.264 is broadly playable, while HEVC playback remains
-dependent on browser and operating-system decoder support. Future compatibility
-proxies or transcodes must be separate derived presentation artifacts.
+compatibility. Current views prefer native HLS and use the pinned,
+integrity-checked hls.js CDN build only as a fallback. They are live operational
+previews with standard browser video controls; Episode-specific DVR and review
+controls are intentionally not part of the current-view contract. Completed
+recordings remain reviewable through the Evidence player. H.264 is broadly
+playable, while HEVC playback remains dependent on browser and operating-system
+decoder support. Future compatibility proxies or transcodes must be separate
+derived presentation artifacts.
 
 One global visual Evidence retention policy defaults to an active but
 unconfirmed 30-day period and is managed from the System UI. An administrator

@@ -100,17 +100,19 @@ recording portable.
 (four seconds by default). Camera keyframe intervals can make fragments longer.
 This controls playback latency and file granularity, not Episode duration.
 
-The UI uses native HLS where available and a pinned hls.js light build from
-jsDelivr as a fallback. Browsers without native HLS therefore require Internet
-access for fallback playback. H.264 with AAC has the broadest compatibility;
-HEVC/H.265 is preserved without transcoding and plays only when the browser and
-operating system provide a decoder.
+For ongoing recordings, the UI uses the browser's native HLS support when
+available. Browsers without native HLS use the pinned hls.js light build from
+jsDelivr as a fallback; those browsers require Internet access to load it.
+H.264 with AAC has the broadest compatibility; HEVC/H.265 is preserved without
+transcoding and plays only when the browser and operating system provide a
+decoder.
 
-While an Episode is active, **Ongoing recordings** start at the live edge but
-remain seekable back to the beginning of captured media. **From beginning** and
-**Go live** let an operator review earlier activity without interrupting capture;
-the UI shows how far playback is behind the live edge. When the Episode closes,
-the same playlist remains loaded for review and becomes finalized Evidence.
+While an Episode is active, **Ongoing recordings** are treated as live
+operational previews. They use the browser's standard muted video controls and
+do not add Episode-specific seeking, review, or NOW controls. The preview may
+trail the newest captured frame by a small buffering interval. When the Episode
+closes, the preview is marked complete and the resulting Evidence remains
+available through the normal Evidence player for review.
 
 Current camera views are operational previews. They become Evidence only
 through an explicit preservation action.
