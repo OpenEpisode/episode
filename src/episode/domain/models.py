@@ -7,6 +7,8 @@ from hashlib import sha256
 from urllib.parse import quote
 from uuid import uuid4
 
+from episode.domain.event_filter import normalize_device_selector, normalize_selector
+
 
 def make_episode_id(timestamp: datetime | None = None) -> str:
     if timestamp is None:
@@ -74,6 +76,14 @@ class ParticipationDecision:
     Participation is intentionally separate from integration metadata.  It is
     an operational interpretation of whether an active observation may affect
     Episode capture, and remains useful after the active profile changes.
+
+    ``filtered_event_type`` records the normalized event type suppressed by the
+    event filter (when ``reason == "generic_event_filtered"``) so the exact
+    suppressed observation is traceable. ``filtered_event_class`` records which
+    class caused suppression and ``filter_source`` which level decided, so the
+    decision stays explainable without re-reading configuration. ``attachment``
+    records what happened instead of driving capture: the Event was linked to an
+    already-open Episode, or there was none to link to.
     """
 
     allowed: bool
@@ -81,11 +91,21 @@ class ParticipationDecision:
     profile_name: str
     reason: str
     evaluated_at: datetime
+    filtered_event_type: str | None = None
+    filtered_event_class: str | None = None
+    filter_source: str | None = None
+    attachment: str | None = None
 
 
 @dataclass
 class CaptureProfile:
-    """A named set of Devices eligible to participate in new capture."""
+    """A named set of Devices eligible to participate in new capture.
+
+    ``event_filter`` lists the event classes this profile suppresses for its
+    Devices. A profile may never select the ``security`` class; that is a
+    per-Device decision. A per-Device ``event_filter`` override takes priority
+    over this profile default, and an empty list means no filtering.
+    """
 
     id: str = ""
     name: str = ""
@@ -93,8 +113,15 @@ class CaptureProfile:
     device_ids: list[str] = field(default_factory=list)
     builtin: bool = False
     active: bool = False
+    event_filter: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+
+    def __post_init__(self):
+        # A profile selector is always a concrete set; "inherit" is not a valid
+        # profile state. Protected or malformed entries normalize away so a
+        # damaged stored value means "no filtering".
+        self.event_filter = sorted(normalize_selector(self.event_filter))
 
 
 @dataclass(frozen=True)
@@ -132,11 +159,19 @@ class Device:
     activity_window_seconds: int | None = None
     metadata: dict = field(default_factory=dict)
     enabled: bool = True
+    # Event-class filter override. ``None`` means inherit the active Capture
+    # Profile; a list selects classes for this Device alone, and an empty list
+    # is the explicit negative "this camera filters nothing".
+    event_filter: list[str] | None = None
     setup_state: str = "ready"
 
     def __post_init__(self):
         if self.setup_state not in {"ready", "needs_setup"}:
             raise ValueError("Device setup state must be ready or needs_setup")
+        # ``None`` stays inherit. An unreadable selector also means inherit, so a
+        # corrupt row cannot silently opt a camera out of profile policy; operator
+        # input is validated at the API edge.
+        self.event_filter = normalize_device_selector(self.event_filter)
         if self.activity_window_seconds is not None and self.activity_window_seconds < 1:
             raise ValueError("Device activity window must be positive")
         if self.configs and isinstance(next(iter(self.configs.values()), None), dict):

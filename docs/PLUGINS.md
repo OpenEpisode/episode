@@ -27,6 +27,30 @@ In particular, a plugin reports an observation; it does not choose the Episode
 deadline. Core correlation resolves the authoritative Device and applies that
 Device's activity window after successful processing.
 
+A plugin also does not decide whether an observation drives capture. The core
+maps canonical `event_type` strings to event classes and applies the Capture
+Profile or Device selector (`docs/ARCHITECTURE.md`). Map vendor topics to the
+existing canonical types and pass anything you cannot attest to through
+verbatim: an unrecognized type is `unknown`, which an operator must select
+explicitly before it is suppressed, so a camera stays audible by default. Do not
+invent or rename types to make a message fall inside
+or outside a class — that moves a capture-coverage decision into plugin code and
+makes the operator's policy unreadable. Dropping messages before the core sees
+them (for example a vendor `ignore_events` option) stops *interpretation* and
+produces no canonical Event; use it only for traffic that should never become an
+Event, and say so in the plugin's own documentation.
+
+Built-in Device integrations declare the vendor spellings they recognise, the
+canonical type each one means, and the vendor documentation that says so, in
+`episode/plugins/event_vocabulary.py`. Fill a row in from your vendor's
+documentation rather than from a captured payload or from another adapter's
+naming, and replace `needs-documentation` in the same change;
+`tests/test_event_vocabulary.py` fails when a row is added without a citation,
+when an adapter emits a canonical name the class model does not know, or when two
+spellings of one signal land in different classes. An undocumented signal is
+carried as `unknown` until its row exists — that is the safe state, not a bug
+to route around by guessing a type.
+
 Plugins must import only from `episode.plugin_api`. Modules below
 `episode.plugins`, `episode.ingestion`, `episode.storage`, and `episode.engine`
 are implementation details and may change without a plugin API version change.

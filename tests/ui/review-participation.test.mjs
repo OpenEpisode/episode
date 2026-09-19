@@ -70,7 +70,11 @@ const formatUrl = moduleUrl(`
   export function fmtShort(value) { return String(value ?? ""); }
   export function fmtTime() { return "time"; }
   export function plural(value, label) { return value + " " + label; }
-  export function titleCase(value) { return String(value ?? "").replace(/_/g, " "); }
+  export function titleCase(value) {
+    return String(value ?? "")
+      .replaceAll("_", " ")
+      .replace(/\\b\\w/g, letter => letter.toUpperCase());
+  }
   export function trunc(value) { return value; }
 `);
 
@@ -118,6 +122,67 @@ test("excluded participation is explicit in badges and Event detail guidance", (
   assert.match(notice, /did not join a new recording/);
   assert.match(notice, /device not in profile/i);
   assert.match(notice, /2026-09-09T10:00:00Z/);
+});
+
+test("filtered participation names the class and the level that decided", () => {
+  const byProfile = {
+    allowed: false,
+    profile_id: "night",
+    profile_name: "Night",
+    reason: "generic_event_filtered",
+    filtered_event_type: "motion_detection",
+    filtered_event_class: "motion",
+    filter_source: "profile",
+    attachment: "attached",
+    evaluated_at: "2026-09-09T10:00:00Z",
+  };
+  const badge = module.eventParticipationBadge(byProfile);
+  const notice = module.eventParticipationNotice(byProfile);
+
+  assert.match(badge, /Filtered · Motion · by Night/);
+  assert.match(badge, /badge-capture-filtered/);
+  assert.match(notice, /filtered by Night/);
+  assert.match(notice, /\(Motion\)/);
+  // Attachment is the v3 outcome: attributed without extending anything.
+  assert.match(notice, /attributed to the Episode that was already open/);
+  assert.match(notice, /did not extend the Episode, restart it, or start a recording/);
+  assert.match(notice, /motion_detection/);
+});
+
+test("a Device-level selection is not credited to the profile", () => {
+  const byDevice = {
+    allowed: false,
+    profile_id: "night",
+    profile_name: "Night",
+    reason: "generic_event_filtered",
+    filtered_event_type: "system",
+    filtered_event_class: "heartbeat",
+    filter_source: "device",
+    attachment: "no_open_episode",
+  };
+  assert.match(module.eventParticipationBadge(byDevice), /Filtered · Heartbeat · by this camera/);
+  const notice = module.eventParticipationNotice(byDevice);
+  assert.match(notice, /filtered by this camera/);
+  assert.doesNotMatch(notice, /filtered by Night/);
+  // Nothing was open, so the Event is not claimed as part of an Episode.
+  assert.match(notice, /stays unassigned/);
+  assert.doesNotMatch(notice, /already open for this Area/);
+});
+
+test("a filtered Event predating the attachment field still reads correctly", () => {
+  const legacy = {
+    allowed: false,
+    profile_id: "night",
+    reason: "generic_event_filtered",
+    filtered_event_type: "motion_detection",
+    evaluated_at: "2026-09-12T10:00:00Z",
+  };
+  const badge = module.eventParticipationBadge(legacy);
+  const notice = module.eventParticipationNotice(legacy);
+  // No class or source was recorded, so nothing is invented for it.
+  assert.match(badge, /^<span class="badge badge-capture-filtered">Filtered<\/span>$/);
+  assert.match(notice, /did not open or extend an Episode/);
+  assert.doesNotMatch(notice, /undefined|night · night/);
 });
 
 test("Activity sends calculated UTC bounds to the Event API", async () => {

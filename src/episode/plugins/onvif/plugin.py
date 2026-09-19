@@ -49,6 +49,7 @@ class ONVIFPlugin:
         self._trackers: dict[str, ONVIFStateTracker] = {}
         self._event_counts: dict[str, int] = {}
         self._suppressed_counts: dict[str, int] = {}
+        self._unmapped_topics: dict[str, dict[str, int]] = {}
         self._last_events: dict[str, str] = {}
         self._registered = False
 
@@ -115,15 +116,20 @@ class ONVIFPlugin:
         notification = notifications[0]
         tracker = self._trackers.setdefault(envelope.device_id, ONVIFStateTracker())
         if not tracker.is_transition(notification):
-            reason = (
-                "initial_or_unmapped"
-                if notification.is_initial_value or not notification.event_type
-                else "repeated_state"
-            )
+            if notification.is_initial_value:
+                reason = "initial_state"
+            elif not notification.event_type:
+                reason = "unmapped_topic"
+            else:
+                reason = "repeated_state"
             if reason == "repeated_state":
                 self._suppressed_counts[envelope.device_id] = (
                     self._suppressed_counts.get(envelope.device_id, 0) + 1
                 )
+            if not notification.event_type:
+                # Any topic left uninterpreted is worth reporting, including one
+                # whose very first value was an initial state.
+                self._record_unmapped_topic(envelope.device_id, notification.topic)
             return IngressHandlerResult(
                 claimed=True,
                 status=ReceiptStatus.IGNORED,
@@ -153,6 +159,22 @@ class ONVIFPlugin:
             },
         )
 
+    def _record_unmapped_topic(self, device_id: str, topic: str) -> None:
+        """Remember an Event topic this adapter does not name.
+
+        ONVIF cameras advertise vendor-specific topics (``shelteralarm``,
+        ``alarmlocal``, analytics a plugin does not read). Those notifications
+        stay preserved but cannot become Events, because inventing a canonical
+        type for them would put an unidentified signal inside a class an operator
+        can filter. The topic is surfaced on the Device status so an operator can
+        see what is arriving uninterpreted rather than guess.
+        """
+        topics = self._unmapped_topics.setdefault(device_id, {})
+        topics[topic or "<no topic>"] = topics.get(topic or "<no topic>", 0) + 1
+        # Bounded: an unusual camera must not grow plugin state without limit.
+        if len(topics) > 32:
+            topics.pop(next(iter(topics)))
+
     def status(self) -> PluginStatus:
         metrics = self._router.status(HANDLER_ID) if self._router else None
         instances = [*self._invalid_instances]
@@ -162,6 +184,12 @@ class ONVIFPlugin:
                 **dict(status.details),
                 "events_received": self._event_counts.get(status.id, 0),
                 "events_suppressed": self._suppressed_counts.get(status.id, 0),
+                "unmapped_topics": dict(
+                    sorted(
+                        self._unmapped_topics.get(status.id, {}).items(),
+                        key=lambda item: (-item[1], item[0]),
+                    )[:10]
+                ),
                 "last_event": self._last_events.get(status.id),
             }
             instances.append(replace(status, details=details))

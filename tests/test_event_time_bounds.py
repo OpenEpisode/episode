@@ -1,3 +1,10 @@
+"""Time-range bounds for the Event and Evidence APIs.
+
+These cover `observed_from`/`observed_before` query semantics. Event *class*
+filtering — suppressing motion, status, tamper, and similar classes from opening
+an Episode — is a separate concern and lives in `test_event_filter.py`.
+"""
+
 from datetime import datetime, timezone
 
 import httpx

@@ -8,6 +8,13 @@ from episode.domain.models import EventState
 _EVENT_TYPE_MAP = {
     "VMD": "motion_detection",
     "videoloss": "video_loss",
+    # ``alarm`` is the plain event-alert report on the alert stream: an external
+    # input was raised. It canonicalizes to ``digital_input`` so a wired contact
+    # is the same filterable observation here as on an ONVIF camera. A Hikvision
+    # HTTP notification does not carry an input id (``InputPortInfo`` belongs to
+    # the Access Handler), so the number of the physical terminal is not lost by
+    # the mapping and stays verbatim in ``vendor_event_type``.
+    "alarm": "digital_input",
 }
 
 _TARGET_TYPE_MAP = {
