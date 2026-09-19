@@ -64,7 +64,10 @@ Only an explicit unsupported endpoint response disables the option.
 ONVIF Event polling is disabled by default because generic motion state can be
 noisy. Enable **Receive ONVIF Events** only when those Events are useful. This
 toggle does not disable ONVIF discovery, media profiles, RTSP recording, or FTP
-uploads.
+uploads. Once Events are enabled, an unwanted stream of plain motion can be
+filtered per Capture profile or per camera instead of switching ONVIF Events off
+altogether (`docs/OPERATIONS.md`). ONVIF motion maps to `motion_detection`, so it
+is only silenced when you select the `motion` class.
 
 ## What happens at runtime
 
@@ -75,10 +78,19 @@ uploads.
 5. Active Events create or join an Episode and start configured actions.
 
 Initial ONVIF property values are preserved as ignored ingestion receipts but
-do not create Episodes. Changed motion and tamper values are normalized into
-vendor-neutral Events. Equivalent topics describing the same device state are
+do not create Episodes. Changed motion, tamper, and digital-input
+(`DIInput`/`DIInputStatus`) values are normalized into vendor-neutral Events; a
+digital input becomes `digital_input`, the same Event a Hikvision `alarm` report
+becomes, so one class selection treats a wired contact the same way on either
+camera (`docs/OPERATIONS.md`). Equivalent topics describing the same device state are
 aggregated. The complete SOAP response is preserved exactly, and each derived
 notification remains separately traceable to its source receipt.
+
+A topic Episode cannot name is left uninterpreted rather than guessed: the SOAP
+response and notification are still preserved, but no Event is created, so such a
+notification can never be silenced by an event class filter either. Those topics
+are counted on the ONVIF Device status, which is what to read when a camera
+appears to be reporting nothing useful.
 
 An active transition can open or extend an Episode using that Device's activity
 window. The inactive transition is retained and attached but does not open,

@@ -2,6 +2,7 @@ import { api, apiRequest } from "./api.js?v=3";
 import { pageHeader } from "./components.js?v=4";
 import { closeDialog, confirmDialog, notify, openDialog } from "./dialogs.js?v=1";
 import { escHtml } from "./dom.js";
+import { eventFilterNote, eventFilterSelect, resolveEventFilter, wireEventFilterSummary } from "./event-filter.js?v=1";
 import { fmtShort, plural } from "./format.js?v=3";
 import { showContent, showError, showLoading } from "./view.js?v=1";
 
@@ -14,14 +15,6 @@ let profileState = {
 };
 
 const MAX_HISTORY_ITEMS = 10;
-
-function isChecked(formData, name) {
-  return formData.get?.(name) === "on";
-}
-
-function checked(value) {
-  return value ? " checked" : "";
-}
 
 function profileName(profile, fallback = "Unknown profile") {
   if (profile && typeof profile === "object") {
@@ -154,7 +147,7 @@ function profileEditorContent(profile, devices, areas) {
   return `<label class="field capture-profile-name-field"><span>Profile name</span>
     <input name="name" required maxlength="100" value="${escHtml(profile?.name || "")}" placeholder="Night">
   </label>
-  <label class="toggle-row capture-profile-filter-toggle"><input type="checkbox" name="filter_generic_events"${checked(Boolean(profile?.filter_generic_events))}><span><strong>Filter generic events</strong><small>Generic observations (System, motion, video loss, tamper, audio) will not open or extend Episodes or start recordings. Higher-level detections (person, vehicle, pet, …) still participate. A per-camera override wins.</small></span></label>
+  ${eventFilterSelect("event_filter", profile?.event_filter, "profile")}
   <fieldset class="capture-profile-device-selection">
     <legend>Devices that may participate</legend>
     <p class="configuration-note">Select the Devices whose active Events may open or extend Episodes and whose cameras may join new recordings. Leave every box clear for a Disarmed profile.</p>
@@ -175,7 +168,7 @@ function deviceIdsFromForm(data) {
 export function openCaptureProfileEditor(profile = null, devices = profileState.devices, areas = profileState.areas) {
   if (profile?.builtin) return;
   const editing = Boolean(profile);
-  openDialog({
+  const overlay = openDialog({
     title: editing ? `Edit ${profileName(profile)}` : "Create Capture profile",
     subtitle: "Choose which Devices may contribute to future Episodes and recordings.",
     wide: true,
@@ -184,16 +177,21 @@ export function openCaptureProfileEditor(profile = null, devices = profileState.
     onSubmit: async data => {
       const name = String(data.get?.("name") || "").trim();
       const device_ids = deviceIdsFromForm(data);
-      const filter_generic_events = isChecked(data, "filter_generic_events");
+      const event_filter = resolveEventFilter(data, "event_filter", "profile");
       await apiRequest(editing ? `/capture-profiles/${encodeURIComponent(profile.id)}` : "/capture-profiles", {
         method: editing ? "PUT" : "POST",
-        body: { name, device_ids, filter_generic_events },
+        // An unrecognised selector submits nothing at all, so the stored one
+        // survives instead of being replaced by a guess.
+        body: { name, device_ids, ...(event_filter === undefined ? {} : { event_filter }) },
       });
       closeDialog();
       notify(editing ? "Capture profile updated" : "Capture profile created");
       await captureProfiles();
     },
   });
+  // Keeps the "Filters: …" line truthful as the operator changes preset or ticks
+  // a custom class.
+  wireEventFilterSummary(overlay || {}, "profile");
 }
 
 function profileRow(profile) {
@@ -203,9 +201,7 @@ function profileRow(profile) {
   const selection = builtin
     ? "All current and future enabled Devices participate"
     : `${plural((profile.device_ids || []).length, "Device")} selected`;
-  const filterNote = profile.filter_generic_events
-    ? " · generic events filtered"
-    : "";
+  const filterNote = eventFilterNote(profile.event_filter);
   const activationControl = active
     ? '<span class="badge badge-active">Active</span>'
     : `<button type="button" class="button button-ghost capture-profile-activate" data-capture-profile-action="activate" data-profile-id="${escHtml(profile.id)}">Activate</button>`;

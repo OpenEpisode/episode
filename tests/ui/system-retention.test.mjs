@@ -42,6 +42,15 @@ const formatUrl = moduleUrl(`
   }
 `);
 const timelineUrl = moduleUrl(`export function eventTitle() { return "Event"; }`);
+// Loaded for real, so the inventory pages' Device filter column is exercised by
+// the same harness that renders those pages.
+const eventFilterSource = await readFile(
+  new URL("../../src/episode/ui/event-filter.js", import.meta.url),
+  "utf8",
+);
+const eventFilterUrl = moduleUrl(
+  eventFilterSource.replace('"./dom.js"', JSON.stringify(moduleUrl(`export function escHtml(value) { return String(value ?? ""); }`))),
+);
 const inventoryUrl = moduleUrl(`
   export function confirmAreaDelete() {}
   export function confirmDeviceDelete() {}
@@ -132,6 +141,7 @@ const module = await import(moduleUrl(
     .replace('"./components.js?v=4"', JSON.stringify(componentsUrl))
     .replace('"./dialogs.js?v=1"', JSON.stringify(dialogsUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
+    .replace('"./event-filter.js?v=1"', JSON.stringify(eventFilterUrl))
     .replace('"./format.js?v=4"', JSON.stringify(formatUrl))
     .replace('"./timeline.js?v=6"', JSON.stringify(timelineUrl))
     .replace('"./inventory.js?v=6"', JSON.stringify(inventoryUrl))

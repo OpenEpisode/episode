@@ -4,6 +4,7 @@ import json
 
 import aiosqlite
 
+from episode.domain.event_filter import decode_device_filter, encode_device_filter
 from episode.domain.models import Area, Device
 
 
@@ -50,7 +51,7 @@ class InventoryStore:
                 id, name, device_type, area_id,
                 capabilities, ip_address, username, password,
                 configs, activity_window_seconds, metadata, enabled,
-                generic_event_filter
+                event_filter
             )
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
@@ -65,7 +66,7 @@ class InventoryStore:
                    activity_window_seconds=excluded.activity_window_seconds,
                    metadata=excluded.metadata,
                    enabled=excluded.enabled,
-                   generic_event_filter=excluded.generic_event_filter""",
+                   event_filter=excluded.event_filter""",
             (
                 device.id,
                 device.name,
@@ -89,7 +90,7 @@ class InventoryStore:
                 device.activity_window_seconds,
                 json.dumps(device.metadata),
                 int(device.enabled),
-                device.generic_event_filter,
+                encode_device_filter(device.event_filter),
             ),
         )
         await self._connection.commit()
@@ -184,7 +185,7 @@ class InventoryStore:
             activity_window_seconds=row["activity_window_seconds"],
             metadata=json.loads(row["metadata"]),
             enabled=bool(row["enabled"]),
-            generic_event_filter=row["generic_event_filter"]
-            if "generic_event_filter" in row.keys()
-            else "inherit",
+            event_filter=decode_device_filter(
+                row["event_filter"] if "event_filter" in row.keys() else None
+            ),
         )

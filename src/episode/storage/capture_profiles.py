@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
+from episode.domain.event_filter import normalize_selector
 from episode.domain.models import CaptureProfile, CaptureProfileChange
 
 ALL_DEVICES_PROFILE_ID = "all-devices"
@@ -16,6 +17,21 @@ def _utc_iso(value: datetime) -> str:
         value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
     )
     return normalized.isoformat(timespec="microseconds")
+
+
+def _filter_json(event_filter: list[str] | None) -> str:
+    """Encode a selector as a canonical JSON array so stored values compare."""
+    return json.dumps(sorted(normalize_selector(event_filter)), separators=(",", ":"))
+
+
+def _decode_profile_filter(value: object) -> list[str]:
+    """Decode a stored profile selector; a damaged value means no filtering."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+    return sorted(normalize_selector(value))
 
 
 def _parse_datetime(value: str) -> datetime:
@@ -91,7 +107,7 @@ class CaptureProfileStore:
         await self._connection.execute(
             """INSERT INTO capture_profiles
                (id, name, include_all_devices, device_ids, builtin,
-                filter_generic_events, created_at, updated_at)
+                event_filter, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 profile.id,
@@ -99,7 +115,7 @@ class CaptureProfileStore:
                 int(profile.include_all_devices),
                 json.dumps(sorted(set(profile.device_ids)), separators=(",", ":")),
                 int(profile.builtin),
-                int(profile.filter_generic_events),
+                _filter_json(profile.event_filter),
                 _utc_iso(profile.created_at),
                 _utc_iso(profile.updated_at),
             ),
@@ -111,13 +127,13 @@ class CaptureProfileStore:
         await self._connection.execute(
             """UPDATE capture_profiles
                SET name = ?, include_all_devices = ?, device_ids = ?,
-                   filter_generic_events = ?, updated_at = ?
+                   event_filter = ?, updated_at = ?
                WHERE id = ?""",
             (
                 profile.name,
                 int(profile.include_all_devices),
                 json.dumps(sorted(set(profile.device_ids)), separators=(",", ":")),
-                int(profile.filter_generic_events),
+                _filter_json(profile.event_filter),
                 _utc_iso(profile.updated_at),
                 profile.id,
             ),
@@ -238,9 +254,9 @@ class CaptureProfileStore:
             include_all_devices=bool(row["include_all_devices"]),
             device_ids=[str(item) for item in device_ids],
             builtin=bool(row["builtin"]),
-            filter_generic_events=bool(row["filter_generic_events"])
-            if "filter_generic_events" in row.keys()
-            else False,
+            event_filter=_decode_profile_filter(
+                row["event_filter"] if "event_filter" in row.keys() else None
+            ),
             active=row["id"] == active_id,
             created_at=_parse_datetime(row["created_at"]),
             updated_at=_parse_datetime(row["updated_at"]),

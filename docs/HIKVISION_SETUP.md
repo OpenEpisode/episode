@@ -55,6 +55,16 @@ before interpreting it. Connection and authentication failures are isolated to
 that Device and appear in the Device/System views and in
 `docker compose --env-file .env logs -f episode`.
 
+**Ignored Events** is empty by default and should stay that way. A name entered
+here stops the plugin *interpreting* that vendor message, so the Raw Artifact and
+Receipt are still preserved but no canonical Event is ever produced and no
+participation decision is recorded for it. Noise reduction belongs in the Capture
+profile or the camera's **Filtered event classes** (`docs/OPERATIONS.md`), which
+filters after the Event exists and stays auditable. The historical default
+contained `videoloss`, which removed the `security` class from those cameras
+before the core could see it; it is no longer preset. Names are matched against
+the vendor's own spelling (`videoloss`, `illegalaccess`, `VMD`, …).
+
 The ISAPI stream normally emits periodic status notifications. If an open
 connection produces no bytes for 60 seconds, Episode treats it as half-open,
 reports it as reconnecting, and establishes a fresh Digest-authenticated

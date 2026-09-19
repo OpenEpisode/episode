@@ -42,6 +42,13 @@ const viewUrl = moduleUrl(`
   export function showError(error) { globalThis.captureError = error; }
   export function showContent(html) { globalThis.captureHtml = html; }
 `);
+// Load the real shared vocabulary module so the editor cannot drift from the
+// classes and presets the API accepts.
+const eventFilterSource = await readFile(
+  new URL("../../src/episode/ui/event-filter.js", import.meta.url),
+  "utf8",
+);
+const eventFilterModUrl = moduleUrl(eventFilterSource.replace('"./dom.js"', JSON.stringify(domUrl)));
 
 globalThis.window = {};
 globalThis.captureActionButtons = [];
@@ -67,11 +74,11 @@ globalThis.captureStatus = statusHost("capture-profile-status");
 globalThis.mobileCaptureStatus = statusHost("mobile-capture-profile-status");
 globalThis.captureResponses = {
   "/capture-profiles": [
-    { id: "all", name: "All Devices", include_all_devices: true, device_ids: [], builtin: true, active: true },
-    { id: "night", name: "Night", include_all_devices: false, device_ids: ["front"], builtin: false, active: false },
+    { id: "all", name: "All Devices", include_all_devices: true, device_ids: [], builtin: true, active: true, event_filter: [] },
+    { id: "night", name: "Night", include_all_devices: false, device_ids: ["front"], builtin: false, active: false, event_filter: ["motion", "heartbeat"] },
   ],
   "/capture-profiles/active": {
-    profile: { id: "all", name: "All Devices", include_all_devices: true, device_ids: [], builtin: true, active: true },
+    profile: { id: "all", name: "All Devices", include_all_devices: true, device_ids: [], builtin: true, active: true, event_filter: [] },
     recent_changes: [{ previous_profile_id: "night", previous_profile_name: "Night", new_profile_id: "all", new_profile_name: "All Devices", changed_at: "2026-09-09T10:00:00Z", source: "operator" }],
   },
   "/devices?include_disabled=true": [
@@ -93,6 +100,7 @@ const module = await import(moduleUrl(
     .replace('"./components.js?v=4"', JSON.stringify(componentsUrl))
     .replace('"./dialogs.js?v=1"', JSON.stringify(dialogsUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
+    .replace('"./event-filter.js?v=1"', JSON.stringify(eventFilterModUrl))
     .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
     .replace('"./view.js?v=1"', JSON.stringify(viewUrl)),
 ));
@@ -131,7 +139,7 @@ test("Capture profiles render active state, immutable All Devices, grouped label
   ]));
   assert.deepEqual(globalThis.captureRequests.at(-1), {
     path: "/capture-profiles",
-    options: { method: "POST", body: { name: "Disarmed", device_ids: [], filter_generic_events: false } },
+    options: { method: "POST", body: { name: "Disarmed", device_ids: [] } },
   });
 
   globalThis.window.editCaptureProfile("night");
@@ -141,7 +149,7 @@ test("Capture profiles render active state, immutable All Devices, grouped label
   });
   assert.deepEqual(globalThis.captureRequests.at(-1), {
     path: "/capture-profiles/night",
-    options: { method: "PUT", body: { name: "Night watch", device_ids: ["front", "garage"], filter_generic_events: false } },
+    options: { method: "PUT", body: { name: "Night watch", device_ids: ["front", "garage"] } },
   });
 
   globalThis.window.deleteCaptureProfile("night");
@@ -152,44 +160,85 @@ test("Capture profiles render active state, immutable All Devices, grouped label
   });
 });
 
-test("Filter generic events toggle is reflected in the editor and submitted with the profile", async () => {
+test("event-class selector renders presets and submits the chosen classes", async () => {
   globalThis.captureRequests = [];
   globalThis.captureResponses["/capture-profiles"].push({
     id: "night-filtered",
     name: "Night filtered",
     include_all_devices: false,
     device_ids: ["front"],
-    filter_generic_events: true,
+    event_filter: ["heartbeat", "motion"],
     builtin: false,
     active: false,
   });
   await module.captureProfiles();
-  globalThis.window.editCaptureProfile("night-filtered");
 
-  assert.match(globalThis.captureDialog.content, /name="filter_generic_events" checked/);
-  assert.match(globalThis.captureDialog.content, /Filter generic events/);
-  assert.match(globalThis.captureDialog.content, /A per-camera override wins/);
+  // The row states the selector so an operator sees what a profile suppresses
+  // before opening it.
+  assert.match(globalThis.captureHtml, /Night filtered[\s\S]*· filtering motion, heartbeat/);
+
+  globalThis.window.editCaptureProfile("night-filtered");
+  const content = globalThis.captureDialog.content;
+  assert.match(content, /name="event_filter"/);
+  assert.match(content, /option value="motion-status" selected/);
+  assert.match(content, /Filters: Motion, Status/);
+  // A profile offers every class, and says what suppressing one does.
+  assert.match(content, /value="security"/);
+  assert.match(content, /never starts an Episode and never extends one/);
 
   await globalThis.captureDialog.onSubmit({
     get(name) {
       if (name === "name") return "Night filtered";
-      if (name === "filter_generic_events") return "on";
+      if (name === "event_filter") return "motion-status-audio";
       return null;
     },
-    getAll(name) { return name === "device_id" ? ["front"] : []; },
+    getAll(name) {
+      if (name === "device_id") return ["front"];
+      return [];
+    },
   });
-  const submitted = globalThis.captureRequests.at(-1);
-  assert.equal(submitted.options.method, "PUT");
-  assert.equal(submitted.options.body.filter_generic_events, true);
+  assert.deepEqual(globalThis.captureRequests.at(-1).options.body, {
+    name: "Night filtered",
+    device_ids: ["front"],
+    // The payload is the canonical sorted form, not the preset's reading order.
+    event_filter: ["condition", "heartbeat", "motion"],
+  });
 
-  const unfiltered = globalThis.captureResponses["/capture-profiles"].find(item => item.id === "night");
-  globalThis.window.editCaptureProfile("night");
-  assert.match(globalThis.captureDialog.content, /name="filter_generic_events"(?! checked)/);
+  // Custom… submits exactly the ticked classes.
+  globalThis.window.editCaptureProfile("night-filtered");
   await globalThis.captureDialog.onSubmit({
-    get(name) { return name === "name" ? "Night" : null; },
-    getAll(name) { return name === "device_id" ? ["front"] : []; },
+    get(name) {
+      if (name === "name") return "Night filtered";
+      if (name === "event_filter") return "custom";
+      return null;
+    },
+    getAll(name) {
+      if (name === "device_id") return ["front"];
+      if (name === "event_filter_class") return ["motion", "motion", "heartbeat"];
+      return [];
+    },
   });
-  assert.equal(globalThis.captureRequests.at(-1).options.body.filter_generic_events, false);
+  assert.deepEqual(globalThis.captureRequests.at(-1).options.body.event_filter, [
+    "heartbeat",
+    "motion",
+  ]);
+
+  // An unrecognised value submits nothing rather than a guessed selector.
+  globalThis.window.editCaptureProfile("night");
+  await globalThis.captureDialog.onSubmit({
+    get(name) {
+      if (name === "name") return "Night";
+      if (name === "event_filter") return "not-a-preset";
+      return null;
+    },
+    getAll(name) {
+      return name === "device_id" ? ["front"] : [];
+    },
+  });
+  assert.deepEqual(globalThis.captureRequests.at(-1).options.body, {
+    name: "Night",
+    device_ids: ["front"],
+  });
 });
 
 test("Activating a restricted profile requires confirmation and preserves existing recordings", async () => {

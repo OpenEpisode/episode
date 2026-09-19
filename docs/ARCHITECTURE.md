@@ -89,23 +89,57 @@ or start actions. Inactive Events bypass this gate so a later transition can
 still attach to its preceding accepted active Event without reopening or
 extending the Episode.
 
-The same gate applies a configurable **generic event filter**. The core classifies
+The same gate applies a configurable **event class filter**. The core classifies
 canonical, vendor-neutral `event_type` strings (`src/episode/domain/event_filter.py`)
-into a generic set (System, motion, video loss, tamper, audio, …) and treats
-everything else—including unknown types—as high-level and unfiltered, so
-uncertain messages fail safe and remain preserved. When filtering is enabled for
-an active Event whose type is generic, the Event keeps `allowed=False` with
-reason `generic_event_filtered` and the exact suppressed type recorded on the
-participation; it cannot open or extend an Episode or start actions, but is
-still persisted, queryable, and auditable.
+into semantic classes and never into vendor names: `motion`, `heartbeat`,
+`condition`, `security`, `detection`, `access`, and `unknown`. A selector is a
+set of classes, and an active Event is suppressed when its class is in the
+effective selector. Every class is selectable, and both levels offer the same
+set, so no class is privileged and a Capture Profile is not less capable than a
+Device. Unknown types classify as `unknown`, which keeps the default safe: an
+operator has to select that class deliberately before anything the build cannot
+name is suppressed. Suppression removes only the power to start or lengthen a
+recording; the Raw Artifact, Receipt, and canonical Event are persisted first,
+and a filtered Event still joins an open Episode as context. Mapping vendor
+topics to canonical types stays a plugin responsibility; the core owns the class
+model.
 
-Effective filtering resolves by precedence: an explicit per-Device
-`generic_event_filter` (`"enabled"` / `"disabled"`) overrides the active Capture
-Profile's `filter_generic_events` default; `"inherit"` (the default) follows the
-profile. This specific-over-general rule means a camera-level choice always wins
-over the profile-level policy. Like all participation decisions, the filter is
-evaluated at canonicalization time and snapshotted with the Event, so later
-profile or camera changes affect only new Events.
+Because the class model is the operator's only lever, one filter has to mean the
+same thing on every camera. That holds only while adapters resolve equivalent
+signals to the same canonical type and none of them falls back into a filterable
+class when it does not recognise a message. An integration that cannot tell what
+a message means emits `unrecognized`, not a name it happens to own such as
+`system` (`heartbeat`), because otherwise one camera's noise could be suppressed
+while an identical signal from another camera could not be. An
+integration may also decline to interpret a topic at all; such deliveries stay
+preserved, are reported on the plugin's Device status rather than guessed into a
+type, and can never be filtered because they never become Events.
+`tests/test_event_filter_parity.py` pins both properties across every built-in
+Device integration.
+
+Suppression is not deletion. A filtered Event keeps `allowed=False` with reason
+`generic_event_filtered`, the exact `filtered_event_type`, its
+`filtered_event_class`, and the deciding `filter_source`, and remains persisted,
+queryable, and auditable. It cannot open or extend an Episode or start actions.
+When an Episode was already open, the Event is instead **attributed** to it
+(`episode_id` set, participation `attachment` `attached`) so the record shows
+what the camera saw during that activity, without extending its deadline,
+restarting a quiescent Episode, or producing Evidence; with nothing open,
+`attachment` is `no_open_episode`. Attribution never reopens a closed Episode.
+
+Effective filtering resolves by precedence: an explicit per-Device `event_filter`
+(an array, possibly empty) overrides the active Capture Profile's selector; `null`
+(the default) follows the profile, and `[]` is an explicit negative that keeps
+every observation while a profile filters. This specific-over-general rule means a
+camera-level choice always wins over the profile-level policy, including against
+its own Area. Like all participation decisions, the filter is evaluated at
+canonicalization time and snapshotted with the Event, so later profile or camera
+changes affect only new Events. A stored Device value that cannot be read at all
+(corrupted rather than written by an operator) resolves to inherit, not to `[]`:
+inventing an explicit negative from a damaged row would pin a camera out of
+profile policy permanently and silently, whereas inherit keeps the operator's
+current profile authoritative and heals when the Device is saved again. Neither
+fallback can widen filtering.
 
 The decision stores the profile identity and evaluation time separately from
 plugin metadata. For an accepted Event it also snapshots the exact recording
@@ -136,8 +170,8 @@ src/episode/
 │       └── sdk/
 ├── media/            camera media registry and timelapse service
 ├── actions/          vendor-neutral snapshot action
-├── capture_profiles.py  core capture-participation policy and generic event filter
-├── domain/event_filter.py  vendor-neutral generic/high-level event classification
+├── capture_profiles.py  core capture-participation policy and event class filter
+├── domain/event_filter.py  vendor-neutral event classes, selectors, and precedence
 ├── installation.py   global non-secret installation identity settings
 ├── notifications.py  bounded outbound Episode-start delivery
 ├── domain/           vendor-neutral models and identities
@@ -339,7 +373,11 @@ data/episodes/<episode-id>/
 
 `manifest.json` is an atomic, rebuildable index containing the Episode, safe
 area and device identity, canonical Events, receipts, Evidence, relative file
-paths, byte lengths, and SHA-256 checksums.
+paths, byte lengths, and SHA-256 checksums. Each canonical Event carries its
+capture participation decision — allowed, profile identity, reason, evaluated
+time, and for a filtered Event the suppressed type, its class, the deciding
+level, and the attachment outcome — so an operator can tell why an observation
+did not drive capture without the database or the UI.
 
 `journal.ndjson` is append-only history for important bundle changes. A copied
 Episode directory therefore retains its relationships even when `episode.db` is

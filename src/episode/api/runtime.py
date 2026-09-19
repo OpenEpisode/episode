@@ -290,6 +290,9 @@ class OperationalView:
             "state": "disabled" if not device.enabled else self._device_state(integrations),
             "identity": self._device_identity(device),
             "integrations": integrations,
+            # ``None`` (inherit) and ``[]`` (explicit negative) are different
+            # operator decisions, so the distinction survives to the UI.
+            "event_filter": (None if device.event_filter is None else sorted(device.event_filter)),
         }
 
     def device_detail(self, device: Device) -> dict[str, Any]:

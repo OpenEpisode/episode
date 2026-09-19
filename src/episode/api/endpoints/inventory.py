@@ -60,6 +60,7 @@ def inventory_router(context: ApiContext) -> APIRouter:
             },
             "enabled": device.enabled,
             "integrations": [],
+            "event_filter": (None if device.event_filter is None else sorted(device.event_filter)),
         }
 
     async def device_detail(device) -> dict:

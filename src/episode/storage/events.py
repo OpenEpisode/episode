@@ -164,6 +164,19 @@ class EventStore:
         )
         return self._row_to_event(rows[0]) if rows else None
 
+    async def update_participation(self, event_id: str, decision: ParticipationDecision) -> None:
+        """Re-persist the participation blob for one Event.
+
+        Used when the engine learns something the decision could not know at
+        canonicalization time, such as whether an Episode was open to attach to.
+        Only the derived decision changes; the canonical observation does not.
+        """
+        await self._connection.execute(
+            "UPDATE events SET participation = ? WHERE id = ?",
+            (_participation_json(decision), event_id),
+        )
+        await self._connection.commit()
+
     async def update_episode(self, event_id: str, episode_id: str) -> None:
         await self._connection.execute(
             "UPDATE events SET episode_id = ? WHERE id = ?", (episode_id, event_id)

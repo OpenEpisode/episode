@@ -1,6 +1,13 @@
 import { apiRequest } from "./api.js?v=3";
 import { closeDialog, confirmDialog, notify, openDialog } from "./dialogs.js?v=1";
 import { escHtml } from "./dom.js";
+import {
+  deviceEventFilterSelect,
+  EVENT_CLASS_LABELS,
+  normalizeEventFilter,
+  resolveEventFilter,
+  wireEventFilterSummary,
+} from "./event-filter.js?v=1";
 import { titleCase } from "./format.js";
 
 const selected = value => value ? " selected" : "";
@@ -63,11 +70,13 @@ function deviceDefaults(device) {
   return {
     episodePolicy: {
       activity_window_seconds: policy.activity_window_seconds ?? 30,
-      generic_event_filter: policy.generic_event_filter || "inherit",
+      // `null`/absent stays inherit; an array (including an empty one) is the
+      // camera's own decision.
+      event_filter: Array.isArray(policy.event_filter) ? policy.event_filter : null,
     },
     video: { enabled: true, manual_endpoint: false, protocol: "rtsp", port: 554, path: "/Streaming/Channels/101", recording_mode: "on_event", ...(config.video || {}) },
     onvif: { enabled: true, protocol: "http", port: 80, path: "/onvif/device_service", auth_mode: "digest_wsse", events_enabled: false, relaxed_xml: false, ...(config.onvif || {}) },
-    isapi: { enabled: false, protocol: "http", port: 80, path: "/ISAPI/Event/notification/alertStream", ignore_events: ["videoloss", "illaccess"], ...(config.isapi || {}) },
+    isapi: { enabled: false, protocol: "http", port: 80, path: "/ISAPI/Event/notification/alertStream", ignore_events: [], ...(config.isapi || {}) },
     sdk: { enabled: false, port: 8000, ...(config.hikvision_sdk || {}) },
     reolink: { enabled: false, host: "", port: 9000, media_enabled: false, events_enabled: false, ...(config.reolink || {}) },
   };
@@ -122,7 +131,8 @@ function devicePayload(data, editing, device) {
     clear_credentials: isChecked(data, "clear_credentials"),
     episode_policy: {
       activity_window_seconds: Number(field(data, "activity_window_seconds")),
-      generic_event_filter: field(data, "generic_event_filter") || "inherit",
+      // null means inherit; an array is the camera's own selector.
+      event_filter: resolveEventFilter(data, "event_filter", "device"),
     },
     video: {
       enabled: isChecked(data, "video_enabled"),
@@ -198,11 +208,7 @@ export function openDeviceEditor(device, areas, onSaved) {
       <div class="form-section"><h3>Capture</h3>
         <div class="form-grid capture-policy-fields">
           <label class="field"><span>Episode activity window</span><input name="activity_window_seconds" type="number" min="1" max="3600" required value="${values.episodePolicy.activity_window_seconds}"><small>Seconds this Device keeps an Episode open after each Event. Other recording Devices follow the Episode.</small></label>
-          <label class="field"><span>Generic event filtering</span><select name="generic_event_filter">
-            <option value="inherit"${selected(values.episodePolicy.generic_event_filter === "inherit")}>Inherit from Capture profile</option>
-            <option value="enabled"${selected(values.episodePolicy.generic_event_filter === "enabled")}>Enabled</option>
-            <option value="disabled"${selected(values.episodePolicy.generic_event_filter === "disabled")}>Disabled</option>
-          </select><small>Explicit camera settings override the active Capture Profile. Generic events (System, motion, video loss, tamper, audio) do not open or extend Episodes when filtering is enabled; higher-level detections (person, vehicle, pet, …) still participate.</small></label>
+          ${deviceEventFilterSelect("event_filter", values.episodePolicy.event_filter)}
         </div>
         ${integrationToggle("video", "Video recording", "Capture this Device when its Area is active.", values.video.enabled, `
           <div class="form-grid">
@@ -343,6 +349,8 @@ export function openDeviceEditor(device, areas, onSaved) {
       validateButton.textContent = originalLabel;
     }
   });
+
+  wireEventFilterSummary(overlay, "device");
 
   const manualVideo = overlay.querySelector("[data-manual-video]");
   const manualVideoToggle = manualVideo.querySelector('[name="manual_video_endpoint"]');

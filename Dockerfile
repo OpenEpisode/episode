@@ -36,7 +36,7 @@ ENV EPISODE_CONFIG=/app/config.json \
     PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
-RUN mkdir -p /var/episode/data && chown -R episode:episode /var/episode /app
+RUN mkdir -p /var/episode/data #&& chown -R episode:episode /var/episode /app
 
 USER episode
 WORKDIR /app

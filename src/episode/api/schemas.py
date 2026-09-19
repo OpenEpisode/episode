@@ -83,6 +83,9 @@ class DeviceSummaryResponse(ApiModel):
     identity: DeviceIdentityResponse
     enabled: bool
     integrations: list[IntegrationResponse] = Field(default_factory=list)
+    # ``null`` means the Device inherits the active Capture profile; an empty
+    # list is the explicit negative. See ``EventFilter`` docs.
+    event_filter: list[str] | None = None
 
 
 class DeviceDetailResponse(DeviceSummaryResponse):
@@ -220,7 +223,12 @@ class EpisodeStartedWebhookTestResponse(ApiModel):
 class CaptureProfileCreateRequest(ApiModel):
     name: str = Field(min_length=1, max_length=100)
     device_ids: list[str] = Field(default_factory=list, max_length=500)
-    filter_generic_events: bool = False
+    # Event classes this profile suppresses. A profile may never select the
+    # ``security`` class; that stays a per-Device decision. An absent value falls
+    # back to the deprecated boolean below.
+    event_filter: list[str] | None = None
+    # Deprecated: superseded by ``event_filter`` and accepted for one release.
+    filter_generic_events: bool | None = None
 
 
 class CaptureProfileUpdateRequest(CaptureProfileCreateRequest):
@@ -238,6 +246,8 @@ class CaptureProfileResponse(ApiModel):
     device_ids: list[str] = Field(default_factory=list)
     builtin: bool
     active: bool
+    event_filter: list[str] = Field(default_factory=list)
+    # Deprecated mirror of ``event_filter`` for one release.
     filter_generic_events: bool = False
 
 
@@ -313,6 +323,13 @@ class EventParticipationResponse(ApiModel):
     reason: str
     evaluated_at: datetime
     filtered_event_type: str | None = None
+    # Class that caused suppression, and which level decided (``device`` or
+    # ``profile``). Both are absent when nothing was filtered.
+    filtered_event_class: str | None = None
+    filter_source: str | None = None
+    # What happened instead of driving capture: ``attached`` to an Episode that
+    # was already open, or ``no_open_episode``. Absent when not filtered.
+    attachment: str | None = None
 
 
 class EventResponse(ApiModel):

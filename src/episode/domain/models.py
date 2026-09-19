@@ -6,6 +6,8 @@ from enum import Enum
 from hashlib import sha256
 from uuid import uuid4
 
+from episode.domain.event_filter import normalize_device_selector, normalize_selector
+
 
 def make_episode_id(timestamp: datetime | None = None) -> str:
     if timestamp is None:
@@ -72,8 +74,12 @@ class ParticipationDecision:
     Episode capture, and remains useful after the active profile changes.
 
     ``filtered_event_type`` records the normalized event type suppressed by the
-    generic event filter (when ``reason == "generic_event_filtered"``) so the
-    exact suppressed observation is traceable.
+    event filter (when ``reason == "generic_event_filtered"``) so the exact
+    suppressed observation is traceable. ``filtered_event_class`` records which
+    class caused suppression and ``filter_source`` which level decided, so the
+    decision stays explainable without re-reading configuration. ``attachment``
+    records what happened instead of driving capture: the Event was linked to an
+    already-open Episode, or there was none to link to.
     """
 
     allowed: bool
@@ -82,16 +88,19 @@ class ParticipationDecision:
     reason: str
     evaluated_at: datetime
     filtered_event_type: str | None = None
+    filtered_event_class: str | None = None
+    filter_source: str | None = None
+    attachment: str | None = None
 
 
 @dataclass
 class CaptureProfile:
     """A named set of Devices eligible to participate in new capture.
 
-    ``filter_generic_events`` controls whether generic observations (System,
-    motion, video loss, tamper, audio) are excluded from opening or extending
-    Episodes. A per-Device ``generic_event_filter`` override takes priority over
-    this profile default.
+    ``event_filter`` lists the event classes this profile suppresses for its
+    Devices. A profile may never select the ``security`` class; that is a
+    per-Device decision. A per-Device ``event_filter`` override takes priority
+    over this profile default, and an empty list means no filtering.
     """
 
     id: str = ""
@@ -100,9 +109,15 @@ class CaptureProfile:
     device_ids: list[str] = field(default_factory=list)
     builtin: bool = False
     active: bool = False
-    filter_generic_events: bool = False
+    event_filter: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+
+    def __post_init__(self):
+        # A profile selector is always a concrete set; "inherit" is not a valid
+        # profile state. Protected or malformed entries normalize away so a
+        # damaged stored value means "no filtering".
+        self.event_filter = sorted(normalize_selector(self.event_filter))
 
 
 @dataclass(frozen=True)
@@ -140,13 +155,16 @@ class Device:
     activity_window_seconds: int | None = None
     metadata: dict = field(default_factory=dict)
     enabled: bool = True
-    # Tri-state generic-event filter override: "inherit" follows the active
-    # Capture Profile, "enabled"/"disabled" override it for this Device.
-    generic_event_filter: str = "inherit"
+    # Event-class filter override. ``None`` means inherit the active Capture
+    # Profile; a list selects classes for this Device alone, and an empty list
+    # is the explicit negative "this camera filters nothing".
+    event_filter: list[str] | None = None
 
     def __post_init__(self):
-        if self.generic_event_filter not in ("inherit", "enabled", "disabled"):
-            raise ValueError("Device generic_event_filter must be inherit, enabled, or disabled")
+        # ``None`` stays inherit. An unreadable selector also means inherit, so a
+        # corrupt row cannot silently opt a camera out of profile policy; operator
+        # input is validated at the API edge.
+        self.event_filter = normalize_device_selector(self.event_filter)
         if self.activity_window_seconds is not None and self.activity_window_seconds < 1:
             raise ValueError("Device activity window must be positive")
         if self.configs and isinstance(next(iter(self.configs.values()), None), dict):

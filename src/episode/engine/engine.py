@@ -3,11 +3,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from episode.capture_profiles import CaptureProfileService
+from episode.domain.event_filter import (
+    ATTACHMENT_ATTACHED,
+    ATTACHMENT_NO_OPEN_EPISODE,
+    FILTERED_REASON,
+)
 from episode.domain.lifecycle import (
     DEFAULT_QUIESCENT_GRACE_SECONDS,
     MAX_QUIESCENT_GRACE_SECONDS,
@@ -218,6 +223,14 @@ class EpisodeEngine:
                             decision.profile_id if decision else "unknown",
                             decision.reason if decision else "decision_missing",
                         )
+                        if decision is not None and decision.reason == FILTERED_REASON:
+                            # A class-filtered observation is still part of what
+                            # happened. It must not drive capture, but it belongs
+                            # to the Episode already open for this Area.
+                            async with self._lifecycle_lock:
+                                await self._attach_without_capture(
+                                    event, activity_time=activity_time
+                                )
                     else:
                         async with self._lifecycle_lock:
                             await self._correlate(
@@ -240,6 +253,8 @@ class EpisodeEngine:
                 )
 
         # After lock: refresh the portable bundle and match any earlier evidence.
+        # An attached filtered Event carries its Episode id, so its journal entry
+        # and manifest are written here rather than inside the area lock.
         if created and event.episode_id and not conflict:
             await self._repo.refresh_episode_manifest(event.episode_id)
 
@@ -288,6 +303,66 @@ class EpisodeEngine:
             logger.debug("Evidence %s has no episode_id, attempting orphan match", evidence.id)
             await self._match_orphan_evidence(evidence)
         return evidence
+
+    async def _attach_without_capture(
+        self,
+        event: Event,
+        *,
+        activity_time: datetime,
+    ) -> None:
+        """Attribute a class-filtered Event to an already-open Episode.
+
+        A filtered observation must not open an Episode, extend a deadline,
+        restart a quiescent Episode, or start actions and recording — those are
+        exactly what the filter exists to prevent. It should still be attributed,
+        because otherwise genuinely related activity (a person walking past while
+        motion noise is suppressed) shows up as unassigned noise in the timeline.
+
+        So this path links the Event only. ``add_event_to_episode`` is idempotent
+        via its ``episode_id IS NULL`` guard, and neither ``update_episode_times``
+        nor ``extend_episode_minimum_end`` is called, so the Episode's lifetime is
+        decided solely by Events that were allowed to drive capture.
+        """
+        if not event.area_id:
+            return
+        episode = await self._repo.find_open_episode_for_area(
+            event.area_id,
+            self._timeout,
+            at=activity_time,
+            quiescent_grace_seconds=self._quiescent_grace_seconds,
+        )
+        if episode is None:
+            await self._record_attachment(event, ATTACHMENT_NO_OPEN_EPISODE)
+            logger.debug(
+                "Filtered event %s left unassigned: no open episode in area %s",
+                event.id,
+                event.area_id,
+            )
+            return
+        await self._repo.add_event_to_episode(event.id, episode.id, _defer_manifest=True)
+        event.episode_id = episode.id
+        await self._record_attachment(event, ATTACHMENT_ATTACHED)
+        logger.info(
+            "Attached filtered event %s to open episode %s without extending it",
+            event.id,
+            episode.id,
+        )
+        # The caller refreshes the portable bundle once the area lock is
+        # released, because it now sees this Episode id on the Event. Recording
+        # and snapshot subscribers re-check ``participation.allowed``, so the
+        # resulting notifications start no capture.
+        await self._bus.publish(Message(type="episode.updated", data={"episode_id": episode.id}))
+
+    async def _record_attachment(self, event: Event, attachment: str) -> None:
+        """Store the attachment outcome alongside the participation decision.
+
+        The decision is immutable, so the updated snapshot replaces it on the
+        Event and is written back to the same row.
+        """
+        if event.participation is None:
+            return
+        event.participation = replace(event.participation, attachment=attachment)
+        await self._repo.update_event_participation(event)
 
     async def _correlate(
         self,

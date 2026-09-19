@@ -36,7 +36,10 @@ def _event_type(topic: str, items: dict[str, str]) -> str | None:
         return "motion_detection"
     if "audio" in text and "alarm" in text:
         return "audio_detection"
-    if "digitalinput" in text or "digital input" in text:
+    # A digital (wired) input channel and its state topic. Both spellings reach
+    # the same canonical type as Hikvision's ``alarm``, so one class selection
+    # covers a wired contact on either camera.
+    if "digitalinput" in text or "digital input" in text or "diinput" in text:
         return "digital_input"
     return None
 

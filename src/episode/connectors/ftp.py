@@ -22,6 +22,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class _EpisodeFTPServer(FTPServer):
+    """``FTPServer`` that still knows its bound address once shutdown begins.
+
+    ``serve_forever()`` announces the listener by reading ``self.address``, and
+    that property asks the live socket. ``stop()`` closes the socket as soon as
+    ``start()`` returns, so stopping promptly can have the announcement read a
+    socket that is already gone: ``OSError: [Errno 9] Bad file descriptor``
+    escapes the executor future and a clean shutdown reports a failure instead.
+    The bound address cannot change after construction, so it is resolved once
+    here while the socket is certainly open.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._bound_address = super().address
+
+    @property
+    def address(self):
+        return self._bound_address
+
+
 class FTPConnector:
     """Generic FTP transport; file interpretation belongs to ingress plugins."""
 
@@ -98,7 +119,7 @@ class FTPConnector:
         handler.passive_ports = range(self._passive_port_range[0], self._passive_port_range[1] + 1)
         handler.masquerade_address = self._masquerade_address
 
-        self._server = FTPServer((self._host, self._port), handler)
+        self._server = _EpisodeFTPServer((self._host, self._port), handler)
         logger.info("%s: FTP listening on %s:%s", self.name, self._host, self._port)
         # Give the blocking I/O loop a finite poll interval so close_all() can
         # wake it reliably during container shutdown. Without this, an idle

@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS devices (
     ),
     metadata TEXT NOT NULL DEFAULT '{}',
     enabled INTEGER NOT NULL DEFAULT 1,
-    generic_event_filter TEXT NOT NULL DEFAULT 'inherit'
+    event_filter TEXT NOT NULL DEFAULT 'inherit'
 );
 
 CREATE TABLE IF NOT EXISTS system_settings (
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS capture_profiles (
     include_all_devices INTEGER NOT NULL DEFAULT 0 CHECK (include_all_devices IN (0, 1)),
     device_ids TEXT NOT NULL DEFAULT '[]',
     builtin INTEGER NOT NULL DEFAULT 0 CHECK (builtin IN (0, 1)),
-    filter_generic_events INTEGER NOT NULL DEFAULT 0 CHECK (filter_generic_events IN (0, 1)),
+    event_filter TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
