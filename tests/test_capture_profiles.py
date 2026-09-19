@@ -16,6 +16,7 @@ from episode.domain.models import (
     Device,
     Event,
     EventState,
+    Evidence,
     IngestionReceipt,
     RawArtifact,
 )
@@ -102,6 +103,69 @@ async def test_default_profile_is_dynamic_and_custom_empty_profile_excludes_even
             "attachment": None,
         }
         assert "eligible_recording_device_ids" not in projected
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_draft_device_cannot_emit_events_or_join_new_recording_targets(profile_context):
+    repo, service = profile_context
+    await repo.upsert_device(
+        Device(
+            id="draft-camera",
+            name="Draft camera",
+            device_type="camera",
+            area_id="front",
+            setup_state="needs_setup",
+            configs={
+                "video": CapabilityConfig(settings={"recording_mode": "on_episode"}),
+            },
+        )
+    )
+    engine = EpisodeEngine(repo, EventBus(), timeout=30, capture_profiles=service)
+    await engine.start()
+    try:
+        with pytest.raises(ValueError, match="needs setup"):
+            await engine.ingest_event(
+                Event(device_id="draft-camera", area_id="front", event_type="motion")
+            )
+        assert await repo.list_events(device_id="draft-camera") == []
+        with pytest.raises(ValueError, match="needs setup"):
+            await engine.ingest_evidence(
+                Evidence(device_id="draft-camera", area_id="front", evidence_type="snapshot")
+            )
+        assert await repo.list_evidence(device_id="draft-camera") == []
+
+        accepted = await engine.ingest_event(
+            Event(device_id="sensor", area_id="front", event_type="tripwire")
+        )
+        assert accepted.event.episode_id is not None
+        assert accepted.event.eligible_recording_device_ids == []
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_draft_transition_does_not_rewrite_existing_recording_targets(profile_context):
+    repo, service = profile_context
+    engine = EpisodeEngine(repo, EventBus(), timeout=30, capture_profiles=service)
+    await engine.start()
+    try:
+        accepted = await engine.ingest_event(
+            Event(device_id="camera", area_id="front", event_type="motion_detection")
+        )
+        assert accepted.event.eligible_recording_device_ids == ["camera"]
+
+        camera = await repo.get_device("camera")
+        camera.setup_state = "needs_setup"
+        await repo.upsert_device(camera)
+        targets = await AreaRecordingTargetResolver(repo).resolve(accepted.event)
+        assert [target.id for target in targets] == ["camera"]
+
+        later = await engine.ingest_event(
+            Event(device_id="sensor", area_id="front", event_type="tripwire")
+        )
+        assert later.event.eligible_recording_device_ids == []
     finally:
         await engine.stop()
 

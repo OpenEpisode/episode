@@ -90,6 +90,29 @@ CREATE TABLE IF NOT EXISTS episodes (
     summary TEXT NOT NULL DEFAULT ''
 );
 
+-- Episode bundles must remain understandable after mutable inventory changes.
+-- These rows deliberately reference only the Episode: inventory names and
+-- addresses are historical observations, not live configuration.
+CREATE TABLE IF NOT EXISTS episode_area_snapshots (
+    episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+    area_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    location TEXT NOT NULL DEFAULT '',
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (episode_id, area_id)
+);
+
+CREATE TABLE IF NOT EXISTS episode_device_snapshots (
+    episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    device_type TEXT NOT NULL,
+    area_id TEXT NOT NULL,
+    ip_address TEXT NOT NULL DEFAULT '',
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (episode_id, device_id)
+);
+
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
     device_id TEXT NOT NULL REFERENCES devices(id),

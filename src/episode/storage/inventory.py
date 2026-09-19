@@ -7,6 +7,8 @@ import aiosqlite
 from episode.domain.event_filter import decode_device_filter, encode_device_filter
 from episode.domain.models import Area, Device
 
+_SETUP_STATE_KEY = "_setup_state"
+
 
 class InventoryStore:
     """Persist Areas and Devices without exposing inventory SQL to the repository."""
@@ -88,7 +90,7 @@ class InventoryStore:
                     }
                 ),
                 device.activity_window_seconds,
-                json.dumps(device.metadata),
+                json.dumps({**device.metadata, _SETUP_STATE_KEY: device.setup_state}),
                 int(device.enabled),
                 encode_device_filter(device.event_filter),
             ),
@@ -121,6 +123,7 @@ class InventoryStore:
             params.append(area_id)
         if not include_disabled:
             clauses.append("enabled = 1")
+            clauses.append("COALESCE(json_extract(metadata, '$._setup_state'), 'ready') = 'ready'")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = await self._connection.execute_fetchall(
             f"SELECT * FROM devices{where} ORDER BY name", params
@@ -172,6 +175,8 @@ class InventoryStore:
 
     @staticmethod
     def _row_to_device(row: aiosqlite.Row) -> Device:
+        metadata = json.loads(row["metadata"])
+        setup_state = metadata.pop(_SETUP_STATE_KEY, "ready")
         return Device(
             id=row["id"],
             name=row["name"],
@@ -183,9 +188,10 @@ class InventoryStore:
             password=row["password"],
             configs=json.loads(row["configs"]) if row["configs"] else {},
             activity_window_seconds=row["activity_window_seconds"],
-            metadata=json.loads(row["metadata"]),
+            metadata=metadata,
             enabled=bool(row["enabled"]),
             event_filter=decode_device_filter(
                 row["event_filter"] if "event_filter" in row.keys() else None
             ),
+            setup_state=setup_state,
         )

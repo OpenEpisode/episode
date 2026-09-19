@@ -144,7 +144,7 @@ const module = await import(moduleUrl(
     .replace('"./event-filter.js?v=1"', JSON.stringify(eventFilterUrl))
     .replace('"./format.js?v=4"', JSON.stringify(formatUrl))
     .replace('"./timeline.js?v=6"', JSON.stringify(timelineUrl))
-    .replace('"./inventory.js?v=6"', JSON.stringify(inventoryUrl))
+    .replace('"./inventory.js?v=7"', JSON.stringify(inventoryUrl))
     .replace('"./retention-policy.js?v=1"', JSON.stringify(retentionPolicyUrl))
     .replace('"./view.js?v=1"', JSON.stringify(viewUrl)),
 ));

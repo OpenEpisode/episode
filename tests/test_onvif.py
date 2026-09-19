@@ -204,7 +204,11 @@ async def test_snapshot_action_preserves_downloaded_bytes_as_episode_evidence():
 
     for _ in range(20):
         evidence = await repo.list_evidence()
-        if evidence and os.path.exists(evidence[0].file_path):
+        if (
+            evidence
+            and evidence[0].episode_id is not None
+            and os.path.exists(evidence[0].file_path)
+        ):
             break
         import asyncio
 

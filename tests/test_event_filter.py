@@ -995,3 +995,85 @@ async def test_a_damaged_stored_selector_falls_back_to_inherit(filter_context):
     assert filtered[0].participation.allowed is False
     assert filtered[0].participation.reason == FILTERED_REASON
     assert filtered[0].participation.filter_source == FILTER_SOURCE_PROFILE
+
+
+@pytest.mark.asyncio
+async def test_a_finalizing_episode_is_not_reopened_by_a_filtered_event(filter_context):
+    """FINALIZING is a terminal association barrier for filtered Events too (§8).
+
+    Main's sealing work made `finalizing` a real state, and attach-not-drive reads
+    the same open-Episode query. If that query ever widened, a suppressed heartbeat
+    would silently resurrect an Episode on its way to being closed.
+    """
+    repo, service = filter_context
+    profile = await service.create_profile("Night", ["camera"], event_filter=[EVENT_CLASS_MOTION])
+    await activate(repo, profile.id)
+    engine = EpisodeEngine(repo, EventBus(), timeout=30, capture_profiles=service)
+    await engine.start()
+    try:
+        opening = await engine.ingest_event(
+            make_event("camera", "human_detection"),
+            receipt=await stored_receipt(repo, datetime.now(tz=timezone.utc)),
+        )
+        episode_id = opening.event.episode_id
+        await repo.update_episode_state(episode_id, EpisodeState.FINALIZING)
+
+        filtered = await engine.ingest_event(
+            make_event("camera", "motion_detection"),
+            receipt=await stored_receipt(repo, datetime.now(tz=timezone.utc)),
+        )
+
+        stored = await repo.get_event(filtered.event.id)
+        assert stored.episode_id is None
+        assert stored.participation.allowed is False
+        assert stored.participation.attachment == ATTACHMENT_NO_OPEN_EPISODE
+        assert (await repo.get_episode(episode_id)).state == EpisodeState.FINALIZING
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_setup_state_and_event_filter_are_independent_fields(filter_context):
+    """Onboarding state must not borrow the filter column, nor reset it (§12).
+
+    A Device held for later setup still carries its own selector, and moving it to
+    `ready` must not silently widen or clear filtering — `[]` means "this camera
+    filters nothing", so a reset would be an unrequested policy change.
+    """
+    repo, _service = filter_context
+    app = create_api(repo, str(repo._data_dir), inventory=InventoryService(repo))  # noqa: SLF001
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        draft = await client.post(
+            "/api/v1/devices",
+            json={
+                "id": "draft-cam",
+                "name": "Draft cam",
+                "area_id": "front",
+                "ip_address": "192.0.2.30",
+                "setup_state": "needs_setup",
+                "episode_policy": {"event_filter": ["heartbeat"]},
+            },
+        )
+        assert draft.status_code == 201
+        assert draft.json()["setup_state"] == "needs_setup"
+        assert draft.json()["configuration"]["episode_policy"]["event_filter"] == ["heartbeat"]
+
+        updated = await client.put(
+            "/api/v1/devices/draft-cam",
+            json={
+                "id": "draft-cam",
+                "name": "Draft cam",
+                "area_id": "front",
+                "ip_address": "192.0.2.30",
+                "setup_state": "ready",
+                "episode_policy": {"event_filter": ["heartbeat", "motion"]},
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["setup_state"] == "ready"
+
+    restored = await repo.get_device("draft-cam")
+    assert restored.setup_state == "ready"
+    assert restored.event_filter == ["heartbeat", "motion"]

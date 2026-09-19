@@ -57,6 +57,35 @@ class PluginRegistry:
             if registration.integration and registration.integration.device_scoped
         )
 
+    def registration(self, plugin_id: str) -> PluginRegistration | None:
+        return self._registrations.get(plugin_id)
+
+    def catalog(self) -> list[dict[str, object]]:
+        """Return safe static metadata for configured-device onboarding."""
+        return [
+            entry
+            for registration in self._registrations.values()
+            if (entry := registration.public_catalog_entry()) is not None
+        ]
+
+    def candidates(
+        self,
+        *,
+        manufacturer: str | None,
+        device_type: str,
+    ) -> list[dict[str, object]]:
+        return [
+            entry
+            for registration in self._registrations.values()
+            if registration.integration
+            and registration.integration.device_scoped
+            and registration.integration.matches_device(
+                manufacturer=manufacturer,
+                device_type=device_type,
+            )
+            and (entry := registration.public_catalog_entry()) is not None
+        ]
+
 
 def module_plugin_factory(module_name: str) -> PluginFactory:
     def create(context: PluginContext):
@@ -94,6 +123,8 @@ def builtin_plugin_registry() -> PluginRegistry:
                     name="ONVIF",
                     device_scoped=True,
                     capabilities=("discovery", "media"),
+                    manufacturer_scope_kind="universal",
+                    device_types=("camera", "doorbell", "alarm_panel", "sensor", "other"),
                 ),
             ),
             PluginRegistration(
@@ -108,6 +139,9 @@ def builtin_plugin_registry() -> PluginRegistry:
                     name="Hikvision HCNetSDK",
                     device_scoped=True,
                     capabilities=("events", "device-information"),
+                    manufacturer_scope=("hikvision",),
+                    manufacturer_scope_kind="targeted",
+                    device_types=("doorbell",),
                 ),
             ),
             PluginRegistration(
@@ -123,6 +157,9 @@ def builtin_plugin_registry() -> PluginRegistry:
                     name="Hikvision ISAPI",
                     device_scoped=True,
                     capabilities=("events",),
+                    manufacturer_scope=("hikvision",),
+                    manufacturer_scope_kind="targeted",
+                    device_types=("camera", "doorbell"),
                 ),
             ),
             PluginRegistration(
@@ -164,6 +201,9 @@ def builtin_plugin_registry() -> PluginRegistry:
                     name="Reolink",
                     device_scoped=True,
                     capabilities=("discovery", "media", "events", "snapshots"),
+                    manufacturer_scope=("reolink",),
+                    manufacturer_scope_kind="targeted",
+                    device_types=("camera", "doorbell"),
                 ),
             ),
         ]

@@ -82,7 +82,7 @@ async def test_abrupt_ffmpeg_termination_is_reconciled_as_visible_evidence(
     episode = Episode(
         id="interrupted-episode",
         primary_area_id="test-area",
-        state=EpisodeState.CLOSED,
+        state=EpisodeState.FINALIZING,
     )
     await repository.create_episode(episode)
     recordings_dir = tmp_path / "episodes" / episode.id / "recordings"
@@ -138,7 +138,8 @@ async def test_abrupt_ffmpeg_termination_is_reconciled_as_visible_evidence(
         bus = EventBus()
         engine = EpisodeEngine(repository, bus, timeout=30)
         recorder = RecordingEngine(repository, bus, config.data_dir)
-        await engine.start()
+        recorder.set_evidence_sink(engine.ingest_recording_evidence)
+        await engine.start(defer_finalization=True)
         await recorder.start()
         await recorder.recover_interrupted_recordings()
 

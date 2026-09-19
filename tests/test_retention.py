@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -283,6 +284,81 @@ async def test_retention_settings_api_updates_policy_and_exposes_status(tmp_path
         assert stored["enabled"] is False
         assert stored["retention_days"] == 15
         assert invalid.status_code == 422
+    finally:
+        await retention.stop()
+        await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_retention_start_schedules_initial_cleanup_in_background(tmp_path, monkeypatch):
+    repository = await _repository_with_inventory(tmp_path)
+    retention = RetentionService(
+        repository,
+        str(tmp_path),
+        ThumbnailCache(tmp_path / "cache" / "thumbnails"),
+        interval_seconds=3600,
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def blocked_cleanup(**_kwargs):
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return 0
+
+    monkeypatch.setattr(retention, "run_once", blocked_cleanup)
+
+    try:
+        await retention.start()
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert retention.status()["initial_cleanup"] == "running"
+        assert retention.status()["state"] == "healthy"
+        assert calls == 1
+
+        release.set()
+
+        async def initial_cleanup_completed():
+            while retention.status()["initial_cleanup"] != "completed":
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(initial_cleanup_completed(), timeout=1)
+        assert calls == 1
+    finally:
+        release.set()
+        await retention.stop()
+        await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_retention_initial_cleanup_failure_is_degraded_and_supervised(tmp_path, monkeypatch):
+    repository = await _repository_with_inventory(tmp_path)
+    retention = RetentionService(
+        repository,
+        str(tmp_path),
+        ThumbnailCache(tmp_path / "cache" / "thumbnails"),
+        interval_seconds=3600,
+    )
+
+    async def fail_cleanup(**_kwargs):
+        raise RuntimeError("retention storage unavailable")
+
+    monkeypatch.setattr(retention, "run_once", fail_cleanup)
+
+    try:
+        await retention.start()
+
+        async def initial_cleanup_failed():
+            while retention.status()["initial_cleanup"] != "failed":
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(initial_cleanup_failed(), timeout=1)
+        status = retention.status()
+        assert status["state"] == "degraded"
+        assert status["last_error"] == "retention storage unavailable"
+        assert status["failure_count"] == 1
     finally:
         await retention.stop()
         await repository.close()

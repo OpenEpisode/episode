@@ -36,6 +36,9 @@ class PluginIntegrationResponse(BaseModel):
     activation_config_type: str = ""
     configured_device_ids: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
+    manufacturer_scope: list[str] = Field(default_factory=list)
+    manufacturer_scope_kind: str = "unspecified"
+    device_types: list[str] = Field(default_factory=list)
 
 
 class PluginResponse(BaseModel):

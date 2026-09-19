@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +28,16 @@ if TYPE_CHECKING:
     from episode.storage.repository import Repository
 
 logger = logging.getLogger(__name__)
+
+RecordingEvidenceSink = Callable[[Evidence], Awaitable[Evidence]]
+
+
+def _evidence_episode_id(value: Evidence | dict[str, object] | None) -> str | None:
+    if isinstance(value, dict):
+        episode_id = value.get("episode_id")
+        return str(episode_id) if episode_id else None
+    return value.episode_id if value else None
+
 
 _RECORDING_PART = re.compile(
     r"^rec_(?P<device>.+)_(?P<started>\d{8}_\d{6}_\d{6})_"
@@ -83,6 +94,7 @@ class RecordingEngine:
         fragment_seconds: int = 4,
         media=None,
         target_resolver: RecordingTargetResolver | None = None,
+        evidence_sink: RecordingEvidenceSink | None = None,
     ):
         if fragment_seconds <= 0:
             raise ValueError("fragment_seconds must be greater than zero")
@@ -92,6 +104,7 @@ class RecordingEngine:
         self._fragment_seconds = fragment_seconds
         self._media = media
         self._target_resolver = target_resolver or AreaRecordingTargetResolver(repo)
+        self._evidence_sink = evidence_sink
         self._active_tasks: set[asyncio.Task] = set()
         self._recordings: dict[tuple[str, str], _EpisodeRecording] = {}
         self._recoverable: dict[tuple[str, str], _EpisodeRecording] = {}
@@ -104,6 +117,9 @@ class RecordingEngine:
         self._stalled_count = 0
         self._last_completed_at: datetime | None = None
         self._last_error: str | None = None
+
+    def set_evidence_sink(self, evidence_sink: RecordingEvidenceSink | None) -> None:
+        self._evidence_sink = evidence_sink
 
     @staticmethod
     def _rec_key(episode_id: str, device_id: str) -> tuple[str, str]:
@@ -175,7 +191,7 @@ class RecordingEngine:
     def active_file_paths(self) -> set[str]:
         return {
             str(path)
-            for recording in self._recordings.values()
+            for recording in (*self._recordings.values(), *self._recoverable.values())
             for path in recording.bundle.root.rglob("*")
             if path.is_file()
         }
@@ -199,47 +215,66 @@ class RecordingEngine:
 
     async def recover_interrupted_recordings(self) -> None:
         """Discover unfinished HLS bundles and reconcile legacy MP4 partials."""
-        pattern = Path(self._data_dir, "episodes").glob(f"*/recordings/*/{CAPTURE_STATE_NAME}")
+        episodes = [
+            *await self._repo.list_episodes(state=EpisodeState.ACTIVE, limit=10000),
+            *await self._repo.list_episodes(state=EpisodeState.QUIESCENT, limit=10000),
+            *await self._repo.list_episodes(state=EpisodeState.FINALIZING, limit=10000),
+        ]
         now = datetime.now(tz=timezone.utc)
-        for state_path in sorted(pattern):
-            try:
-                bundle = HLSRecordingBundle.load(state_path)
-            except (OSError, ValueError, KeyError):
-                logger.exception("Could not load interrupted HLS recording %s", state_path)
-                continue
-            state = bundle.state
-            existing = await self._repo.get_evidence(state.evidence_id)
-            if existing:
-                bundle.complete_publication()
-                continue
-            device = await self._repo.get_device(state.device_id)
-            episode = await self._repo.get_episode(state.episode_id)
-            if not device or not episode:
-                bundle.preserve_temporary_components()
-                bundle.refresh_manifest(
-                    state="incomplete", ended_at=now, reason="identity_unresolved"
-                )
-                continue
-            rec = _EpisodeRecording(
-                episode_id=state.episode_id,
-                device_id=state.device_id,
-                area_id=state.area_id,
-                session_id=state.session_id,
-                bundle=bundle,
-                start_time=state.started_at,
-                continued=True,
+        for episode in episodes:
+            pattern = Path(self._data_dir, "episodes", episode.id, "recordings").glob(
+                f"*/{CAPTURE_STATE_NAME}"
             )
-            resumable = episode.state in {
-                EpisodeState.ACTIVE,
-                EpisodeState.QUIESCENT,
-            } and await self._episode_within_capture_horizon(episode, now)
-            if resumable:
-                self._recoverable[self._rec_key(rec.episode_id, rec.device_id)] = rec
-                bundle.preserve_temporary_components()
-                bundle.refresh_manifest(state="interrupted", reason="startup_recovery")
-            else:
-                await self._finalize_bundle(rec, reason="startup_recovery")
-        await self._recover_legacy_mp4_partials()
+            for state_path in sorted(pattern):
+                await self._recover_interrupted_bundle(state_path, episode, now)
+        await self._recover_legacy_mp4_partials(episodes)
+
+    async def _recover_interrupted_bundle(
+        self,
+        state_path: Path,
+        episode,
+        now: datetime,
+    ) -> None:
+        try:
+            bundle = HLSRecordingBundle.load(state_path)
+        except (OSError, ValueError, KeyError):
+            logger.exception("Could not load interrupted HLS recording %s", state_path)
+            return
+        state = bundle.state
+        if state.episode_id != episode.id:
+            logger.warning("Ignoring HLS bundle with mismatched Episode path: %s", state_path)
+            return
+        existing = await self._repo.get_evidence(state.evidence_id)
+        if existing and existing.episode_id == episode.id:
+            bundle.complete_publication()
+            return
+        device = await self._repo.get_device(state.device_id)
+        if not device:
+            bundle.preserve_temporary_components()
+            bundle.refresh_manifest(state="incomplete", ended_at=now, reason="identity_unresolved")
+            return
+        rec = _EpisodeRecording(
+            episode_id=state.episode_id,
+            device_id=state.device_id,
+            area_id=state.area_id,
+            session_id=state.session_id,
+            bundle=bundle,
+            start_time=state.started_at,
+            continued=True,
+        )
+        resumable = episode.state in {
+            EpisodeState.ACTIVE,
+            EpisodeState.QUIESCENT,
+        } and await self._episode_within_capture_horizon(episode, now)
+        if resumable:
+            self._recoverable[self._rec_key(rec.episode_id, rec.device_id)] = rec
+            bundle.preserve_temporary_components()
+            bundle.refresh_manifest(state="interrupted", reason="startup_recovery")
+        else:
+            # Finalization belongs to the Episode engine's explicit barrier.
+            # Keeping the recovered bundle here lets a publication failure
+            # leave the Episode FINALIZING without aborting application startup.
+            self._recoverable[self._rec_key(rec.episode_id, rec.device_id)] = rec
 
     async def resume_active_episodes(self) -> None:
         now = datetime.now(tz=timezone.utc)
@@ -392,11 +427,43 @@ class RecordingEngine:
         ]
         await asyncio.gather(*(self._stop_recording(recording) for recording in recordings))
 
+    async def finalize_episode(self, episode_id: str) -> None:
+        """Stop and publish all recorder output for an Episode.
+
+        This is an explicit success barrier for Episode finalization.  It is
+        intentionally narrower than the EventBus: failures are returned to
+        the Episode engine, which keeps the Episode in FINALIZING for retry.
+        """
+        recordings = [
+            recording
+            for recording in self._recordings.values()
+            if recording.episode_id == episode_id
+        ]
+        recoverable = [
+            recording
+            for recording in self._recoverable.values()
+            if recording.episode_id == episode_id
+        ]
+        await self._stop_recordings(
+            recordings,
+            raise_on_error=True,
+        )
+        for recording in recoverable:
+            await self._finalize_bundle(recording, reason="episode_finalizing")
+            self._recoverable.pop(
+                self._rec_key(recording.episode_id, recording.device_id),
+                None,
+            )
+
     async def _stop_recording(self, rec: _EpisodeRecording, *, reason: str | None = None) -> None:
         await self._stop_recordings([rec], reason=reason)
 
     async def _stop_recordings(
-        self, recordings: list[_EpisodeRecording], *, reason: str | None = None
+        self,
+        recordings: list[_EpisodeRecording],
+        *,
+        reason: str | None = None,
+        raise_on_error: bool = False,
     ) -> None:
         if not recordings:
             return
@@ -409,9 +476,22 @@ class RecordingEngine:
                 *(self._journal_interruption(rec, reason) for rec in recordings),
                 return_exceptions=True,
             )
-        await asyncio.gather(
+        results = await asyncio.gather(
             *(self._finish_stop(rec) for rec in recordings), return_exceptions=True
         )
+        errors = []
+        for recording, result in zip(recordings, results, strict=True):
+            if not isinstance(result, BaseException):
+                continue
+            errors.append(result)
+            if raise_on_error and not recording.published:
+                self._recoverable[self._rec_key(recording.episode_id, recording.device_id)] = (
+                    recording
+                )
+        if errors and raise_on_error:
+            raise RuntimeError(
+                f"Recording finalization failed for Episode {recordings[0].episode_id}"
+            ) from errors[0]
 
     @staticmethod
     def _signal_process(rec: _EpisodeRecording) -> None:
@@ -437,6 +517,7 @@ class RecordingEngine:
                     rec.device_id,
                     exc_info=(type(error), error, error.__traceback__),
                 )
+                raise error
 
     async def _terminate_process(self, rec: _EpisodeRecording) -> None:
         self._signal_process(rec)
@@ -591,7 +672,10 @@ class RecordingEngine:
             return
 
         episode = await self._repo.get_episode(rec.episode_id)
-        if not episode or episode.state == EpisodeState.CLOSED:
+        if not episode or episode.state not in {
+            EpisodeState.ACTIVE,
+            EpisodeState.QUIESCENT,
+        }:
             self._recordings.pop(key, None)
             await self._finalize_bundle(rec)
             return
@@ -639,7 +723,10 @@ class RecordingEngine:
                 await self._finalize_bundle(rec)
             return
         episode = await self._repo.get_episode(rec.episode_id)
-        if not episode or episode.state == EpisodeState.CLOSED:
+        if not episode or episode.state not in {
+            EpisodeState.ACTIVE,
+            EpisodeState.QUIESCENT,
+        }:
             self._recordings.pop(key, None)
             await self._finalize_bundle(rec, incomplete=True, reason="episode_closed")
             return
@@ -701,12 +788,17 @@ class RecordingEngine:
                 ),
             },
         )
-        await self._bus.publish(
-            Message(type="evidence.received", data={"evidence": asdict(evidence)})
-        )
-        if not await self._repo.get_evidence(rec.evidence_id):
+        if self._evidence_sink:
+            persisted = await self._evidence_sink(evidence)
+        else:
+            await self._bus.publish(
+                Message(type="evidence.received", data={"evidence": asdict(evidence)})
+            )
+            persisted = await self._repo.get_evidence(rec.evidence_id)
+        if not persisted or _evidence_episode_id(persisted) != rec.episode_id:
             raise RuntimeError(
-                f"Recording Evidence {rec.evidence_id} was not persisted; "
+                f"Recording Evidence {rec.evidence_id} was not persisted for Episode "
+                f"{rec.episode_id}; "
                 "the recovery marker has been retained"
             )
         rec.published = True
@@ -736,43 +828,50 @@ class RecordingEngine:
             manifest["total_bytes"] / (1024 * 1024),
         )
 
-    async def _recover_legacy_mp4_partials(self) -> None:
+    async def _recover_legacy_mp4_partials(self, episodes) -> None:
         devices = await self._repo.list_devices(include_disabled=True)
         devices_by_safe_id: dict[str, list[Device]] = {}
         for device in devices:
             devices_by_safe_id.setdefault(self._safe_device_id(device.id), []).append(device)
-        pattern = os.path.join(self._data_dir, "episodes", "*", "recordings", "*.mp4.part")
-        for working_path in sorted(glob.glob(pattern)):
-            match = _RECORDING_PART.fullmatch(os.path.basename(working_path))
-            episode_id = os.path.basename(os.path.dirname(os.path.dirname(working_path)))
-            if not match:
-                logger.warning("Could not identify interrupted recording %s", working_path)
-                continue
-            candidates = devices_by_safe_id.get(match.group("device"), [])
-            if len(candidates) != 1:
-                await self._repo.append_episode_journal(
-                    episode_id,
-                    "recording.incomplete",
-                    {
-                        "filename": os.path.basename(working_path),
-                        "reason": "device_identity_unresolved",
-                    },
+        for episode in episodes:
+            pattern = os.path.join(
+                self._data_dir,
+                "episodes",
+                episode.id,
+                "recordings",
+                "*.mp4.part",
+            )
+            for working_path in sorted(glob.glob(pattern)):
+                match = _RECORDING_PART.fullmatch(os.path.basename(working_path))
+                episode_id = episode.id
+                if not match:
+                    logger.warning("Could not identify interrupted recording %s", working_path)
+                    continue
+                candidates = devices_by_safe_id.get(match.group("device"), [])
+                if len(candidates) != 1:
+                    await self._repo.append_episode_journal(
+                        episode_id,
+                        "recording.incomplete",
+                        {
+                            "filename": os.path.basename(working_path),
+                            "reason": "device_identity_unresolved",
+                        },
+                    )
+                    continue
+                device = candidates[0]
+                started_at = datetime.strptime(match.group("started"), "%Y%m%d_%H%M%S_%f").replace(
+                    tzinfo=timezone.utc
                 )
-                continue
-            device = candidates[0]
-            started_at = datetime.strptime(match.group("started"), "%Y%m%d_%H%M%S_%f").replace(
-                tzinfo=timezone.utc
-            )
-            ended_at = datetime.fromtimestamp(os.path.getmtime(working_path), tz=timezone.utc)
-            await self._finalize_legacy_partial(
-                episode_id,
-                device,
-                working_path,
-                match.group("session"),
-                int(match.group("index")),
-                started_at,
-                ended_at,
-            )
+                ended_at = datetime.fromtimestamp(os.path.getmtime(working_path), tz=timezone.utc)
+                await self._finalize_legacy_partial(
+                    episode_id,
+                    device,
+                    working_path,
+                    match.group("session"),
+                    int(match.group("index")),
+                    started_at,
+                    ended_at,
+                )
 
     async def _finalize_legacy_partial(
         self,
@@ -808,13 +907,20 @@ class RecordingEngine:
                 "duration_seconds": max(0, int((ended_at - started_at).total_seconds())),
             },
         )
-        await self._bus.publish(
-            Message(type="evidence.received", data={"evidence": asdict(evidence)})
-        )
-        if not await self._repo.get_evidence(evidence.id):
+        if self._evidence_sink:
+            persisted = await self._evidence_sink(evidence)
+        else:
+            await self._bus.publish(
+                Message(type="evidence.received", data={"evidence": asdict(evidence)})
+            )
+            persisted = await self._repo.get_evidence(evidence.id)
+        if not persisted or _evidence_episode_id(persisted) != episode_id:
             if valid and os.path.exists(output_path):
                 os.replace(output_path, working_path)
-            raise RuntimeError(f"Recovered recording Evidence {evidence.id} was not persisted")
+            raise RuntimeError(
+                f"Recovered recording Evidence {evidence.id} was not persisted for Episode "
+                f"{episode_id}"
+            )
         await self._repo.append_episode_journal(
             episode_id,
             "recording.recovered" if valid else "recording.incomplete",

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Collection
 from pathlib import Path
 
 import aiosqlite
@@ -14,23 +15,35 @@ from episode.storage.provenance import ProvenanceStore
 logger = logging.getLogger(__name__)
 
 
-async def reconcile_episode_counts(connection: aiosqlite.Connection) -> int:
+async def reconcile_episode_counts(
+    connection: aiosqlite.Connection,
+    episode_ids: Collection[str],
+) -> int:
     """Repair denormalized Episode counters from their canonical rows."""
 
+    episode_ids = tuple(dict.fromkeys(episode_ids))
+    if not episode_ids:
+        return 0
+    placeholders = ",".join("?" for _ in episode_ids)
+
     cursor = await connection.execute(
-        """UPDATE episodes
+        f"""UPDATE episodes
            SET event_count = (
                    SELECT COUNT(*) FROM events WHERE events.episode_id = episodes.id
                ),
                evidence_count = (
                    SELECT COUNT(*) FROM evidence WHERE evidence.episode_id = episodes.id
                )
-           WHERE event_count != (
-                   SELECT COUNT(*) FROM events WHERE events.episode_id = episodes.id
+           WHERE (
+                   event_count != (
+                       SELECT COUNT(*) FROM events WHERE events.episode_id = episodes.id
+                   )
+                   OR evidence_count != (
+                       SELECT COUNT(*) FROM evidence WHERE evidence.episode_id = episodes.id
+                   )
                )
-              OR evidence_count != (
-                   SELECT COUNT(*) FROM evidence WHERE evidence.episode_id = episodes.id
-               )"""
+           AND episodes.id IN ({placeholders})""",
+        episode_ids,
     )
     await connection.commit()
     repaired = max(cursor.rowcount, 0)
@@ -147,12 +160,17 @@ async def reconcile_episode_paths(
     connection: aiosqlite.Connection,
     provenance: ProvenanceStore,
     data_dir: str,
+    episode_ids: Collection[str],
 ) -> int:
     """Finish interrupted moves into portable Episode folders."""
 
+    episode_ids = tuple(dict.fromkeys(episode_ids))
+    if not episode_ids:
+        return 0
+    placeholders = ",".join("?" for _ in episode_ids)
     repaired = 0
     artifact_rows = await connection.execute_fetchall(
-        """SELECT a.id, a.artifact_type, a.file_path, a.sha256,
+        f"""SELECT a.id, a.artifact_type, a.file_path, a.sha256,
                   r.id AS receipt_id, r.event_id, r.evidence_id,
                   r.episode_id AS receipt_episode_id, e.evidence_type,
                   COALESCE(r.episode_id, ev.episode_id, e.episode_id) AS episode_id
@@ -164,7 +182,10 @@ async def reconcile_episode_paths(
            WHERE COALESCE(r.episode_id, ev.episode_id, e.episode_id) IS NOT NULL
              AND a.file_path NOT LIKE 'expired:%'
              AND x.evidence_id IS NULL
-           ORDER BY r.received_at ASC"""
+             AND COALESCE(r.episode_id, ev.episode_id, e.episode_id)
+                 IN ({placeholders})
+           ORDER BY r.received_at ASC""",
+        episode_ids,
     )
     repaired_artifacts: set[str] = set()
     for row in artifact_rows:
@@ -197,13 +218,14 @@ async def reconcile_episode_paths(
         repaired_artifacts.add(row["id"])
 
     evidence_rows = await connection.execute_fetchall(
-        """SELECT e.id, e.episode_id, e.evidence_type, e.file_path, e.metadata,
+        f"""SELECT e.id, e.episode_id, e.evidence_type, e.file_path, e.metadata,
                   e.sha256, e.artifact_id, a.file_path AS artifact_path,
                   a.sha256 AS artifact_sha256
            FROM evidence e
            LEFT JOIN raw_artifacts a ON a.id = e.artifact_id
            LEFT JOIN evidence_expirations x ON x.evidence_id = e.id
-           WHERE e.episode_id IS NOT NULL AND x.evidence_id IS NULL"""
+           WHERE e.episode_id IN ({placeholders}) AND x.evidence_id IS NULL""",
+        episode_ids,
     )
     for row in evidence_rows:
         recorded = row["artifact_path"] or row["file_path"]
@@ -244,11 +266,12 @@ async def reconcile_episode_paths(
             repaired += 1
 
     event_rows = await connection.execute_fetchall(
-        """SELECT id, episode_id, raw_payload_path
+        f"""SELECT id, episode_id, raw_payload_path
            FROM events
-           WHERE episode_id IS NOT NULL
+           WHERE episode_id IN ({placeholders})
              AND raw_payload_path IS NOT NULL
-             AND raw_payload_path != ''"""
+             AND raw_payload_path != ''""",
+        episode_ids,
     )
     for row in event_rows:
         receipt_artifacts = await connection.execute_fetchall(

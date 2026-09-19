@@ -21,7 +21,8 @@ from episode.ingestion.router import IngressRouter
 from episode.ingestion.service import IngestionService
 from episode.media import MediaRegistry
 from episode.plugins.deliveries import RawPluginDeliveryStore
-from episode.plugins.external import discover_external_plugins
+from episode.plugins.external import discover_external_plugins, external_plugin_catalog
+from episode.plugins.external.manifest import parse_manifest
 from episode.plugins.external.runtime import _ExternalMedia
 from episode.plugins.manager import PluginManager
 from episode.plugins.models import PluginContext, PluginState
@@ -67,6 +68,66 @@ def test_missing_and_incompatible_plugins_report_safe_states(tmp_path):
     assert missing.unavailable_state == PluginState.NOT_INSTALLED
     assert "episode-plugin.json" in missing.unavailable_error
     assert not any(name.startswith("_episode_external_example_udp_sensor") for name in sys.modules)
+
+
+def test_external_catalog_reads_targeting_without_importing_code(tmp_path):
+    plugins_dir = _install_example(tmp_path)
+    manifest_path = plugins_dir / "udp-sensor" / "episode-plugin.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["manufacturer_scope"] = ["Acme Security"]
+    manifest["device_types"] = ["sensor"]
+    manifest_path.write_text(json.dumps(manifest))
+
+    catalog = external_plugin_catalog(plugins_dir)
+
+    assert catalog == [
+        {
+            "id": "example-udp-sensor",
+            "name": "Example UDP Sensor",
+            "type": "example-udp-sensor",
+            "kind": "device",
+            "capabilities": ["events"],
+            "manufacturer_scope": ["Acme Security"],
+            "manufacturer_scope_kind": "targeted",
+            "device_types": ["sensor"],
+            "configured": False,
+            "available": True,
+            "selection_required": True,
+            "activation_required": True,
+        }
+    ]
+    assert not any(name.startswith("_episode_external_example_udp_sensor") for name in sys.modules)
+
+
+def test_external_catalog_treats_legacy_targeting_as_unspecified(tmp_path):
+    plugins_dir = _install_example(tmp_path)
+
+    catalog = external_plugin_catalog(plugins_dir)
+
+    assert catalog[0]["manufacturer_scope_kind"] == "unspecified"
+    assert catalog[0]["manufacturer_scope"] == []
+
+
+def test_external_catalog_rejects_manifest_symlink_escape(tmp_path):
+    plugins_dir = tmp_path / "plugins"
+    plugin_root = plugins_dir / "symlinked-manifest"
+    plugin_root.mkdir(parents=True)
+    outside_manifest = tmp_path / "episode-plugin.json"
+    outside_manifest.write_text((EXAMPLE_PLUGIN / "episode-plugin.json").read_text())
+    (plugin_root / "episode-plugin.json").symlink_to(outside_manifest)
+
+    assert external_plugin_catalog(plugins_dir) == []
+
+
+def test_external_manifest_rejects_empty_targeting_scope(tmp_path):
+    plugins_dir = _install_example(tmp_path)
+    manifest_path = plugins_dir / "udp-sensor" / "episode-plugin.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["manufacturer_scope"] = []
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="manufacturer_scope"):
+        parse_manifest(plugins_dir / "udp-sensor")
 
 
 def test_external_plugin_directory_cannot_escape_plugins_root(tmp_path):

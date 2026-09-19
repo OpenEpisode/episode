@@ -28,10 +28,15 @@ that the configured camera answers successfully.
 1. Open Episode and go to **Devices**.
 2. Create or select an Area and choose **Add Device**.
 3. Enter the camera address and local credentials.
-4. Enable **Reolink API** and select **Validate and discover**.
-5. Enable Reolink media and/or Events only when validation reports those
-   capabilities.
-6. Select the desired recording mode and save the Device.
+4. Select **Discover with ONVIF** first. Episode uses the discovered
+   manufacturer to offer the matching Reolink integration; it does not send
+   the configured credentials to every installed vendor plugin. If ONVIF is
+   unavailable, select Reolink manually after the failed discovery check.
+5. Select **Reolink API**, validate the selected connection, and enable Reolink
+   media and/or Events only when validation reports those capabilities.
+6. Select the desired recording mode and save the Device. Use **Save for later**
+   when the Device is not ready; it remains visible but does not participate in
+   new Episodes or captures.
 
 The default Baichuan port is `9000`. The optional API host overrides the
 Device address, which can be useful when connecting through an NVR or routed

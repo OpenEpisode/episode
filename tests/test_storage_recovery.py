@@ -6,7 +6,15 @@ from datetime import datetime, timezone
 import pytest
 
 from episode.config import EpisodeConfig
-from episode.domain.models import Area, Device, Episode, Event, Evidence, IngestionReceipt
+from episode.domain.models import (
+    Area,
+    Device,
+    Episode,
+    EpisodeState,
+    Event,
+    Evidence,
+    IngestionReceipt,
+)
 from episode.storage import repository as repository_module
 from episode.storage.files import describe_artifact
 from episode.storage.repository import Repository
@@ -28,7 +36,11 @@ async def _repository_with_episode(tmp_path) -> tuple[EpisodeConfig, Repository,
             area_id="gate",
         )
     )
-    episode = Episode(id="episode-recovery", primary_area_id="gate")
+    episode = Episode(
+        id="episode-recovery",
+        primary_area_id="gate",
+        state=EpisodeState.ACTIVE,
+    )
     await repository.create_episode(episode)
     return config, repository, episode
 
@@ -204,3 +216,160 @@ async def test_restart_recovers_event_payload_and_receipt_after_interrupted_move
         assert [item["id"] for item in manifest["artifacts"]] == [artifact.id]
     finally:
         await recovered_repository.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_does_not_inspect_or_rebuild_closed_episode(tmp_path, monkeypatch):
+    config, repository, episode = await _repository_with_episode(tmp_path)
+    await repository.update_episode_state(episode.id, EpisodeState.CLOSED)
+    manifest_path = tmp_path / "episodes" / episode.id / "manifest.json"
+    manifest_before = manifest_path.read_bytes()
+    mtime_before = manifest_path.stat().st_mtime_ns
+    await repository.close()
+
+    async def unexpected_recovery(*_args, **_kwargs):
+        raise AssertionError("closed Episode recovery must not run")
+
+    monkeypatch.setattr(repository_module, "reconcile_episode_paths", unexpected_recovery)
+    monkeypatch.setattr(repository_module, "reconcile_episode_counts", unexpected_recovery)
+    recovered_repository = Repository(config)
+    await recovered_repository.initialize()
+    try:
+        assert manifest_path.read_bytes() == manifest_before
+        assert manifest_path.stat().st_mtime_ns == mtime_before
+    finally:
+        await recovered_repository.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_reconciles_only_unsealed_episode_counters(tmp_path):
+    config, repository, active = await _repository_with_episode(tmp_path)
+    closed = Episode(
+        id="closed-history",
+        primary_area_id="gate",
+        state=EpisodeState.CLOSED,
+    )
+    await repository.create_episode(closed)
+    for episode in (active, closed):
+        await repository.create_event(
+            Event(
+                id=f"event-{episode.id}",
+                device_id="gate-camera",
+                area_id="gate",
+                event_type="motion",
+                episode_id=episode.id,
+            )
+        )
+    await repository.close()
+
+    recovered_repository = Repository(config)
+    await recovered_repository.initialize()
+    try:
+        assert (await recovered_repository.get_episode(active.id)).event_count == 1
+        assert (await recovered_repository.get_episode(closed.id)).event_count == 0
+    finally:
+        await recovered_repository.close()
+
+
+@pytest.mark.asyncio
+async def test_episode_manifest_uses_first_observed_safe_inventory_snapshot(tmp_path, monkeypatch):
+    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
+    repository = Repository(config)
+    await repository.initialize()
+    await repository.upsert_area(Area(id="gate", name="Original gate", location="North"))
+    await repository.upsert_area(Area(id="yard", name="Yard"))
+    await repository.upsert_device(
+        Device(
+            id="sensor",
+            name="Original sensor",
+            device_type="sensor",
+            area_id="gate",
+            ip_address="192.0.2.10",
+            username="private-user",
+            password="private-password",
+            configs={"private-plugin": {"settings": {"token": "private-token"}}},
+            metadata={"private-note": "private-metadata"},
+        )
+    )
+    await repository.upsert_device(
+        Device(
+            id="target-camera",
+            name="Original camera",
+            device_type="camera",
+            area_id="gate",
+            ip_address="192.0.2.11",
+            password="target-password",
+        )
+    )
+    episode = Episode(
+        id="identity-history",
+        primary_area_id="gate",
+        state=EpisodeState.ACTIVE,
+    )
+    before_snapshot = datetime.now(tz=timezone.utc)
+    await repository.create_episode(episode)
+    event = await repository.create_event(
+        Event(
+            id="identity-event",
+            device_id="sensor",
+            area_id="gate",
+            timestamp=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            event_type="tripwire",
+            eligible_recording_device_ids=["target-camera"],
+        )
+    )
+    await repository.add_event_to_episode(event.id, episode.id)
+    after_snapshot = datetime.now(tz=timezone.utc)
+
+    manifest_path = tmp_path / "episodes" / episode.id / "manifest.json"
+    original_manifest = json.loads(manifest_path.read_text())
+    assert {item["id"] for item in original_manifest["devices"]} == {
+        "sensor",
+        "target-camera",
+    }
+    snapshots = await repository.list_episode_device_snapshots(episode.id)
+    assert all(
+        before_snapshot <= datetime.fromisoformat(item["recorded_at"]) <= after_snapshot
+        for item in snapshots
+    )
+
+    await repository.upsert_area(Area(id="gate", name="Renamed gate", location="South"))
+    await repository.upsert_device(
+        Device(
+            id="sensor",
+            name="Renamed sensor",
+            device_type="sensor",
+            area_id="yard",
+            ip_address="192.0.2.20",
+        )
+    )
+    await repository.upsert_device(
+        Device(
+            id="target-camera",
+            name="Renamed camera",
+            device_type="camera",
+            area_id="yard",
+            ip_address="192.0.2.21",
+        )
+    )
+
+    async def inventory_lookup_is_forbidden(*_args, **_kwargs):
+        raise AssertionError("portable projection must not read mutable inventory")
+
+    monkeypatch.setattr(repository, "get_area", inventory_lookup_is_forbidden)
+    monkeypatch.setattr(repository, "get_device", inventory_lookup_is_forbidden)
+    await repository.refresh_episode_manifest(episode.id)
+    refreshed_manifest = json.loads(manifest_path.read_text())
+
+    assert refreshed_manifest["areas"] == original_manifest["areas"]
+    assert refreshed_manifest["devices"] == original_manifest["devices"]
+    serialized = json.dumps(refreshed_manifest)
+    for secret in (
+        "private-user",
+        "private-password",
+        "private-token",
+        "private-metadata",
+        "target-password",
+    ):
+        assert secret not in serialized
+    await repository.close()

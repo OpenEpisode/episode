@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Collection
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from episode.domain.models import RawArtifact
+from episode.domain.models import EpisodeState, RawArtifact
 from episode.storage.bundles import relative_bundle_path, write_manifest
 
 if TYPE_CHECKING:
@@ -48,15 +49,39 @@ class EpisodeBundleProjector:
         self._data_dir = data_dir
         self._locks: dict[str, asyncio.Lock] = {}
 
-    async def rebuild(self) -> None:
-        episodes = await self._repository.list_episodes(limit=10000)
-        for episode in reversed(episodes):
-            await self.refresh(episode.id)
+    async def rebuild(self, episode_ids: Collection[str] | None = None) -> None:
+        """Refresh only explicitly supplied or currently unsealed Episodes.
 
-    async def refresh(self, episode_id: str) -> None:
+        Closed bundles are historical records. Startup callers pass the
+        unsealed IDs discovered from SQLite; the default is intentionally
+        limited to the same state set for maintenance callers.
+        """
+        if episode_ids is None:
+            episodes = []
+            for state in (
+                EpisodeState.ACTIVE,
+                EpisodeState.QUIESCENT,
+                EpisodeState.FINALIZING,
+            ):
+                episodes.extend(await self._repository.list_episodes(state=state, limit=10000))
+            episode_ids = {episode.id for episode in episodes}
+        for episode_id in sorted(set(episode_ids)):
+            await self.refresh(episode_id)
+
+    async def refresh(
+        self,
+        episode_id: str,
+        *,
+        state_override: EpisodeState | None = None,
+        end_time_override: datetime | None = None,
+    ) -> None:
         lock = self._locks.setdefault(episode_id, asyncio.Lock())
         async with lock:
-            manifest = await self._manifest(episode_id)
+            manifest = await self._manifest(
+                episode_id,
+                state_override=state_override,
+                end_time_override=end_time_override,
+            )
             if manifest is not None:
                 await asyncio.to_thread(
                     write_manifest,
@@ -65,10 +90,48 @@ class EpisodeBundleProjector:
                     manifest,
                 )
 
-    async def _manifest(self, episode_id: str) -> dict[str, object] | None:
+    async def _manifest(
+        self,
+        episode_id: str,
+        *,
+        state_override: EpisodeState | None = None,
+        end_time_override: datetime | None = None,
+    ) -> dict[str, object] | None:
         episode = await self._repository.get_episode(episode_id)
         if not episode:
             return None
+
+        area_snapshots = await self._repository.list_episode_area_snapshots(episode_id)
+        device_snapshots = await self._repository.list_episode_device_snapshots(episode_id)
+        # Do not rewrite a pre-snapshot historical bundle with an incomplete
+        # inventory projection. Such bundles are intentionally left as-is;
+        # new Episodes always capture identity at association time.
+        if (
+            episode.state in {EpisodeState.CLOSED, EpisodeState.ARCHIVED}
+            and not area_snapshots
+            and not device_snapshots
+        ):
+            return None
+        areas = [
+            {
+                "id": item["id"],
+                "name": item["name"],
+                "location": item["location"],
+                "recorded_at": item["recorded_at"],
+            }
+            for item in area_snapshots
+        ]
+        devices = [
+            {
+                "id": item["id"],
+                "name": item["name"],
+                "device_type": item["device_type"],
+                "area_id": item["area_id"],
+                "ip_address": item["ip_address"],
+                "recorded_at": item["recorded_at"],
+            }
+            for item in device_snapshots
+        ]
 
         events = await self._repository.list_events(episode_id=episode_id, limit=10000)
         evidence = await self._repository.list_evidence(episode_id=episode_id, limit=10000)
@@ -78,32 +141,6 @@ class EpisodeBundleProjector:
         )
         events.sort(key=lambda item: item.timestamp)
         evidence.sort(key=lambda item: item.timestamp)
-
-        area_ids = {episode.primary_area_id}
-        area_ids.update(event.area_id for event in events if event.area_id)
-        area_ids.update(item.area_id for item in evidence if item.area_id)
-        device_ids = {event.device_id for event in events if event.device_id}
-        device_ids.update(item.device_id for item in evidence if item.device_id)
-
-        areas = []
-        for area_id in sorted(area_ids):
-            area = await self._repository.get_area(area_id)
-            if area:
-                areas.append({"id": area.id, "name": area.name, "location": area.location})
-
-        devices = []
-        for device_id in sorted(device_ids):
-            device = await self._repository.get_device(device_id)
-            if device:
-                devices.append(
-                    {
-                        "id": device.id,
-                        "name": device.name,
-                        "device_type": device.device_type,
-                        "area_id": device.area_id,
-                        "ip_address": device.ip_address,
-                    }
-                )
 
         artifacts_by_id: dict[str, RawArtifact] = {}
         artifact_ids = {receipt.artifact_id for receipt in receipts if receipt.artifact_id}
@@ -125,13 +162,13 @@ class EpisodeBundleProjector:
             "format": "episode.bundle",
             "episode": {
                 "id": episode.id,
-                "state": episode.state.value,
+                "state": (state_override or episode.state).value,
                 "primary_area_id": episode.primary_area_id,
                 "start_time": _utc_iso(episode.start_time),
                 "last_event_time": _utc_iso(episode.last_event_time),
                 "last_activity_at": _utc_iso(episode.last_activity_at),
                 "minimum_end_at": _utc_iso(episode.minimum_end_at),
-                "end_time": _utc_iso(episode.end_time),
+                "end_time": _utc_iso(end_time_override or episode.end_time),
                 "summary": episode.summary,
             },
             "areas": areas,

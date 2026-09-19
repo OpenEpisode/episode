@@ -724,6 +724,51 @@ nav a.active {
 .integration-group-label strong { font-size: 0.78rem; }
 .integration-group-label span,
 .role-guidance { color: var(--text-muted); font-size: 0.74rem; line-height: 1.4; }
+.discovery-summary {
+  align-items: baseline;
+  background: color-mix(in srgb, var(--brand-blue) 7%, var(--surface-elevated));
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem .8rem;
+  margin: .7rem 0;
+  padding: .7rem .8rem;
+}
+.discovery-summary span { color: var(--text-muted); font-size: .76rem; }
+.discovery-fallback { margin-top: .7rem; }
+.catalog-status {
+  color: var(--text-muted);
+  font-size: .72rem;
+  line-height: 1.4;
+  padding: .65rem .85rem .1rem;
+}
+.catalog-status-ready { color: var(--success); }
+.catalog-status-error { color: var(--warning); }
+.catalog-external {
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: .25rem;
+  margin-top: .65rem;
+  padding: .7rem .85rem .1rem;
+}
+.catalog-external strong { font-size: .76rem; }
+.catalog-external small,
+.catalog-external span { color: var(--text-muted); font-size: .7rem; line-height: 1.4; }
+.catalog-external span b { color: var(--text-secondary); }
+.manual-video-test {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+}
+.manual-video-test small { color: var(--text-muted); font-size: .72rem; line-height: 1.4; }
+.video-test-supported { color: var(--success) !important; }
+.video-test-authentication_failed,
+.video-test-unreachable,
+.video-test-unavailable,
+.video-test-error { color: var(--warning) !important; }
 .integration-option:has(.integration-toggle input:checked) {
   border-color: color-mix(in srgb, var(--brand-blue) 52%, var(--border));
   box-shadow: inset 2px 0 var(--brand-cyan);
@@ -863,8 +908,8 @@ nav a.active {
   font-size: 0.62rem;
   padding: 0.12rem 0.38rem;
 }
-.integration-support-unsupported { opacity: 0.55; }
-.integration-support-unsupported .integration-toggle { cursor: not-allowed; }
+.integration-support-unsupported { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); }
+.integration-support-unsupported .integration-toggle { cursor: pointer; }
 @media (max-width: 600px) {
   .validation-heading { align-items: stretch; flex-direction: column; }
   .validation-heading .button { width: 100%; }

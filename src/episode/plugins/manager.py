@@ -314,6 +314,9 @@ class PluginManager:
                 "activation_config_type": registration.activation_config_type,
                 "configured_device_ids": list(registration.configured_device_ids),
                 "capabilities": list(registration.integration.capabilities),
+                "manufacturer_scope": list(registration.integration.manufacturer_scope),
+                "manufacturer_scope_kind": registration.integration.manufacturer_scope_kind,
+                "device_types": list(registration.integration.device_types),
             }
         public = _json_safe(result)
         if not isinstance(public, dict):

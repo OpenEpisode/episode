@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -28,6 +29,7 @@ from episode.domain.models import (
     Evidence,
     IngestionReceipt,
     RawArtifact,
+    ReceiptStatus,
     make_episode_id,
 )
 from episode.engine.bus import EventBus, Message
@@ -37,12 +39,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+EpisodeFinalizer = Callable[[str], Awaitable[None]]
+
 
 @dataclass(frozen=True)
 class CanonicalEventResult:
     event: Event
     created: bool
     conflict: bool = False
+
+
+class DeviceNeedsSetupError(ValueError):
+    """A Device draft cannot contribute a new canonical observation."""
 
 
 class EpisodeEngine:
@@ -53,6 +61,7 @@ class EpisodeEngine:
         timeout: int = 30,
         quiescent_grace_seconds: int = DEFAULT_QUIESCENT_GRACE_SECONDS,
         capture_profiles: CaptureProfileService | None = None,
+        finalizer: EpisodeFinalizer | None = None,
     ):
         self._repo = repo
         self._bus = bus
@@ -63,11 +72,18 @@ class EpisodeEngine:
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._lifecycle_lock = asyncio.Lock()
         self._timeout_task: asyncio.Task | None = None
+        self._finalizer = finalizer
+        self._defer_finalization = False
+        self._finalizing_ids: set[str] = set()
 
-    async def start(self):
+    def set_finalizer(self, finalizer: EpisodeFinalizer | None) -> None:
+        self._finalizer = finalizer
+
+    async def start(self, *, defer_finalization: bool = False):
         if self._running:
             return
         self._quiescent_grace_seconds = await self._load_quiescent_grace()
+        self._defer_finalization = defer_finalization
         self._running = True
         self._bus.subscribe("receipt.received", self._on_receipt_received)
         self._bus.subscribe("event.received", self._on_event_received)
@@ -89,6 +105,13 @@ class EpisodeEngine:
             self._timeout_task.cancel()
             await asyncio.gather(self._timeout_task, return_exceptions=True)
             self._timeout_task = None
+
+    async def complete_finalizing_episodes(self) -> None:
+        """Complete persisted finalization after dependent services recover."""
+        if not self._running:
+            return
+        self._defer_finalization = False
+        await self._close_timed_out_episodes()
 
     async def _persist_delivery(self, msg: Message) -> IngestionReceipt | None:
         artifact_data = msg.data.get("artifact")
@@ -141,11 +164,37 @@ class EpisodeEngine:
         """Compatibility adapter for connectors not yet using IngestionService."""
         receipt = await self._persist_delivery(msg)
         candidate = Event(**msg.data["event"])
+        if await self._reject_draft_delivery(candidate.device_id, receipt):
+            return
         await self.ingest_event(candidate, receipt=receipt)
+
+    async def _reject_draft_delivery(
+        self, device_id: str, receipt: IngestionReceipt | None
+    ) -> bool:
+        device = await self._repo.get_device(device_id)
+        if device is None or device.setup_state != "needs_setup":
+            return False
+        if receipt is not None:
+            receipt.status = ReceiptStatus.UNMATCHED
+            receipt.device_id = device.id
+            receipt.area_id = device.area_id
+            receipt.metadata = {**receipt.metadata, "reason": "device_needs_setup"}
+            await self._repo.update_ingestion_receipt(
+                receipt.id,
+                status=receipt.status,
+                observed_at=receipt.observed_at,
+                device_id=receipt.device_id,
+                area_id=receipt.area_id,
+                external_id=receipt.external_id,
+                metadata=receipt.metadata,
+            )
+        return True
 
     async def ingest_event(
         self, candidate: Event, *, receipt: IngestionReceipt | None = None
     ) -> CanonicalEventResult:
+        if await self._reject_draft_delivery(candidate.device_id, receipt):
+            raise DeviceNeedsSetupError("Device needs setup before it can create Events")
         # Capture the observation boundary before waiting for an Area lock or
         # database work.  Correlation must use when the delivery arrived, not
         # when a busy worker eventually reaches the query.
@@ -271,17 +320,79 @@ class EpisodeEngine:
         """Compatibility adapter for connectors not yet using IngestionService."""
         receipt = await self._persist_delivery(msg)
         evidence = Evidence(**msg.data["evidence"])
+        if await self._reject_draft_delivery(evidence.device_id, receipt):
+            return
         await self.ingest_evidence(evidence, receipt=receipt)
 
     async def ingest_evidence(
-        self, evidence: Evidence, *, receipt: IngestionReceipt | None = None
+        self,
+        evidence: Evidence,
+        *,
+        receipt: IngestionReceipt | None = None,
+    ) -> Evidence:
+        if await self._reject_draft_delivery(evidence.device_id, receipt):
+            raise DeviceNeedsSetupError("Device needs setup before it can create Evidence")
+        async with self._lifecycle_lock:
+            return await self._ingest_evidence(
+                evidence,
+                receipt=receipt,
+                allow_finalizing=False,
+            )
+
+    async def ingest_recording_evidence(self, evidence: Evidence) -> Evidence:
+        """Persist output from a recorder finalizing an existing Episode."""
+        async with self._lifecycle_lock:
+            return await self._ingest_evidence(
+                evidence,
+                receipt=None,
+                allow_finalizing=True,
+            )
+
+    async def _ingest_evidence(
+        self,
+        evidence: Evidence,
+        *,
+        receipt: IngestionReceipt | None,
+        allow_finalizing: bool,
     ) -> Evidence:
         target_episode_id = evidence.episode_id
-        # Linking owns the Episode counter, portable file move, journal, and
-        # manifest update. Store preset recording Evidence as unlinked first so
-        # it follows the same idempotent path as correlated snapshots.
+        rejected_target = False
         if target_episode_id:
+            target = await self._repo.get_episode(target_episode_id)
+            allowed_states = {EpisodeState.ACTIVE, EpisodeState.QUIESCENT}
+            if allow_finalizing:
+                allowed_states.add(EpisodeState.FINALIZING)
+            if target is None or target.state not in allowed_states:
+                logger.info(
+                    "Preserving Evidence %s without Episode %s; state is no longer mutable",
+                    evidence.id,
+                    target_episode_id,
+                )
+                target_episode_id = None
+                rejected_target = True
+        if evidence.episode_id:
             evidence.episode_id = None
+        persisted = await self._repo.get_evidence(evidence.id)
+        if persisted:
+            if target_episode_id and persisted.episode_id != target_episode_id:
+                if persisted.episode_id:
+                    raise RuntimeError(
+                        f"Evidence {evidence.id} belongs to episode {persisted.episode_id}"
+                    )
+                await self._repo.add_evidence_to_episode(
+                    persisted.id,
+                    target_episode_id,
+                    allow_finalizing=allow_finalizing,
+                )
+                persisted = await self._repo.get_evidence(evidence.id)
+            if receipt:
+                await self._repo.link_ingestion_receipt(receipt.id, evidence_id=evidence.id)
+            if target_episode_id and (
+                persisted is None or persisted.episode_id != target_episode_id
+            ):
+                raise RuntimeError(f"Evidence {evidence.id} was not associated with its Episode")
+            return persisted or evidence
+
         await self._repo.create_evidence(evidence)
         if receipt:
             await self._repo.link_ingestion_receipt(
@@ -297,11 +408,15 @@ class EpisodeEngine:
                 evidence.id,
                 target_episode_id,
             )
-            await self._repo.add_evidence_to_episode(evidence.id, target_episode_id)
+            await self._repo.add_evidence_to_episode(
+                evidence.id,
+                target_episode_id,
+                allow_finalizing=allow_finalizing,
+            )
             evidence.episode_id = target_episode_id
-        else:
+        elif not rejected_target:
             logger.debug("Evidence %s has no episode_id, attempting orphan match", evidence.id)
-            await self._match_orphan_evidence(evidence)
+            await self._match_orphan_evidence_locked(evidence)
         return evidence
 
     async def _attach_without_capture(
@@ -397,7 +512,10 @@ class EpisodeEngine:
                 return
 
             episode = await self._repo.get_episode(preceding.episode_id)
-            if episode is None or episode.state == EpisodeState.ARCHIVED:
+            if episode is None or episode.state not in {
+                EpisodeState.ACTIVE,
+                EpisodeState.QUIESCENT,
+            }:
                 logger.debug(
                     "Stored inactive event %s without a mutable matching episode",
                     event.id,
@@ -507,6 +625,10 @@ class EpisodeEngine:
         await self._bus.publish(Message(type="episode.updated", data={"episode_id": episode.id}))
 
     async def _match_orphan_evidence(self, evidence: Evidence):
+        async with self._lifecycle_lock:
+            await self._match_orphan_evidence_locked(evidence)
+
+    async def _match_orphan_evidence_locked(self, evidence: Evidence):
         if evidence.episode_id:
             return
         if evidence.area_id:
@@ -555,7 +677,7 @@ class EpisodeEngine:
 
     async def _close_timed_out_episodes(self, *, now: datetime | None = None) -> None:
         async with self._lifecycle_lock:
-            quiescent, closed = await self._repo.transition_timed_out_episodes(
+            quiescent, finalizing = await self._repo.transition_timed_out_episodes(
                 self._timeout,
                 self._quiescent_grace_seconds,
                 now=now,
@@ -568,14 +690,47 @@ class EpisodeEngine:
                     data={"episode_id": episode.id, "state": EpisodeState.QUIESCENT.value},
                 )
             )
-        for episode in closed:
-            logger.info("Episode %s closed (activity policy satisfied)", episode.id)
-            await self._bus.publish(
-                Message(
-                    type="episode.updated",
-                    data={"episode_id": episode.id, "state": EpisodeState.CLOSED.value},
+        if self._defer_finalization:
+            return
+        for episode in finalizing:
+            if episode.id in self._finalizing_ids:
+                continue
+            self._finalizing_ids.add(episode.id)
+            logger.info("Episode %s entered finalization", episode.id)
+            try:
+                await self._bus.publish(
+                    Message(
+                        type="episode.updated",
+                        data={
+                            "episode_id": episode.id,
+                            "state": EpisodeState.FINALIZING.value,
+                        },
+                    )
                 )
-            )
+                if self._finalizer:
+                    await self._finalizer(episode.id)
+                closed_at = datetime.now(tz=timezone.utc)
+                await self._repo.refresh_episode_manifest(
+                    episode.id,
+                    state_override=EpisodeState.CLOSED,
+                    end_time_override=closed_at,
+                )
+                await self._repo.mark_episode_closed(episode.id, ended_at=closed_at)
+            except Exception:
+                logger.exception(
+                    "Episode %s finalization failed; leaving it finalizing",
+                    episode.id,
+                )
+            else:
+                logger.info("Episode %s closed (finalization succeeded)", episode.id)
+                await self._bus.publish(
+                    Message(
+                        type="episode.updated",
+                        data={"episode_id": episode.id, "state": EpisodeState.CLOSED.value},
+                    )
+                )
+            finally:
+                self._finalizing_ids.discard(episode.id)
 
     async def _timeout_loop(self):
         while self._running:

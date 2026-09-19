@@ -66,6 +66,19 @@ class DeviceIdentityResponse(ApiModel):
     firmware_version: str | None = None
 
 
+class DeviceVideoValidationResponse(ApiModel):
+    status: Literal[
+        "supported",
+        "unsupported",
+        "authentication_failed",
+        "unreachable",
+        "unavailable",
+        "not_validated",
+    ]
+    summary: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class CapturePolicyResponse(ApiModel):
     recording: str
     automatic_snapshots: bool
@@ -82,10 +95,26 @@ class DeviceSummaryResponse(ApiModel):
     state: OperationalState
     identity: DeviceIdentityResponse
     enabled: bool
+    setup_state: Literal["ready", "needs_setup"] = "ready"
     integrations: list[IntegrationResponse] = Field(default_factory=list)
     # ``null`` means the Device inherits the active Capture profile; an empty
     # list is the explicit negative. See ``EventFilter`` docs.
     event_filter: list[str] | None = None
+
+
+class DeviceIntegrationCatalogEntry(ApiModel):
+    id: str
+    name: str
+    type: str
+    kind: str
+    capabilities: list[str] = Field(default_factory=list)
+    manufacturer_scope: list[str] = Field(default_factory=list)
+    manufacturer_scope_kind: Literal["targeted", "universal", "unspecified"]
+    device_types: list[str] = Field(default_factory=list)
+    configured: bool = False
+    available: bool = True
+    selection_required: bool = True
+    activation_required: bool = False
 
 
 class DeviceDetailResponse(DeviceSummaryResponse):

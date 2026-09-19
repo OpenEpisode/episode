@@ -82,6 +82,8 @@ plugins/
   "kind": "device",
   "entrypoint": "plugin.py:create_plugin",
   "capabilities": ["events"],
+  "manufacturer_scope": ["Acme"],
+  "device_types": ["camera", "sensor"],
   "configuration_schema": {
     "type": "object",
     "properties": {
@@ -90,6 +92,22 @@ plugins/
   }
 }
 ```
+
+`manufacturer_scope` is optional targeting metadata used by Device onboarding;
+it does not activate or execute a plugin. Use an array for a vendor-specific
+plugin, or the explicit string `"universal"` for a vendor-neutral Device
+integration. An omitted field is `unspecified` and is not advertised as a
+universal match. `device_types` is also optional and limits recommendations to
+the listed physical roles. Existing manifests without these fields remain
+valid, but are informational until explicitly configured.
+
+The onboarding catalogue reads these fields from the manifest without
+importing plugin code. An unconfigured third-party plugin may be shown as an
+informational candidate, but it cannot be selected for validation or started
+until its normal `episode.json` activation entry is present. A configured
+plugin's runtime assignment is still controlled by that activation entry; the
+version-1 external plugin contract does not expose a generic validation hook,
+so manifest metadata alone never authorizes a probe.
 
 Supported version-1 kinds are `device` and `ingress`. The entrypoint must be a
 relative `.py` file inside the plugin directory followed by a callable name. A

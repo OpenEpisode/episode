@@ -21,6 +21,7 @@ from episode.plugins.models import (
 )
 
 logger = logging.getLogger(__name__)
+MAX_PLUGIN_DIRECTORIES = 256
 
 
 def _unavailable_registration(
@@ -54,6 +55,7 @@ def _installed_manifests(
 ) -> tuple[dict[str, ExternalPluginManifest], dict[str, str]] | list[PluginRegistration]:
     manifests: dict[str, ExternalPluginManifest] = {}
     failures: dict[str, str] = {}
+    duplicate_ids: set[str] = set()
     if not plugins_dir.is_dir():
         return manifests, failures
     try:
@@ -69,13 +71,20 @@ def _installed_manifests(
             )
             for configured in enabled
         ]
-    for root in roots:
+    for index, root in enumerate(roots):
+        if index >= MAX_PLUGIN_DIRECTORIES:
+            logger.warning(
+                "Ignoring plugin directories after the %d-entry limit",
+                MAX_PLUGIN_DIRECTORIES,
+            )
+            break
         if not (root / MANIFEST_FILENAME).is_file():
             continue
         try:
             root.resolve(strict=True).relative_to(resolved_plugins_dir)
+            (root / MANIFEST_FILENAME).resolve(strict=True).relative_to(root.resolve(strict=True))
         except (OSError, ValueError):
-            failures[root.name] = "plugin directory escapes the configured plugin root"
+            failures[root.name] = "plugin manifest escapes the configured plugin root"
             logger.warning("Ignoring plugin directory outside %s: %s", plugins_dir, root)
             continue
         try:
@@ -84,9 +93,10 @@ def _installed_manifests(
             failures[root.name] = str(error)
             logger.warning("Ignoring invalid plugin manifest in %s: %s", root, error)
             continue
-        if manifest.id in manifests:
+        if manifest.id in manifests or manifest.id in duplicate_ids:
             failures[manifest.id] = "more than one installed manifest uses this plugin id"
             manifests.pop(manifest.id, None)
+            duplicate_ids.add(manifest.id)
             continue
         manifests[manifest.id] = manifest
     return manifests, failures
@@ -110,11 +120,45 @@ def _registration(
             name=manifest.name,
             device_scoped=manifest.kind == "device",
             capabilities=manifest.capabilities,
+            manufacturer_scope=manifest.manufacturer_scope,
+            manufacturer_scope_kind=manifest.manufacturer_scope_kind,
+            device_types=manifest.device_types,
         ),
         explicitly_enabled=True,
         configured_device_ids=tuple(configured.device_ids),
         installed_version=manifest.version,
     )
+
+
+def external_plugin_catalog(plugins_dir: Path) -> list[dict[str, object]]:
+    """Read installed manifests for onboarding without importing plugin code.
+
+    Entries from this catalogue are informational until the plugin is
+    explicitly enabled in configuration.  In particular, callers must not
+    treat them as validation or activation permissions.
+    """
+    installed = _installed_manifests(plugins_dir, [])
+    if isinstance(installed, list):
+        return []
+    manifests, _failures = installed
+    return [
+        {
+            "id": manifest.id,
+            "name": manifest.name,
+            "type": manifest.id,
+            "kind": manifest.kind,
+            "capabilities": list(manifest.capabilities),
+            "manufacturer_scope": list(manifest.manufacturer_scope),
+            "manufacturer_scope_kind": manifest.manufacturer_scope_kind,
+            "device_types": list(manifest.device_types),
+            "configured": False,
+            "available": manifest.plugin_api == plugin_api.PLUGIN_API_VERSION,
+            "selection_required": True,
+            "activation_required": True,
+        }
+        for manifest in sorted(manifests.values(), key=lambda value: value.id)
+        if manifest.kind == "device"
+    ]
 
 
 def discover_external_plugins(

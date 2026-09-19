@@ -11,7 +11,7 @@ import {
   attachMediaSource,
   evidenceMediaUrl,
   updateMediaStatus,
-} from "./media-player.js?v=2";
+} from "./media-player.js?v=7";
 
 function secondsLabel(milliseconds) {
   const seconds = Math.max(0, Math.round(milliseconds / 1000));

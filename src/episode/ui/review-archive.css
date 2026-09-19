@@ -29,7 +29,8 @@
   text-transform: uppercase;
 }
 
-.review-filter-bar select {
+.review-filter-bar select,
+.review-filter-bar input[type="date"] {
   background: var(--surface-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -38,11 +39,16 @@
   padding: .45rem 2rem .45rem .65rem;
 }
 
-.review-filter-bar select:focus {
+.review-filter-bar select:focus,
+.review-filter-bar input[type="date"]:focus {
   border-color: var(--brand-cyan);
   outline: 2px solid color-mix(in srgb, var(--brand-cyan) 18%, transparent);
   outline-offset: 1px;
 }
+
+.review-custom-date { flex: 0 1 11rem !important; }
+.review-custom-date input { min-width: 0; }
+.review-filter-status { color: var(--warning); font-size: .7rem; margin: 0 0 .65rem; }
 
 .filter-reset {
   color: var(--text-muted);

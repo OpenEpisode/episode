@@ -16,7 +16,7 @@ import {
   activateCurrentViews,
   deactivateCurrentViews,
   renderCurrentViews,
-} from "./current-views.js?v=3";
+} from "./current-views.js?v=12";
 import {
   episodeDisplayEnd,
   episodeRailTime,
@@ -27,15 +27,15 @@ import {
   evidenceMediaUrl,
   isHlsEvidence,
   updateMediaStatus,
-} from "./media-player.js?v=2";
+} from "./media-player.js?v=7";
 import {
   originBadge,
   renderEvidenceArchive,
   renderEpisodeEvidence,
   renderEvidenceGrid,
   showCarousel,
-} from "./evidence-gallery.js?v=7";
-import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js?v=13";
+} from "./evidence-gallery.js?v=9";
+import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js?v=15";
 import {
   fmt,
   fmtBytes,
@@ -52,6 +52,7 @@ import {
   groupEvidenceByEpisode,
 } from "./review-lists.js?v=3";
 import { updateRecentEpisodes } from "./sidebar.js?v=4";
+import { calendarTimeBounds, TIME_RANGE_OPTIONS } from "./time-range.js?v=1";
 import { showContent, showError, showLoading } from "./view.js?v=1";
 import { eventTitle } from "./timeline.js?v=6";
 
@@ -405,12 +406,20 @@ export async function activity(deviceId, page = 1, parameters = new URLSearchPar
       event_type: parameters.get("event_type") || "",
       event_state: parameters.get("event_state") || "",
       association: parameters.get("association") || "",
+      time_range: parameters.get("time_range") || "",
+      custom_from: parameters.get("custom_from") || "",
+      custom_to: parameters.get("custom_to") || "",
     };
+    const timeBounds = calendarTimeBounds(selected);
     const pageSize = PAGE_SIZES.activity;
     const offset = (page - 1) * pageSize;
     const query = new URLSearchParams({ limit: pageSize + 1, offset });
     for (const key of ["device_id", "area_id", "event_type", "event_state"]) {
       if (selected[key]) query.set(key, selected[key]);
+    }
+    if (timeBounds.valid) {
+      if (timeBounds.from) query.set("observed_from", timeBounds.from);
+      if (timeBounds.before) query.set("observed_before", timeBounds.before);
     }
     if (selected.association === "episode") query.set("has_episode", "true");
     if (selected.association === "unassigned") query.set("has_episode", "false");
@@ -455,6 +464,14 @@ export async function activity(deviceId, page = 1, parameters = new URLSearchPar
           ${option("episode", "Linked to an Episode", selected.association)}
           ${option("unassigned", "Not linked to an Episode", selected.association)}
         </select></label>
+        <label><span>Time</span><select name="time_range">
+          ${TIME_RANGE_OPTIONS.map(([value, label]) => option(value, label, selected.time_range || "all")).join("")}
+        </select></label>
+        ${selected.time_range === "custom" ? `
+          <label class="review-custom-date"><span>From</span><input type="date" name="custom_from" value="${escHtml(selected.custom_from)}"></label>
+          <label class="review-custom-date"><span>Through</span><input type="date" name="custom_to" value="${escHtml(selected.custom_to)}"></label>
+          ${timeBounds.valid ? "" : '<small class="review-filter-status">Choose a valid start and end date to apply this range.</small>'}
+        ` : ""}
         <a class="filter-reset" href="#activity">Reset</a>
       </form>
       ${list.length === 0 ? '<div class="empty-state"><h3>No matching activity</h3><p>Try changing the filters or wait for a new Event.</p></div>' : `
@@ -501,6 +518,14 @@ window.applyReviewFilters = (form, view) => {
   const parameters = new URLSearchParams(new FormData(form));
   for (const [key, value] of [...parameters.entries()]) {
     if (!value) parameters.delete(key);
+  }
+  if (view === "activity" || view === "evidence") {
+    const timeRange = parameters.get("time_range");
+    if (timeRange !== "custom") {
+      parameters.delete("custom_from");
+      parameters.delete("custom_to");
+    }
+    if (timeRange === "all") parameters.delete("time_range");
   }
   location.hash = `${view}${parameters.size ? `?${parameters}` : ""}`;
 };
@@ -641,12 +666,20 @@ export async function evidence(deviceId, page = 1, parameters = new URLSearchPar
       area_id: parameters.get("area_id") || "",
       evidence_type: parameters.get("evidence_type") || "",
       association: parameters.get("association") || "",
+      time_range: parameters.get("time_range") || "",
+      custom_from: parameters.get("custom_from") || "",
+      custom_to: parameters.get("custom_to") || "",
     };
+    const timeBounds = calendarTimeBounds(selected);
     const pageSize = PAGE_SIZES.evidence;
     const offset = (page - 1) * pageSize;
     const query = new URLSearchParams({ limit: pageSize + 1, offset });
     for (const key of ["device_id", "area_id", "evidence_type"]) {
       if (selected[key]) query.set(key, selected[key]);
+    }
+    if (timeBounds.valid) {
+      if (timeBounds.from) query.set("captured_from", timeBounds.from);
+      if (timeBounds.before) query.set("captured_before", timeBounds.before);
     }
     if (selected.association === "episode") query.set("has_episode", "true");
     if (selected.association === "unassigned") query.set("has_episode", "false");
@@ -691,6 +724,14 @@ export async function evidence(deviceId, page = 1, parameters = new URLSearchPar
           ${option("episode", "Linked to an Episode", selected.association)}
           ${option("unassigned", "Not linked to an Episode", selected.association)}
         </select></label>
+        <label><span>Time</span><select name="time_range">
+          ${TIME_RANGE_OPTIONS.map(([value, label]) => option(value, label, selected.time_range || "all")).join("")}
+        </select></label>
+        ${selected.time_range === "custom" ? `
+          <label class="review-custom-date"><span>From</span><input type="date" name="custom_from" value="${escHtml(selected.custom_from)}"></label>
+          <label class="review-custom-date"><span>Through</span><input type="date" name="custom_to" value="${escHtml(selected.custom_to)}"></label>
+          ${timeBounds.valid ? "" : '<small class="review-filter-status">Choose a valid start and end date to apply this range.</small>'}
+        ` : ""}
         <a class="filter-reset" href="#evidence">Reset</a>
       </form>
       ${list.length

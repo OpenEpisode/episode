@@ -34,9 +34,13 @@ docker compose --env-file .env up -d
 ```
 
 Open <http://localhost:8989>. A fresh installation guides you through creating
-an Area, validating a Device, selecting its capture behavior and integrations,
-and confirming the Evidence retention policy. Device and Area changes activate
-immediately without restarting Episode.
+an Area, discovering a Device with ONVIF, selecting only integrations matching
+the discovered identity, and confirming the Evidence retention policy. A
+Device may be saved for later while it is not ready; it remains visible but is
+not eligible for new Episodes or captures. Device and Area changes activate
+immediately without restarting Episode. If ONVIF is unavailable, a manually
+validated RTSP endpoint can still provide recording-only capture; it does not
+provide Events or snapshots.
 
 Inspect service health or follow logs with:
 

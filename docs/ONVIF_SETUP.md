@@ -25,15 +25,27 @@ setting.
 2. Open **Devices → Manage Areas** and create an Area if needed.
 3. Select **Add Device**.
 4. Enter a name, Area, camera IP address, username, and password.
-5. Select **Validate and discover**. A successful ONVIF response reports
-   discovery, media, snapshot, and Event capabilities without enabling them.
-6. Leave **Video recording** and **ONVIF** enabled when validation supports
-   them.
-7. Choose **Own Events only** to record only this camera's Events, or **Any
+5. Select **Discover with ONVIF**. A successful ONVIF response reports the
+   manufacturer, model, media, snapshot, and Event capabilities without
+   probing or enabling vendor integrations.
+6. Review the matching integration choices. Select a vendor integration only
+   when you want its additional capabilities, then validate the selected
+   connection before saving it. Episode does not probe every installed plugin
+   with the supplied credentials.
+7. Enable **Video recording** and **ONVIF** when validation supports them.
+8. Choose **Own Events only** to record only this camera's Events, or **Any
    Episode in this Area** when the camera should join activity opened by another
    Device.
-8. Save the Device. Episode activates its integrations without restarting the
+9. Save the Device. Episode activates its integrations without restarting the
    container.
+
+If discovery cannot identify the manufacturer, choose it manually to reveal
+matching integrations. This is only a recommendation filter; it does not claim
+that a protocol is supported. A Device can be saved as **Save for later** while
+it is being configured. Such a Device remains visible but cannot open Episodes
+or join new captures. A manually configured RTSP endpoint can be tested from
+the same editor; it provides recording only and does not provide Events or
+snapshots.
 
 Credentials are write-only in the API and UI: after saving, they are reported
 only as configured and are never returned to the browser. Leaving credential
@@ -60,6 +72,10 @@ Validation, configuration, and runtime health are distinct. A timeout or
 authentication error does not mean that ONVIF is unsupported and therefore
 does not permanently disable it; correct the connection and validate again.
 Only an explicit unsupported endpoint response disables the option.
+The Device editor shows validation results for integrations applicable to its
+current manufacturer and physical role, plus any integration still configured
+on that Device. Earlier probes of unrelated integrations remain diagnostic
+history rather than appearing as current setup guidance.
 
 ONVIF Event polling is disabled by default because generic motion state can be
 noisy. Enable **Receive ONVIF Events** only when those Events are useful. This
@@ -135,7 +151,7 @@ The original vendor payload remains immutable and UI overlays remain separate.
   Digest and WS-Username Token option.
 - **Authentication fails intermittently:** check NTP and the camera time zone.
 - **Validation reports malformed SOAP XML:** enable **Tolerate malformed SOAP
-  XML** for that Device and run **Validate and discover** again. This opt-in
+  XML** for that Device and run **Discover with ONVIF** again. This opt-in
   compatibility fallback leaves the original SOAP response unchanged.
 - **Connected but no Events:** enable a detection rule on the camera and enable
   **Receive ONVIF Events** on the Device. ONVIF exposes configured camera rules;

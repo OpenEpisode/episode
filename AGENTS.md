@@ -156,8 +156,11 @@ an existing API version.
 
 ## Episode and recording semantics
 
-- An Event may create, join, or extend an Episode. Related inactive Events may
-  attach after closure but must not reopen an Episode or restart actions.
+- An Event may create, join, or extend an Episode only while it is `ACTIVE` or
+  `QUIESCENT`. `FINALIZING` is a terminal association barrier: normal Events
+  and Evidence cannot extend or join it, and `CLOSED` is sealed history. Late
+  inactive Events and Evidence remain preserved and unassigned; they never
+  reopen or amend a finalizing or closed Episode.
 - Area is the current correlation and action boundary.
 - The Device emitting an active Event contributes its configured activity
   window to the Episode's minimum deadline. A later Event may extend that
@@ -176,6 +179,10 @@ an existing API version.
   finalized Evidence. Never present incomplete media as successfully complete.
 - Current views are operational previews. They become Evidence only through an
   explicit preservation action.
+- Record safe historical Area and Device identity snapshots when an Event or
+  participating Evidence joins an Episode. Later inventory edits must not
+  rewrite that history; never copy credentials, integration configuration, or
+  stream URLs into the snapshots.
 
 Cross-Area movement handoff, spatial camera topology, broad policy engines, and
 alarm-wide activation are future features. Do not implement them speculatively,

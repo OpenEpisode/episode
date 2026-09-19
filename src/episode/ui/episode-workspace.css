@@ -528,6 +528,9 @@
   object-fit: cover;
   width: 100%;
 }
+.current-view-frame > video { display: block; }
+.current-view-card.is-complete .current-view-live i { background: var(--text-muted); }
+.current-view-card.is-complete .current-view-live { color: var(--text-muted); }
 .current-view-card.is-loading .current-view-frame::after {
   animation: current-view-loading 1.4s ease-in-out infinite;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .07), transparent);
@@ -564,7 +567,6 @@
   width: 6px;
 }
 .current-view-card.is-unavailable .current-view-live i { background: var(--warning); }
-
 .current-view-unavailable {
   align-items: center;
   color: var(--text-muted);

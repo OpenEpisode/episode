@@ -259,11 +259,15 @@ class CaptureProfileService:
         device = await self._repository.get_device(event.device_id)
         allowed = bool(
             device
-            and device.enabled
+            and device.can_participate
             and (profile.include_all_devices or event.device_id in profile.device_ids)
         )
-        if not device or not device.enabled:
-            reason = "device_disabled" if device else "device_not_found"
+        if device is None:
+            reason = "device_not_found"
+        elif device.setup_state == "needs_setup":
+            reason = "device_needs_setup"
+        elif not device.enabled:
+            reason = "device_disabled"
         elif profile.include_all_devices:
             reason = "all_devices_profile"
         elif event.device_id in profile.device_ids:
@@ -311,7 +315,7 @@ class CaptureProfileService:
         devices = await self._repository.list_devices(area_id=event.area_id)
         target_ids: list[str] = []
         for device in devices:
-            if not device.enabled:
+            if not device.can_participate:
                 continue
             if not profile.include_all_devices and device.id not in profile.device_ids:
                 continue

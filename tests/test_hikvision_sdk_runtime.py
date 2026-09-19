@@ -17,6 +17,7 @@ from episode.engine.engine import EpisodeEngine
 from episode.ingestion.router import IngressHandlerRegistration, IngressRouter
 from episode.ingestion.service import IngestionService
 from episode.plugins.deliveries import RawPluginDeliveryStore
+from episode.plugins.hikvision.sdk.events import ANTI_TAMPER
 from episode.plugins.hikvision.sdk.plugin import HikvisionSDKPlugin
 from episode.plugins.hikvision.sdk.runtime import SDKDeviceConfig, SDKDeviceWorker
 from episode.plugins.hikvision.sdk.worker import (
@@ -55,6 +56,12 @@ def _ring_payload() -> bytes:
     payload[4:6] = (2026).to_bytes(2, "little")
     payload[6:11] = bytes((8, 3, 12, 33, 17))
     payload[44] = 17
+    return bytes(payload)
+
+
+def _tamper_payload() -> bytes:
+    payload = bytearray(_ring_payload())
+    payload[44] = ANTI_TAMPER
     return bytes(payload)
 
 
@@ -274,7 +281,20 @@ async def test_raw_plugin_delivery_store_seals_bytes_and_records_receipt(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_interpreted_plugin_delivery_uses_canonical_episode_pipeline(tmp_path):
+@pytest.mark.parametrize(
+    ("payload_factory", "expected_event_type", "expected_metadata"),
+    (
+        (_ring_payload, "doorbell", {"phase": "ringing"}),
+        (_tamper_payload, "tamper_detection", {"sdk_alarm_name": "anti_tamper"}),
+    ),
+    ids=("doorbell-ring", "anti-tamper"),
+)
+async def test_interpreted_alarm_delivery_uses_canonical_episode_pipeline(
+    tmp_path,
+    payload_factory,
+    expected_event_type,
+    expected_metadata,
+):
     config = EpisodeConfig(data_dir=str(tmp_path / "data"), episode_timeout=30)
     repository = Repository(config)
     await repository.initialize()
@@ -301,7 +321,7 @@ async def test_interpreted_plugin_delivery_uses_canonical_episode_pipeline(tmp_p
     )
     store = RawPluginDeliveryStore(IngestionService(config.data_dir, repository, engine, router))
     received_at = datetime.now(tz=timezone.utc)
-    raw = _ring_payload()
+    raw = payload_factory()
 
     await store(
         RawPluginDelivery(
@@ -321,8 +341,10 @@ async def test_interpreted_plugin_delivery_uses_canonical_episode_pipeline(tmp_p
     assert len(events) == 1
     assert len(receipts) == 1
     assert events[0].episode_id == episodes[0].id
-    assert events[0].event_type == "doorbell"
-    assert events[0].metadata["phase"] == "ringing"
+    assert events[0].event_type == expected_event_type
+    assert events[0].event_state == "active"
+    for key, value in expected_metadata.items():
+        assert events[0].metadata[key] == value
     assert receipts[0].event_id == events[0].id
     assert receipts[0].episode_id == episodes[0].id
     artifact = await repository.get_raw_artifact(receipts[0].artifact_id)

@@ -147,6 +147,40 @@ class PluginIntegration:
     name: str
     device_scoped: bool = False
     capabilities: tuple[str, ...] = ()
+    # ``unspecified`` is deliberately not treated as universal.  It is the
+    # safe value for older third-party manifests whose targeting metadata is
+    # not known yet.
+    manufacturer_scope: tuple[str, ...] = ()
+    manufacturer_scope_kind: str = "unspecified"
+    device_types: tuple[str, ...] = ()
+
+    def matches_device(self, *, manufacturer: str | None, device_type: str) -> bool:
+        """Return whether this integration is a safe onboarding candidate.
+
+        This is catalogue metadata only; it never imports or probes plugin
+        code.  A targeted plugin requires a discovered manufacturer, while an
+        explicitly universal plugin can be offered without one.
+        """
+        if self.device_types and device_type not in self.device_types:
+            return False
+        if self.manufacturer_scope_kind == "universal":
+            return True
+        if self.manufacturer_scope_kind != "targeted" or not manufacturer:
+            return False
+        normalized = normalize_manufacturer(manufacturer)
+        return normalized in {normalize_manufacturer(value) for value in self.manufacturer_scope}
+
+
+def normalize_manufacturer(value: str) -> str:
+    """Normalize a discovered manufacturer for matching, not display."""
+    normalized = "".join(character for character in value.casefold() if character.isalnum())
+    # Keep aliases narrow and explicit: this is advisory onboarding metadata,
+    # not a general-purpose fuzzy matcher.
+    if normalized.startswith("hikvision"):
+        return "hikvision"
+    if normalized.startswith("reolink"):
+        return "reolink"
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -175,3 +209,22 @@ class PluginRegistration:
             version=self.installed_version,
             error=self.unavailable_error,
         )
+
+    def public_catalog_entry(self) -> dict[str, object] | None:
+        """Return bounded, non-secret catalogue data for device onboarding."""
+        integration = self.integration
+        if integration is None or not integration.device_scoped:
+            return None
+        return {
+            "id": self.id,
+            "name": integration.name,
+            "type": integration.type,
+            "kind": self.kind,
+            "capabilities": list(integration.capabilities),
+            "manufacturer_scope": list(integration.manufacturer_scope),
+            "manufacturer_scope_kind": integration.manufacturer_scope_kind,
+            "device_types": list(integration.device_types),
+            "configured": bool(self.explicitly_enabled or self.configured_device_ids),
+            "available": self.unavailable_state is None,
+            "selection_required": True,
+        }

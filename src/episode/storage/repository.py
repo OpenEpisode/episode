@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sqlite3
+from collections.abc import Collection
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
@@ -153,13 +154,28 @@ class Repository:
         await self._delivery_conn.execute("PRAGMA synchronous = NORMAL")
         self._delivery_provenance = ProvenanceStore(self._delivery_conn)
 
-        await reconcile_episode_paths(
-            self._conn,
-            self._provenance,
-            self._data_dir,
+        # CLOSED Episodes are sealed historical envelopes. Startup recovery is
+        # deliberately scoped to the small set of states that can still have
+        # interrupted writes; it must not walk old receipts, artifacts, or
+        # media merely to validate already-closed history.
+        unsealed_ids = await self._unsealed_episode_ids()
+        if unsealed_ids:
+            await reconcile_episode_paths(
+                self._conn,
+                self._provenance,
+                self._data_dir,
+                unsealed_ids,
+            )
+            await reconcile_episode_counts(self._conn, unsealed_ids)
+            await self.rebuild_episode_manifests(unsealed_ids)
+
+    async def _unsealed_episode_ids(self) -> tuple[str, ...]:
+        rows = await self._conn.execute_fetchall(
+            """SELECT id FROM episodes
+               WHERE state IN ('active', 'quiescent', 'finalizing')
+               ORDER BY id ASC"""
         )
-        await reconcile_episode_counts(self._conn)
-        await self.rebuild_episode_manifests()
+        return tuple(row["id"] for row in rows)
 
     async def _upgrade_event_schema(self, connection: aiosqlite.Connection) -> None:
         """Apply the bounded additive Beta.6 to Beta.7 Event schema step."""
@@ -643,6 +659,8 @@ class Repository:
         event_type: str | None = None,
         event_state: str | None = None,
         has_episode: bool | None = None,
+        observed_from: datetime | None = None,
+        observed_before: datetime | None = None,
     ) -> list[Event]:
         return await self._event_store().list(
             episode_id,
@@ -653,6 +671,8 @@ class Repository:
             event_type=event_type,
             event_state=event_state,
             has_episode=has_episode,
+            observed_from=observed_from,
+            observed_before=observed_before,
         )
 
     async def find_recent_events_by_device(self, device_id: str, since: datetime) -> list[Event]:
@@ -808,7 +828,21 @@ class Repository:
         evidence_type: str | None = None,
         has_episode: bool | None = None,
         available_only: bool | None = None,
+        captured_from: datetime | None = None,
+        captured_before: datetime | None = None,
     ) -> list[Evidence]:
+        for name, value in (
+            ("captured_from", captured_from),
+            ("captured_before", captured_before),
+        ):
+            if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+                raise ValueError(f"{name} must be timezone-aware")
+        if (
+            captured_from is not None
+            and captured_before is not None
+            and captured_before <= captured_from
+        ):
+            raise ValueError("captured_before must be later than captured_from")
         clauses = []
         params = []
         if episode_id:
@@ -832,6 +866,12 @@ class Repository:
             clauses.append(
                 "x.evidence_id IS NULL" if available_only else "x.evidence_id IS NOT NULL"
             )
+        if captured_from is not None:
+            clauses.append("e.timestamp >= ?")
+            params.append(_utc_iso(captured_from))
+        if captured_before is not None:
+            clauses.append("e.timestamp < ?")
+            params.append(_utc_iso(captured_before))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = await self._conn.execute_fetchall(
             f"{_EVIDENCE_SELECT}{where} ORDER BY e.timestamp DESC, e.id DESC LIMIT ? OFFSET ?",
@@ -988,6 +1028,11 @@ class Repository:
                 episode.summary,
             ),
         )
+        await self._snapshot_area(
+            episode.id,
+            episode.primary_area_id,
+            recorded_at=datetime.now(tz=timezone.utc),
+        )
         await self._conn.commit()
         await asyncio.to_thread(
             append_journal,
@@ -998,6 +1043,108 @@ class Repository:
         )
         await self.refresh_episode_manifest(episode.id)
         return episode
+
+    async def _snapshot_area(
+        self,
+        episode_id: str,
+        area_id: str,
+        *,
+        recorded_at: datetime,
+    ) -> None:
+        """Record one immutable Area identity while the caller's transaction is open."""
+        if not area_id:
+            return
+        rows = await self._conn.execute_fetchall(
+            "SELECT id, name, location FROM areas WHERE id = ?",
+            (area_id,),
+        )
+        if not rows:
+            return
+        area = rows[0]
+        await self._conn.execute(
+            """INSERT OR IGNORE INTO episode_area_snapshots
+               (episode_id, area_id, name, location, recorded_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                episode_id,
+                area["id"],
+                area["name"],
+                area["location"],
+                _utc_iso(recorded_at),
+            ),
+        )
+
+    async def _snapshot_device(
+        self,
+        episode_id: str,
+        device_id: str,
+        *,
+        recorded_at: datetime,
+    ) -> None:
+        """Record a safe immutable Device identity and its Area identity."""
+        if not device_id:
+            return
+        rows = await self._conn.execute_fetchall(
+            """SELECT id, name, device_type, area_id, ip_address
+               FROM devices WHERE id = ?""",
+            (device_id,),
+        )
+        if not rows:
+            return
+        device = rows[0]
+        await self._conn.execute(
+            """INSERT OR IGNORE INTO episode_device_snapshots
+               (episode_id, device_id, name, device_type, area_id, ip_address, recorded_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                episode_id,
+                device["id"],
+                device["name"],
+                device["device_type"],
+                device["area_id"],
+                device["ip_address"],
+                _utc_iso(recorded_at),
+            ),
+        )
+        await self._snapshot_area(episode_id, device["area_id"], recorded_at=recorded_at)
+
+    async def list_episode_area_snapshots(self, episode_id: str) -> list[dict[str, str]]:
+        rows = await self._conn.execute_fetchall(
+            """SELECT area_id, name, location, recorded_at
+               FROM episode_area_snapshots
+               WHERE episode_id = ?
+               ORDER BY area_id ASC""",
+            (episode_id,),
+        )
+        return [
+            {
+                "id": row["area_id"],
+                "name": row["name"],
+                "location": row["location"],
+                "recorded_at": row["recorded_at"],
+            }
+            for row in rows
+        ]
+
+    async def list_episode_device_snapshots(self, episode_id: str) -> list[dict[str, str]]:
+        rows = await self._conn.execute_fetchall(
+            """SELECT device_id, name, device_type, area_id, ip_address, recorded_at
+               FROM episode_device_snapshots
+               WHERE episode_id = ?
+               ORDER BY device_id ASC""",
+            (episode_id,),
+        )
+        return [
+            {
+                "id": row["device_id"],
+                "name": row["name"],
+                "device_type": row["device_type"],
+                "area_id": row["area_id"],
+                "ip_address": row["ip_address"],
+                "recorded_at": row["recorded_at"],
+            }
+            for row in rows
+        ]
 
     async def get_episode(self, episode_id: str) -> Episode | None:
         row = await self._conn.execute_fetchall(
@@ -1115,7 +1262,7 @@ class Repository:
         rows = await self._conn.execute_fetchall(
             """SELECT * FROM episodes
                WHERE primary_area_id = ?
-                 AND state IN ('active', 'quiescent', 'closed')
+                 AND state IN ('active', 'quiescent')
                  AND julianday(start_time) <= julianday(?)
                  AND (
                      end_time IS NULL
@@ -1137,6 +1284,12 @@ class Repository:
             return
         if event.episode_id:
             raise ValueError(f"Event {event_id} already belongs to episode {event.episode_id}")
+        episode = await self.get_episode(episode_id)
+        if episode is None or episode.state not in {
+            EpisodeState.ACTIVE,
+            EpisodeState.QUIESCENT,
+        }:
+            raise RuntimeError(f"Episode {episode_id} is sealed for Event association")
         cursor = await self._conn.execute(
             "UPDATE events SET episode_id = ? WHERE id = ? AND episode_id IS NULL",
             (episode_id, event_id),
@@ -1151,6 +1304,19 @@ class Repository:
             "UPDATE episodes SET event_count = event_count + 1 WHERE id = ?",
             (episode_id,),
         )
+        snapshot_time = datetime.now(tz=timezone.utc)
+        await self._snapshot_area(episode_id, event.area_id, recorded_at=snapshot_time)
+        await self._snapshot_device(
+            episode_id,
+            event.device_id,
+            recorded_at=snapshot_time,
+        )
+        for target_id in event.eligible_recording_device_ids or []:
+            await self._snapshot_device(
+                episode_id,
+                target_id,
+                recorded_at=snapshot_time,
+            )
         await self._conn.commit()
 
         raw_payload_path = event.raw_payload_path
@@ -1193,7 +1359,12 @@ class Repository:
             await self.refresh_episode_manifest(episode_id)
 
     async def add_evidence_to_episode(
-        self, evidence_id: str, episode_id: str, *, _defer_manifest: bool = False
+        self,
+        evidence_id: str,
+        episode_id: str,
+        *,
+        _defer_manifest: bool = False,
+        allow_finalizing: bool = False,
     ):
         evidence = await self.get_evidence(evidence_id)
         if not evidence:
@@ -1204,6 +1375,15 @@ class Repository:
             raise ValueError(
                 f"Evidence {evidence_id} already belongs to episode {evidence.episode_id}"
             )
+        episode = await self.get_episode(episode_id)
+        allowed_states = {
+            EpisodeState.ACTIVE,
+            EpisodeState.QUIESCENT,
+        }
+        if allow_finalizing:
+            allowed_states.add(EpisodeState.FINALIZING)
+        if episode is None or episode.state not in allowed_states:
+            raise RuntimeError(f"Episode {episode_id} is sealed for Evidence association")
         cursor = await self._conn.execute(
             "UPDATE evidence SET episode_id = ? WHERE id = ? AND episode_id IS NULL",
             (episode_id, evidence_id),
@@ -1219,6 +1399,13 @@ class Repository:
         await self._conn.execute(
             "UPDATE episodes SET evidence_count = evidence_count + 1 WHERE id = ?",
             (episode_id,),
+        )
+        snapshot_time = datetime.now(tz=timezone.utc)
+        await self._snapshot_area(episode_id, evidence.area_id, recorded_at=snapshot_time)
+        await self._snapshot_device(
+            episode_id,
+            evidence.device_id,
+            recorded_at=snapshot_time,
         )
         await self._conn.commit()
 
@@ -1297,6 +1484,51 @@ class Repository:
         if not _defer_manifest:
             await self.refresh_episode_manifest(episode_id)
 
+    async def mark_episode_closed(
+        self,
+        episode_id: str,
+        *,
+        ended_at: datetime | None = None,
+    ) -> None:
+        """Commit a successfully finalized Episode as closed.
+
+        The conditional update makes retrying finalization harmless while
+        ensuring that a normal close cannot bypass the FINALIZING barrier.
+        The caller must have already written the final portable manifest. The
+        portable journal is appended before the database state changes so a
+        journal failure leaves the Episode recoverably FINALIZING.
+        """
+        ended_at = ended_at or datetime.now(tz=timezone.utc)
+        current = await self.get_episode(episode_id)
+        if current and current.state == EpisodeState.CLOSED:
+            return
+        if current is None or current.state != EpisodeState.FINALIZING:
+            raise RuntimeError(f"Episode {episode_id} is not finalizing")
+        await asyncio.to_thread(
+            append_journal,
+            self._data_dir,
+            episode_id,
+            "episode.state_changed",
+            {"state": EpisodeState.CLOSED.value},
+        )
+        cursor = await self._conn.execute(
+            """UPDATE episodes
+               SET state = ?, end_time = ?
+               WHERE id = ? AND state = ?""",
+            (
+                EpisodeState.CLOSED.value,
+                _utc_iso(ended_at),
+                episode_id,
+                EpisodeState.FINALIZING.value,
+            ),
+        )
+        if cursor.rowcount == 0:
+            current = await self.get_episode(episode_id)
+            if current and current.state == EpisodeState.CLOSED:
+                return
+            raise RuntimeError(f"Episode {episode_id} is not finalizing")
+        await self._conn.commit()
+
     async def update_episode_times(
         self,
         episode_id: str,
@@ -1353,22 +1585,26 @@ class Repository:
         *,
         now: datetime | None = None,
     ) -> tuple[list[Episode], list[Episode]]:
-        """Move expired Episodes through quiescence and then close them.
+        """Move expired Episodes through quiescence and into finalization.
 
         The returned lists contain Episodes transitioned to QUIESCENT and
-        CLOSED respectively.  ``now`` is injectable so lifecycle decisions can
-        be tested against the same clock as Event ingress.
+        FINALIZING respectively.  ``now`` is injectable so lifecycle decisions
+        can be tested against the same clock as Event ingress.
         """
         observed_at = now or datetime.now(tz=timezone.utc)
         grace = validate_quiescent_grace_seconds(quiescent_grace_seconds)
         rows = await self._conn.execute_fetchall(
             """SELECT * FROM episodes
-               WHERE state IN ('active', 'quiescent')"""
+               WHERE state IN ('active', 'quiescent', 'finalizing')"""
         )
         quiescent: list[Episode] = []
-        closed: list[Episode] = []
+        finalizing: list[Episode] = []
+        entered_finalizing: list[Episode] = []
         for row in rows:
             episode = self._row_to_episode(row)
+            if episode.state == EpisodeState.FINALIZING:
+                finalizing.append(episode)
+                continue
             deadline = episode.minimum_end_at
             if deadline is None:
                 baseline = episode.last_activity_at or episode.last_event_time or episode.start_time
@@ -1382,11 +1618,12 @@ class Repository:
             if close_at < observed_at:
                 await self._conn.execute(
                     "UPDATE episodes SET state = ?, end_time = ? WHERE id = ?",
-                    (EpisodeState.CLOSED.value, _utc_iso(observed_at), episode.id),
+                    (EpisodeState.FINALIZING.value, None, episode.id),
                 )
-                episode.state = EpisodeState.CLOSED
-                episode.end_time = observed_at
-                closed.append(episode)
+                episode.state = EpisodeState.FINALIZING
+                episode.end_time = None
+                finalizing.append(episode)
+                entered_finalizing.append(episode)
                 continue
 
             if episode.state == EpisodeState.ACTIVE and deadline <= observed_at:
@@ -1397,7 +1634,7 @@ class Repository:
                 episode.state = EpisodeState.QUIESCENT
                 quiescent.append(episode)
 
-        if quiescent or closed:
+        if quiescent or finalizing:
             await self._conn.commit()
         for episode in quiescent:
             await asyncio.to_thread(
@@ -1408,16 +1645,15 @@ class Repository:
                 {"state": EpisodeState.QUIESCENT.value},
             )
             await self.refresh_episode_manifest(episode.id)
-        for episode in closed:
+        for episode in entered_finalizing:
             await asyncio.to_thread(
                 append_journal,
                 self._data_dir,
                 episode.id,
                 "episode.state_changed",
-                {"state": EpisodeState.CLOSED.value},
+                {"state": EpisodeState.FINALIZING.value},
             )
-            await self.refresh_episode_manifest(episode.id)
-        return quiescent, closed
+        return quiescent, finalizing
 
     async def append_episode_journal(
         self,
@@ -1435,11 +1671,21 @@ class Repository:
 
     # --- Portable Episode bundles ---
 
-    async def rebuild_episode_manifests(self) -> None:
-        await self._bundles.rebuild()
+    async def rebuild_episode_manifests(self, episode_ids: Collection[str] | None = None) -> None:
+        await self._bundles.rebuild(episode_ids)
 
-    async def refresh_episode_manifest(self, episode_id: str) -> None:
-        await self._bundles.refresh(episode_id)
+    async def refresh_episode_manifest(
+        self,
+        episode_id: str,
+        *,
+        state_override: EpisodeState | None = None,
+        end_time_override: datetime | None = None,
+    ) -> None:
+        await self._bundles.refresh(
+            episode_id,
+            state_override=state_override,
+            end_time_override=end_time_override,
+        )
 
     # --- Row deserialization ---
 

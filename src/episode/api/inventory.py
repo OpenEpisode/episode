@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -116,6 +117,11 @@ class DeviceWriteRequest(BaseModel):
     device_type: DeviceType = "camera"
     area_id: str = Field(min_length=1, max_length=64)
     enabled: bool = True
+    setup_state: Literal["ready", "needs_setup"] = "ready"
+    # Operator-provided fallback when protocol discovery cannot identify the
+    # manufacturer.  This is a hint for catalogue filtering, not proof of
+    # protocol support.
+    manufacturer: str | None = Field(default=None, max_length=100)
     ip_address: str = Field(default="", max_length=255)
     username: str | None = Field(default=None, max_length=128)
     password: str | None = Field(default=None, max_length=256)
@@ -126,11 +132,31 @@ class DeviceWriteRequest(BaseModel):
     isapi: ISAPIConfigurationRequest = Field(default_factory=ISAPIConfigurationRequest)
     hikvision_sdk: SDKConfigurationRequest = Field(default_factory=SDKConfigurationRequest)
     reolink: ReolinkConfigurationRequest = Field(default_factory=ReolinkConfigurationRequest)
+    # Validation is deliberately opt-in for vendor integrations.  ``None``
+    # means the initial generic ONVIF-only probe; an empty list means no probe.
+    integration_ids: list[str] | None = Field(default=None, max_length=20)
 
     @field_validator("name", "device_type", "area_id", "ip_address")
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("manufacturer")
+    @classmethod
+    def strip_manufacturer(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @field_validator("integration_ids")
+    @classmethod
+    def validate_integration_ids(cls, values: list[str] | None) -> list[str] | None:
+        if values is None:
+            return None
+        if any(
+            not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", value)
+            for value in values
+        ):
+            raise ValueError("integration IDs must use bounded lowercase identifiers")
+        return list(dict.fromkeys(values))
 
     @model_validator(mode="after")
     def validate_network_configuration(self):
@@ -186,6 +212,8 @@ class DeviceValidationResponse(BaseModel):
 
 
 class DeviceConfigurationResponse(BaseModel):
+    setup_state: Literal["ready", "needs_setup"] = "ready"
+    manufacturer: str | None = None
     username_configured: bool
     password_configured: bool
     episode_policy: EpisodePolicyRequest
@@ -205,6 +233,8 @@ def editable_device_configuration(device: Device) -> dict:
     discovered_video = bool(video and video.settings.get("origin") == "onvif")
     manual_video = bool(video and video.protocol and video.path and not discovered_video)
     return DeviceConfigurationResponse(
+        setup_state=getattr(device, "setup_state", "ready"),
+        manufacturer=device.metadata.get("_manufacturer_override"),
         username_configured=bool(device.username),
         password_configured=bool(device.password),
         episode_policy=EpisodePolicyRequest(
@@ -359,6 +389,13 @@ def device_from_request(
             else ""
         )
 
+    metadata = dict(existing.metadata) if existing else {}
+    if "manufacturer" in request.model_fields_set:
+        if request.manufacturer and request.manufacturer.strip():
+            metadata["_manufacturer_override"] = request.manufacturer.strip()
+        else:
+            metadata.pop("_manufacturer_override", None)
+
     return Device(
         id=device_id,
         name=request.name,
@@ -370,12 +407,13 @@ def device_from_request(
         password=password,
         configs=configs,
         activity_window_seconds=request.episode_policy.activity_window_seconds,
-        metadata=dict(existing.metadata) if existing else {},
+        metadata=metadata,
         enabled=request.enabled,
         event_filter=resolve_device_event_filter(
             request.episode_policy.event_filter,
             request.episode_policy.generic_event_filter,
         ),
+        setup_state=request.setup_state,
     )
 
 

@@ -39,6 +39,40 @@ async def test_archived_inventory_is_retained_but_excluded_from_runtime_lists(in
 
 
 @pytest.mark.asyncio
+async def test_device_needing_setup_is_separate_from_operator_disabled(inventory):
+    repository, service = inventory
+    await service.save_area(Area(id="gate", name="Gate"), create=True)
+    draft = await service.save_device(
+        Device(
+            id="draft-camera",
+            name="Draft camera",
+            device_type="camera",
+            area_id="gate",
+            setup_state="needs_setup",
+        ),
+        create=True,
+    )
+
+    assert draft.enabled is True
+    assert draft.can_participate is False
+    assert await repository.list_devices() == []
+    assert [item.id for item in await repository.list_devices(include_disabled=True)] == [
+        "draft-camera"
+    ]
+    restored = await repository.get_device(draft.id)
+    assert restored.setup_state == "needs_setup"
+    assert "_setup_state" not in restored.metadata
+    assert await service.configured_devices() == ()
+
+    await service.save_area(Area(id="gate", name="Gate", enabled=False), create=False)
+    await service.save_area(Area(id="gate", name="Gate", enabled=True), create=False)
+
+    restored.setup_state = "ready"
+    await service.save_device(restored, create=False)
+    assert [item.id for item in await repository.list_devices()] == ["draft-camera"]
+
+
+@pytest.mark.asyncio
 async def test_inventory_prevents_unsafe_deletion_and_duplicate_addresses(inventory):
     repository, service = inventory
     await service.save_area(Area(id="gate", name="Gate"), create=True)

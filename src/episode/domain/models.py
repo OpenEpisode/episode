@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from hashlib import sha256
+from urllib.parse import quote
 from uuid import uuid4
 
 from episode.domain.event_filter import normalize_device_selector, normalize_selector
@@ -40,9 +41,11 @@ class CapabilityConfig:
     def build_url(self, host: str, username: str = "", password: str = "") -> str:
         if not self.protocol or not host:
             return ""
-        auth = f"{username}:{password}@" if username else ""
+        # An IPv6 address is a single URL host only when enclosed in brackets.
+        address = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        auth = f"{quote(username, safe='')}:{quote(password, safe='')}@" if username else ""
         port_str = f":{self.port}" if self.port else ""
-        return f"{self.protocol}://{auth}{host}{port_str}{self.path}"
+        return f"{self.protocol}://{auth}{address}{port_str}{self.path}"
 
 
 class EventState(str, Enum):
@@ -54,6 +57,7 @@ class EpisodeState(str, Enum):
     NEW = "new"
     ACTIVE = "active"
     QUIESCENT = "quiescent"
+    FINALIZING = "finalizing"
     CLOSED = "closed"
     ARCHIVED = "archived"
 
@@ -159,8 +163,11 @@ class Device:
     # Profile; a list selects classes for this Device alone, and an empty list
     # is the explicit negative "this camera filters nothing".
     event_filter: list[str] | None = None
+    setup_state: str = "ready"
 
     def __post_init__(self):
+        if self.setup_state not in {"ready", "needs_setup"}:
+            raise ValueError("Device setup state must be ready or needs_setup")
         # ``None`` stays inherit. An unreadable selector also means inherit, so a
         # corrupt row cannot silently opt a camera out of profile policy; operator
         # input is validated at the API edge.
@@ -175,6 +182,11 @@ class Device:
 
     def get_config(self, capability: str) -> CapabilityConfig | None:
         return self.configs.get(capability)
+
+    @property
+    def can_participate(self) -> bool:
+        """Whether this Device may contribute to new capture work."""
+        return self.enabled and self.setup_state == "ready"
 
 
 @dataclass

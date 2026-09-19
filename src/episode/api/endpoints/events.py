@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
@@ -11,6 +12,7 @@ from episode.api.errors import PUBLIC_ERROR_RESPONSES
 from episode.api.pagination import DEFAULT_LIMIT, PageLimit, PageOffset
 from episode.api.projections import event_annotations, event_embedded_picture, public_evidence
 from episode.api.schemas import ClosestSnapshotResponse, EventResponse
+from episode.api.time_ranges import normalize_datetime_range
 
 
 def events_router(context: ApiContext) -> APIRouter:
@@ -29,9 +31,17 @@ def events_router(context: ApiContext) -> APIRouter:
         event_type: str | None = None,
         event_state: str | None = None,
         has_episode: bool | None = None,
+        observed_from: datetime | None = None,
+        observed_before: datetime | None = None,
         limit: PageLimit = DEFAULT_LIMIT,
         offset: PageOffset = 0,
     ):
+        observed_from, observed_before = normalize_datetime_range(
+            observed_from,
+            observed_before,
+            start_name="observed_from",
+            end_name="observed_before",
+        )
         events = await repo.list_events(
             episode_id,
             area_id,
@@ -41,6 +51,8 @@ def events_router(context: ApiContext) -> APIRouter:
             event_type=event_type,
             event_state=event_state,
             has_episode=has_episode,
+            observed_from=observed_from,
+            observed_before=observed_before,
         )
         return await context.public_events(events)
 

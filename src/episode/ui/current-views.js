@@ -1,6 +1,6 @@
 import { api } from "./api.js?v=3";
 import { escHtml } from "./dom.js";
-import { attachMediaSource } from "./media-player.js?v=2";
+import { attachMediaSource } from "./media-player.js?v=7";
 
 let refreshTimer = null;
 let refreshGeneration = 0;
@@ -13,11 +13,11 @@ function viewCard(view) {
   return `<article class="current-view-card ${available ? "is-loading" : "is-unavailable"}" data-device-id="${escHtml(view.device_id)}">
     <div class="current-view-frame">
       ${streamAvailable
-        ? `<video muted autoplay playsinline controls data-stream-url="${escHtml(view.stream_url)}"></video>`
+        ? `<video muted autoplay playsinline controls aria-label="Current recording from ${escHtml(view.device_name)}" data-stream-url="${escHtml(view.stream_url)}"></video>`
         : snapshotAvailable
         ? `<img alt="Current view from ${escHtml(view.device_name)}" data-preview-url="${escHtml(view.image_url)}">`
         : '<div class="current-view-unavailable"><img src="/logo.svg" alt=""><span>Preview unavailable</span></div>'}
-      <span class="current-view-live"><i></i>${streamAvailable ? "Live" : available ? "Current" : "Recording"}</span>
+      <span class="current-view-live" data-current-view-live aria-live="polite"><i></i>${streamAvailable ? "Live" : available ? "Current" : "Recording"}</span>
     </div>
     <div class="current-view-caption">
       <strong>${escHtml(view.device_name)}</strong>
@@ -29,7 +29,7 @@ function viewCard(view) {
 function viewsMarkup(views, ended = false) {
   if (!views.length) {
     return `<div class="current-view-waiting">${ended
-      ? "This Episode has ended · current views are no longer requested."
+      ? "This Episode has ended · recordings remain available to review."
       : "Waiting for recording Devices to join this Episode…"}</div>`;
   }
   return views.map(viewCard).join("");
@@ -40,9 +40,9 @@ export function renderCurrentViews(views) {
     <div class="current-views-heading">
       <div>
         <span class="eyebrow">Happening now</span>
-        <h3 id="current-views-title">Current views</h3>
+        <h3 id="current-views-title">Ongoing recordings</h3>
       </div>
-      <span class="current-views-note">Streams from the recording already being captured</span>
+      <span class="current-views-note" data-current-views-state>Live preview · recording continues</span>
     </div>
     <div id="current-view-grid" class="current-view-grid">${viewsMarkup(views)}</div>
   </section>`;
@@ -50,7 +50,7 @@ export function renderCurrentViews(views) {
 
 function signature(views) {
   return views.map(view => (
-    `${view.device_id}:${view.mode}:${view.recording_state || ""}:${view.stream_url || ""}`
+    `${view.device_id}:${view.mode}:${view.stream_url || ""}`
   )).join("|");
 }
 
@@ -58,19 +58,37 @@ function attachStreams() {
   streamDetachers.forEach(detach => detach());
   streamDetachers = [];
   document.querySelectorAll("#current-view-grid video[data-stream-url]").forEach(video => {
-    streamDetachers.push(
-      attachMediaSource(video, video.dataset.streamUrl, {
-        live: true,
-        onState: ({ state, message }) => {
-          const card = video.closest(".current-view-card");
-          card?.classList.toggle("has-error", ["error", "unavailable"].includes(state));
-          card?.classList.toggle("is-loading", ["loading", "buffering", "reconnecting"].includes(state));
-          const status = card?.querySelector(".current-view-status");
-          if (status && state !== "ready") status.textContent = message;
-          if (status && state === "ready") status.textContent = "Streaming the recording as it is captured";
-        },
-      }),
-    );
+    const card = video.closest(".current-view-card");
+    const detachMedia = attachMediaSource(video, video.dataset.streamUrl, {
+      live: true,
+      onState: ({ state, message }) => {
+        const complete = card?.classList.contains("is-complete");
+        card?.classList.toggle("has-error", !complete && ["error", "unavailable"].includes(state));
+        card?.classList.toggle("is-loading", !complete && ["loading", "buffering", "reconnecting"].includes(state));
+        const status = card?.querySelector(".current-view-status");
+        if (status && !card?.classList.contains("is-complete") && state !== "ready") {
+          status.textContent = message;
+        }
+        if (status && !card?.classList.contains("is-complete") && state === "ready") {
+          status.textContent = "Streaming the recording as it is captured";
+        }
+      },
+    });
+    streamDetachers.push(detachMedia);
+  });
+}
+
+export function markEpisodeComplete() {
+  document.querySelector("[data-current-views-state]")?.replaceChildren(
+    "Episode closed · recordings remain available to review",
+  );
+  document.querySelectorAll("#current-view-grid .current-view-card").forEach(card => {
+    card.classList.add("is-complete");
+    card.classList.remove("is-loading");
+    const badge = card.querySelector("[data-current-view-live]");
+    const status = card.querySelector(".current-view-status");
+    if (badge) badge.lastChild.textContent = "Complete";
+    if (status) status.textContent = "Episode closed · recording available to review";
   });
 }
 
@@ -109,7 +127,7 @@ async function refresh(episodeId, generation, previousSignature, intervalSeconds
   let ended = false;
   try {
     views = await api(`/episodes/${encodeURIComponent(episodeId)}/current-views`);
-    if (!views.length && previousSignature) {
+    if (views?.length === 0) {
       const episode = await api(`/episodes/${encodeURIComponent(episodeId)}`);
       ended = ["closed", "archived"].includes(episode.state);
     }
@@ -120,7 +138,7 @@ async function refresh(episodeId, generation, previousSignature, intervalSeconds
 
   const grid = document.getElementById("current-view-grid");
   let nextSignature = previousSignature;
-  if (grid && views) {
+  if (grid && views?.length && !ended) {
     nextSignature = signature(views);
     if (nextSignature !== previousSignature) {
       grid.innerHTML = viewsMarkup(views, ended);
@@ -130,7 +148,13 @@ async function refresh(episodeId, generation, previousSignature, intervalSeconds
   document.querySelectorAll("#current-view-grid img[data-preview-url]")
     .forEach(image => loadPreview(image, generation));
 
-  if (ended) return;
+  if (ended) {
+    if (grid && !grid.querySelector(".current-view-card")) {
+      grid.innerHTML = viewsMarkup([], true);
+    }
+    markEpisodeComplete();
+    return;
+  }
 
   refreshTimer = window.setTimeout(
     () => refresh(episodeId, generation, nextSignature, intervalSeconds),
