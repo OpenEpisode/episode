@@ -104,7 +104,7 @@ one integration from owning the incident model.
 
 ## Project status
 
-Episode `0.1.0-beta.7` is a working public beta for technical self-hosters using
+Episode `0.1.0-beta.8` is a working public beta for technical self-hosters using
 IP cameras and Docker. Current priorities are reliable preservation, correct
 correlation, simple operation, and an uncluttered Episode-first interface.
 
