@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -29,7 +28,6 @@ from episode.domain.event_filter import (
     FILTER_SOURCE_PROFILE,
     FILTERABLE_EVENT_CLASSES,
     FILTERED_REASON,
-    LEGACY_FILTER_CLASSES,
     PROFILE_SELECTABLE_EVENT_CLASSES,
     decode_device_filter,
     encode_device_filter,
@@ -53,13 +51,9 @@ from episode.engine.engine import EpisodeEngine
 from episode.inventory import InventoryService
 from episode.storage.repository import Repository
 
-# The class equivalent of the ``beta.7`` "filter generic events" behaviour.
-BETA7_SELECTOR = [EVENT_CLASS_MOTION, EVENT_CLASS_HEARTBEAT, EVENT_CLASS_CONDITION]
+GENERIC_OBSERVATIONS = [EVENT_CLASS_MOTION, EVENT_CLASS_HEARTBEAT, EVENT_CLASS_CONDITION]
 
-# Types that must survive the backfilled ``beta.7`` selector. The regression at
-# the heart of that revision: tamper, video loss and alarm inputs were filtered
-# by the flat generic list and had to pass once classes replaced it.
-BETA7_PRESERVED = (
+OTHER_EVENT_TYPES = (
     "tamper_detection",
     "tampering_detection",
     "video_loss",
@@ -189,8 +183,10 @@ def test_validation_returns_a_canonical_sorted_list():
     ]
     assert validate_selector(None) == []
     assert validate_selector([]) == []
-    assert validate_selector("inherit") == []
     assert validate_selector("[]") == []
+    for legacy_value in (True, False, "enabled", "disabled", "inherit"):
+        with pytest.raises(ValueError):
+            validate_selector(legacy_value)
 
 
 def test_normalize_handles_every_stored_and_wire_shape():
@@ -200,12 +196,10 @@ def test_normalize_handles_every_stored_and_wire_shape():
         EVENT_CLASS_HEARTBEAT,
     }
     assert normalize_selector([EVENT_CLASS_MOTION]) == {EVENT_CLASS_MOTION}
-    # ``beta.7`` legacy shapes translate to the class equivalent, minus security.
-    assert normalize_selector(True) == LEGACY_FILTER_CLASSES
-    assert normalize_selector(False) == frozenset()
-    assert normalize_selector("enabled") == LEGACY_FILTER_CLASSES
-    assert normalize_selector("disabled") == frozenset()
     # Damaged or unselectable data read back from storage means no filtering.
+    assert normalize_selector(True) == frozenset()
+    assert normalize_selector("enabled") == frozenset()
+    assert normalize_selector("disabled") == frozenset()
     assert normalize_selector("garbage") == frozenset()
     assert normalize_selector('["motion"') == frozenset()
     assert normalize_selector(7) == frozenset()
@@ -239,10 +233,10 @@ def test_is_filterable_respects_class_and_selector():
     assert is_filterable("system", {EVENT_CLASS_MOTION}) is False
     assert is_filterable("motion_detection", set()) is False
     # An empty selector filters nothing at all, whatever the type.
-    for event_type in BETA7_PRESERVED:
+    for event_type in OTHER_EVENT_TYPES:
         assert is_filterable(event_type, frozenset()) is False, event_type
     # Any class can be suppressed once it is named, at either level.
-    for event_type in BETA7_PRESERVED:
+    for event_type in OTHER_EVENT_TYPES:
         assert is_filterable(event_type, {event_class(event_type)}) is True, event_type
     assert is_filterable("mystery_event", {EVENT_CLASS_UNKNOWN}) is True
 
@@ -251,20 +245,12 @@ def test_is_filterable_respects_class_and_selector():
 
 
 @pytest.mark.asyncio
-async def test_beta7_backfilled_selector_keeps_security_events(filter_context):
-    """The regression for this revision.
-
-    Under ``beta.7`` the flat generic list suppressed tamper, video loss and
-    alarm inputs. The equivalent backfilled class selector must suppress motion,
-    status and audio while every security-bearing or classified observation
-    still participates.
-    """
+async def test_explicit_generic_classes_leave_security_events_allowed(filter_context):
+    """An explicit low-signal filter leaves unselected event classes allowed."""
     repo, service = filter_context
-    profile = await service.create_profile("Night", ["camera"], event_filter=BETA7_SELECTOR)
+    profile = await service.create_profile("Night", ["camera"], event_filter=GENERIC_OBSERVATIONS)
     await activate(repo, profile.id)
 
-    # ``battery_low`` sits in ``security``, so the backfilled selector leaves it
-    # running exactly as ``beta.7`` did: it was never in the flat generic list.
     for event_type in ("motion_detection", "system", "audio_detection"):
         decision, _targets = await service.evaluate_event(make_event("camera", event_type))
         assert decision.allowed is False, event_type
@@ -274,7 +260,7 @@ async def test_beta7_backfilled_selector_keeps_security_events(filter_context):
         assert decision.filter_source == FILTER_SOURCE_PROFILE
         assert decision.attachment is None
 
-    for event_type in (*BETA7_PRESERVED, "battery_low"):
+    for event_type in (*OTHER_EVENT_TYPES, "battery_low"):
         decision, _targets = await service.evaluate_event(make_event("camera", event_type))
         assert decision.allowed is True, event_type
         assert decision.reason == "device_in_profile"
@@ -623,7 +609,7 @@ async def test_filtered_event_stays_preserved_and_queryable(filter_context):
     assert stored.eligible_recording_device_ids == []
 
 
-# --- Storage: round-trip, backfill, and idempotent startup ---
+# --- Storage: round-trip and restart ---
 
 
 @pytest.mark.asyncio
@@ -665,109 +651,8 @@ async def test_builtin_profile_has_an_empty_selector(filter_context):
     assert builtin.event_filter == []
 
 
-LEGACY_BETA7_DEVICES = """
-CREATE TABLE devices (
-    id TEXT PRIMARY KEY, name TEXT NOT NULL, device_type TEXT NOT NULL,
-    area_id TEXT NOT NULL, capabilities TEXT NOT NULL DEFAULT '[]',
-    ip_address TEXT NOT NULL DEFAULT '', username TEXT NOT NULL DEFAULT '',
-    password TEXT NOT NULL DEFAULT '', configs TEXT NOT NULL DEFAULT '{}',
-    activity_window_seconds INTEGER, metadata TEXT NOT NULL DEFAULT '{}',
-    enabled INTEGER NOT NULL DEFAULT 1,
-    generic_event_filter TEXT NOT NULL DEFAULT 'inherit'
-);
-"""
-
-LEGACY_BETA7_PROFILES = """
-CREATE TABLE capture_profiles (
-    id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE,
-    include_all_devices INTEGER NOT NULL DEFAULT 0,
-    device_ids TEXT NOT NULL DEFAULT '[]',
-    builtin INTEGER NOT NULL DEFAULT 0,
-    filter_generic_events INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-"""
-
-
 @pytest.mark.asyncio
-async def test_legacy_columns_backfill_to_class_selectors(tmp_path):
-    db_path = tmp_path / "legacy.db"
-    connection = sqlite3.connect(db_path)
-    connection.executescript(LEGACY_BETA7_DEVICES)
-    connection.executescript(LEGACY_BETA7_PROFILES)
-    connection.execute(
-        "INSERT INTO devices (id, name, device_type, area_id, generic_event_filter)"
-        " VALUES ('on', 'On', 'camera', 'a', 'enabled'),"
-        " ('off', 'Off', 'camera', 'a', 'disabled'),"
-        " ('inh', 'Inh', 'camera', 'a', 'inherit')"
-    )
-    now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
-    connection.executemany(
-        "INSERT INTO capture_profiles (id, name, filter_generic_events, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?)",
-        [("night", "Night", 1, now, now), ("day", "Day", 0, now, now)],
-    )
-    connection.commit()
-    connection.close()
-
-    repo = Repository(EpisodeConfig(data_dir=str(tmp_path), db_path=str(db_path)))
-    await repo.initialize()
-    try:
-        assert (await repo.get_capture_profile("night")).event_filter == sorted(
-            LEGACY_FILTER_CLASSES
-        )
-        assert (await repo.get_capture_profile("day")).event_filter == []
-        assert (await repo.get_device("on")).event_filter == sorted(LEGACY_FILTER_CLASSES)
-        assert (await repo.get_device("off")).event_filter == []
-        assert (await repo.get_device("inh")).event_filter is None
-        columns = {
-            row["name"] for row in await repo._conn.execute_fetchall("PRAGMA table_info(devices)")
-        }
-        profile_columns = {
-            row["name"]
-            for row in await repo._conn.execute_fetchall("PRAGMA table_info(capture_profiles)")
-        }
-        # No legacy keyword survives: the two representations never coexist.
-        assert "generic_event_filter" not in columns
-        assert "filter_generic_events" not in profile_columns
-    finally:
-        await repo.close()
-
-
-@pytest.mark.asyncio
-async def test_capture_policy_schema_step_is_idempotent(tmp_path):
-    db_path = tmp_path / "legacy.db"
-    connection = sqlite3.connect(db_path)
-    connection.executescript(LEGACY_BETA7_DEVICES)
-    connection.executescript(LEGACY_BETA7_PROFILES)
-    connection.execute(
-        "INSERT INTO devices (id, name, device_type, area_id, generic_event_filter)"
-        " VALUES ('on', 'On', 'camera', 'a', 'enabled')"
-    )
-    now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
-    connection.execute(
-        "INSERT INTO capture_profiles (id, name, filter_generic_events, created_at, updated_at)"
-        " VALUES ('night', 'Night', 1, ?, ?)",
-        (now, now),
-    )
-    connection.commit()
-    connection.close()
-
-    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(db_path))
-    for _ in range(3):
-        repo = Repository(config)
-        await repo.initialize()
-        try:
-            assert (await repo.get_device("on")).event_filter == sorted(LEGACY_FILTER_CLASSES)
-            assert (await repo.get_capture_profile("night")).event_filter == sorted(
-                LEGACY_FILTER_CLASSES
-            )
-        finally:
-            await repo.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_enabled_device_selector_survives_a_restart(tmp_path):
+async def test_device_selector_survives_a_restart(tmp_path):
     config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
     repo = Repository(config)
     await repo.initialize()
@@ -809,12 +694,28 @@ async def test_api_carries_event_filter_at_both_levels(filter_context):
     ) as client:
         created = await client.post(
             "/api/v1/capture-profiles",
-            json={"name": "Night", "device_ids": ["camera"], "event_filter": ["motion"]},
+            json={
+                "name": "Night",
+                "device_ids": ["camera"],
+                "event_filter": ["motion"],
+                "filter_generic_events": True,
+            },
         )
         assert created.status_code == 201
         assert created.json()["event_filter"] == ["motion"]
-        # Deprecated mirror stays consistent for one release.
-        assert created.json()["filter_generic_events"] is True
+        assert "filter_generic_events" not in created.json()
+
+        old_profile_field = await client.post(
+            "/api/v1/capture-profiles",
+            json={
+                "name": "Old profile field",
+                "device_ids": ["camera"],
+                "filter_generic_events": True,
+            },
+        )
+        assert old_profile_field.status_code == 201
+        assert old_profile_field.json()["event_filter"] == []
+        assert "filter_generic_events" not in old_profile_field.json()
 
         accepted = await client.post(
             "/api/v1/capture-profiles",
@@ -838,27 +739,32 @@ async def test_api_carries_event_filter_at_both_levels(filter_context):
                 "name": "Gate cam",
                 "area_id": "front",
                 "ip_address": "192.0.2.20",
-                "episode_policy": {"event_filter": ["motion", "security"]},
+                "episode_policy": {
+                    "event_filter": ["motion", "security"],
+                    "generic_event_filter": "disabled",
+                },
             },
         )
         assert device.status_code == 201
         policy = device.json()["configuration"]["episode_policy"]
         assert policy["event_filter"] == ["motion", "security"]
-        assert policy["generic_event_filter"] == "enabled"
+        assert "generic_event_filter" not in policy
 
-        # Legacy tri-state is accepted and translated.
-        legacy = await client.post(
+        # Old fields are not translated into the new selector.
+        old_field = await client.post(
             "/api/v1/devices",
             json={
-                "id": "legacy-cam",
-                "name": "Legacy cam",
+                "id": "old-field-cam",
+                "name": "Old field cam",
                 "area_id": "front",
                 "ip_address": "192.0.2.21",
-                "episode_policy": {"generic_event_filter": "disabled"},
+                "episode_policy": {"generic_event_filter": "enabled"},
             },
         )
-        assert legacy.status_code == 201
-        assert legacy.json()["configuration"]["episode_policy"]["event_filter"] == []
+        assert old_field.status_code == 201
+        policy = old_field.json()["configuration"]["episode_policy"]
+        assert policy["event_filter"] is None
+        assert "generic_event_filter" not in policy
         inherit = await client.post(
             "/api/v1/devices",
             json={

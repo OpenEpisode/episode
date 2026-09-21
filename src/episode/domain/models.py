@@ -102,9 +102,10 @@ class CaptureProfile:
     """A named set of Devices eligible to participate in new capture.
 
     ``event_filter`` lists the event classes this profile suppresses for its
-    Devices. A profile may never select the ``security`` class; that is a
-    per-Device decision. A per-Device ``event_filter`` override takes priority
-    over this profile default, and an empty list means no filtering.
+    Devices. Every class, including ``security`` and ``access``, is selectable
+    here and at the per-Device level. A per-Device ``event_filter`` override
+    takes priority over this profile default, and an empty list means no
+    filtering.
     """
 
     id: str = ""

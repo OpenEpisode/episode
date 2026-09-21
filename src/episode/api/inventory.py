@@ -6,13 +6,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from episode.domain.event_filter import LEGACY_FILTER_CLASSES, validate_selector
+from episode.domain.event_filter import validate_selector
 from episode.domain.models import CapabilityConfig, Device
 
 RecordingMode = Literal["disabled", "on_event", "on_episode"]
 DeviceType = Literal["camera", "doorbell", "alarm_panel", "sensor", "other"]
 AuthMode = Literal["digest_wsse", "digest"]
-GenericEventFilter = Literal["inherit", "enabled", "disabled"]
 
 
 class AreaCreateRequest(BaseModel):
@@ -95,9 +94,6 @@ class EpisodePolicyRequest(BaseModel):
     # Event classes this Device suppresses. ``null`` inherits the active Capture
     # Profile; ``[]`` is the explicit negative "this camera filters nothing".
     event_filter: list[str] | None = None
-    # Deprecated: superseded by ``event_filter``. Accepted for one release and
-    # translated, so ``beta.7`` clients keep working. Ignored when both are sent.
-    generic_event_filter: GenericEventFilter = "inherit"
 
     @field_validator("event_filter")
     @classmethod
@@ -240,8 +236,6 @@ def editable_device_configuration(device: Device) -> dict:
         episode_policy=EpisodePolicyRequest(
             activity_window_seconds=device.activity_window_seconds,
             event_filter=(list(device.event_filter) if device.event_filter is not None else None),
-            # Deprecated mirror of ``event_filter`` for one release.
-            generic_event_filter=legacy_generic_event_filter(device.event_filter),
         ),
         video=VideoConfigurationRequest(
             enabled=video is not None,
@@ -283,32 +277,6 @@ def editable_device_configuration(device: Device) -> dict:
             else False,
         ),
     ).model_dump()
-
-
-def resolve_device_event_filter(
-    event_filter: list[str] | None,
-    generic_event_filter: GenericEventFilter,
-) -> list[str] | None:
-    """Resolve the Device selector, preferring the class field over the legacy one."""
-    if event_filter is not None:
-        return sorted(event_filter)
-    return legacy_device_selector(generic_event_filter)
-
-
-def legacy_device_selector(generic_event_filter: GenericEventFilter) -> list[str] | None:
-    """Translate the ``beta.7`` Device tri-state to a class selector (or inherit)."""
-    if generic_event_filter == "inherit":
-        return None
-    if generic_event_filter == "enabled":
-        return sorted(LEGACY_FILTER_CLASSES)
-    return []
-
-
-def legacy_generic_event_filter(event_filter: list[str] | None) -> GenericEventFilter:
-    """Project a class selector back to the deprecated tri-state for responses."""
-    if event_filter is None:
-        return "inherit"
-    return "enabled" if event_filter else "disabled"
 
 
 def device_from_request(
@@ -409,10 +377,7 @@ def device_from_request(
         activity_window_seconds=request.episode_policy.activity_window_seconds,
         metadata=metadata,
         enabled=request.enabled,
-        event_filter=resolve_device_event_filter(
-            request.episode_policy.event_filter,
-            request.episode_policy.generic_event_filter,
-        ),
+        event_filter=request.episode_policy.event_filter,
         setup_state=request.setup_state,
     )
 

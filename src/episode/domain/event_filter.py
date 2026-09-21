@@ -112,17 +112,12 @@ EVENT_CLASS_BY_TYPE: dict[str, str] = {
 }
 """Canonical ``event_type`` to class. Anything else classifies as ``unknown``."""
 
-# ``beta.7`` exposed one flat "generic" list. This is the class equivalent of
-# that behaviour and is used only to translate legacy API fields and the legacy
-# stored columns. It deliberately excludes ``security``, and it also excludes
-# ``detection``, so a wired contact (``digital_input``) keeps driving capture
-# after an upgrade even though it now classifies as ``detection``: the point of
-# this revision is that an operator-wired input is not noise. The list is pinned
-# by ``test_beta7_backfilled_selector_keeps_security_events`` and must not widen.
-LEGACY_FILTER_CLASSES: frozenset[str] = frozenset(
-    {EVENT_CLASS_MOTION, EVENT_CLASS_HEARTBEAT, EVENT_CLASS_CONDITION}
+# Historical Beta.7 mapping used only to migrate its persisted filter settings.
+# It intentionally leaves security, classified detections, and access events
+# unaffected when replacing the older flat "generic" filter.
+BETA7_FILTER_SELECTOR_JSON = json.dumps(
+    sorted({EVENT_CLASS_MOTION, EVENT_CLASS_HEARTBEAT, EVENT_CLASS_CONDITION})
 )
-LEGACY_FILTER_SELECTOR_JSON = json.dumps(sorted(LEGACY_FILTER_CLASSES))
 
 
 def normalize_device_selector(value: object) -> list[str] | None:
@@ -185,7 +180,7 @@ def selectable_event_classes(level: str) -> frozenset[str]:
 
 
 def _decoded_selector(value: object) -> object:
-    """Decode the stored-string form of a selector, including legacy shapes."""
+    """Decode the stored JSON-array form of a selector."""
     if not isinstance(value, str):
         return value
     text = value.strip()
@@ -202,18 +197,12 @@ def normalize_selector(value: object) -> frozenset[str]:
 
     An unset, malformed, or unselectable value yields an empty set, so a bad
     value read back from storage means "no filtering" and can never widen
-    filtering. The legacy ``beta.7`` shapes (a boolean, or the Device tri-state
-    string) translate to the equivalent class set.
+    filtering. Only arrays of class names are valid selectors.
     """
     if value is None:
         return frozenset()
-    if isinstance(value, bool):
-        return frozenset(LEGACY_FILTER_CLASSES) if value else frozenset()
     if isinstance(value, str):
-        text = value.strip()
-        if text in ("enabled",):
-            return frozenset(LEGACY_FILTER_CLASSES)
-        decoded = _decoded_selector(text)
+        decoded = _decoded_selector(value)
         if decoded is None:
             return frozenset()
         value = decoded
@@ -227,20 +216,14 @@ def validate_selector(value: object, *, level: str = "device") -> list[str]:
     """Validate an operator selector for a level, returning a canonical list.
 
     Raises ``ValueError`` naming the offending entry when a class is unknown,
-    protected, duplicated, or not selectable at that level. Used at API and
-    service boundaries; the ingestion decision path uses ``normalize_selector``
-    so that damaged stored data fails safe instead of raising mid-delivery.
+    duplicated, or not selectable at that level. Used at API and service
+    boundaries; the ingestion decision path uses ``normalize_selector`` so that
+    damaged stored data fails safe instead of raising mid-delivery.
     """
     if value is None:
         return []
-    if isinstance(value, bool):
-        return sorted(LEGACY_FILTER_CLASSES) if value else []
     if isinstance(value, str):
         text = value.strip()
-        if text in ("", "inherit", "disabled"):
-            return []
-        if text == "enabled":
-            return sorted(LEGACY_FILTER_CLASSES)
         decoded = _decoded_selector(text)
         if decoded is None:
             raise ValueError(f"Unknown event class: {text}")

@@ -10,7 +10,6 @@ from episode.domain.event_filter import (
     FILTER_SOURCE_DEVICE,
     FILTER_SOURCE_PROFILE,
     FILTERED_REASON,
-    LEGACY_FILTER_CLASSES,
     event_class,
     is_filterable,
     normalize_selector,
@@ -32,24 +31,6 @@ MAX_CAPTURE_PROFILE_NAME = 100
 MAX_CAPTURE_PROFILE_DEVICES = 500
 MAX_CAPTURE_PROFILE_CHANGES = 100
 _PROFILE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
-
-
-def resolve_profile_event_filter(
-    event_filter: list[str] | None,
-    filter_generic_events: bool | None,
-) -> list[str] | None:
-    """Resolve a profile selector request, preferring the class field.
-
-    ``None`` for both means "leave the stored selector alone" on update and "no
-    filtering" on create. The deprecated ``beta.7`` boolean is translated to its
-    historical class equivalent, which suppressed motion, status, and audio but
-    not ``security``.
-    """
-    if event_filter is not None:
-        return list(event_filter)
-    if filter_generic_events is None:
-        return None
-    return sorted(LEGACY_FILTER_CLASSES) if filter_generic_events else []
 
 
 class CaptureProfileError(ValueError):

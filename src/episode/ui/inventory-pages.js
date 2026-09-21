@@ -6,7 +6,7 @@ import {
   sectionHeading,
 } from "./components.js?v=4";
 import { closeDialog, confirmDialog, notify } from "./dialogs.js?v=1";
-import { describeDeviceEventFilter, deviceEventFilterBadge } from "./event-filter.js?v=1";
+import { describeDeviceEventFilter, deviceEventFilterBadge } from "./event-filter.js?v=3";
 import { escHtml } from "./dom.js";
 import { fmtBytes, fmtShort, plural, titleCase } from "./format.js?v=4";
 import { eventTitle } from "./timeline.js?v=6";

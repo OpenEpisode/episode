@@ -53,6 +53,10 @@ test("the control says what filtering does before it is chosen", () => {
     mod.eventFilterSelect("event_filter", ["motion"], "profile"),
     mod.deviceEventFilterSelect("event_filter", ["motion"]),
   ]) {
+    assert.match(
+      markup,
+      /<div class="capture-filter-control">\s*<label class="field capture-filter-field">[\s\S]*<fieldset class="capture-filter-classes" data-filter-custom hidden>[\s\S]*<\/fieldset>\s*<\/div>/,
+    );
     assert.match(markup, /never starts an Episode and never extends one/);
     assert.match(markup, /payload, receipt, and Event are still stored/);
     assert.match(markup, /appears as context on an Episode that is already running/);
@@ -81,9 +85,14 @@ test("a saved selection opens on its preset and anything else on Custom", () => 
   assert.equal(mod.presetForEventFilter(["condition"], mod.PROFILE_EVENT_FILTER_PRESETS), null);
   const custom = mod.deviceEventFilterSelect("event_filter", ["condition"]);
   assert.match(custom, /option value="custom" selected/);
+  assert.match(custom, /<fieldset class="capture-filter-classes" data-filter-custom>/);
   // The ticked boxes still describe the stored selection.
   assert.match(custom, /value="condition" checked/);
   assert.match(custom, /value="motion"(?! checked)/);
+  assert.match(
+    mod.deviceEventFilterSelect("event_filter", ["motion"]),
+    /<fieldset class="capture-filter-classes" data-filter-custom hidden>/,
+  );
 });
 
 test("resolution de-duplicates and never guesses", () => {
@@ -154,6 +163,7 @@ test("there is only one control per class: no separate confirmation checkbox", (
 test("the visible summary follows the control an operator changes", () => {
   const listeners = [];
   const summary = { textContent: "" };
+  const customFieldset = { hidden: false };
   const select = {
     value: "motion",
     addEventListener: (type, handler) => listeners.push({ type, handler }),
@@ -169,11 +179,14 @@ test("the visible summary follows the control an operator changes", () => {
         ? select
         : selector === ".capture-filter-summary"
           ? summary
+          : selector === "[data-filter-custom]"
+            ? customFieldset
           : null,
     querySelectorAll: selector => (selector === "[data-filter-custom] input" ? [checkbox] : []),
   };
   const read = mod.wireEventFilterSummary(root, "device", () => {});
   assert.equal(summary.textContent, "Filters: Motion");
+  assert.equal(customFieldset.hidden, true);
   assert.equal(read().join(), "motion");
 
   select.value = "";
@@ -190,5 +203,10 @@ test("the visible summary follows the control an operator changes", () => {
   checkbox.checked = true;
   listeners.find(listener => listener.type === "change").handler();
   assert.equal(summary.textContent, "Filters: Status");
+  assert.equal(customFieldset.hidden, false);
   assert.deepEqual(read(), ["heartbeat"]);
+
+  select.value = "motion";
+  listeners.find(listener => listener.type === "change").handler();
+  assert.equal(customFieldset.hidden, true);
 });

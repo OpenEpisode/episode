@@ -179,8 +179,6 @@ def public_capture_profile(profile) -> CaptureProfileResponse:
             "builtin": bool(data.get("builtin", False)),
             "active": bool(data.get("active", False)),
             "event_filter": sorted(data.get("event_filter") or []),
-            # Deprecated mirror of ``event_filter`` for one release.
-            "filter_generic_events": bool(data.get("event_filter") or []),
         }
     )
 

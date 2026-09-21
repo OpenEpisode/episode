@@ -252,12 +252,9 @@ class EpisodeStartedWebhookTestResponse(ApiModel):
 class CaptureProfileCreateRequest(ApiModel):
     name: str = Field(min_length=1, max_length=100)
     device_ids: list[str] = Field(default_factory=list, max_length=500)
-    # Event classes this profile suppresses. A profile may never select the
-    # ``security`` class; that stays a per-Device decision. An absent value falls
-    # back to the deprecated boolean below.
+    # Event classes this profile suppresses. The full class set, including
+    # ``security`` and ``access``, is also available to per-Device selectors.
     event_filter: list[str] | None = None
-    # Deprecated: superseded by ``event_filter`` and accepted for one release.
-    filter_generic_events: bool | None = None
 
 
 class CaptureProfileUpdateRequest(CaptureProfileCreateRequest):
@@ -276,8 +273,6 @@ class CaptureProfileResponse(ApiModel):
     builtin: bool
     active: bool
     event_filter: list[str] = Field(default_factory=list)
-    # Deprecated mirror of ``event_filter`` for one release.
-    filter_generic_events: bool = False
 
 
 class CaptureProfileChangeResponse(ApiModel):

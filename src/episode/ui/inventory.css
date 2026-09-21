@@ -290,15 +290,17 @@
 .event-participation-notice { margin-bottom: 1.5rem; }
 .event-participation-notice strong { color: var(--text-primary); }
 .event-participation-notice small { color: var(--text-muted); font-size: .7rem; }
-// Event-class selector controls shared by the Capture profile and Device editors.
+/* Event-class selector controls shared by the Capture profile and Device editors. */
+.capture-filter-control { min-width: 0; }
 .capture-filter-field { margin-bottom: .9rem; }
 .capture-filter-field select { margin-top: .3rem; }
 .capture-filter-summary { color: var(--text-secondary); font-size: .75rem; margin-top: .35rem; }
 .capture-filter-classes { border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); display: grid; gap: .4rem; margin-bottom: 1rem; padding: .7rem; }
+.capture-filter-classes[hidden] { display: none; }
 .capture-filter-classes > legend { color: var(--text-secondary); font-size: .76rem; font-weight: 650; padding: 0 .25rem; }
 .capture-filter-classes .configuration-note { margin-bottom: 0; }
 .capture-filter-class-warning strong { color: var(--warning); }
-// A flex label ignores the `hidden` attribute without this.
+/* A flex label ignores the `hidden` attribute without this. */
 .capture-filter-ack[hidden] { display: none; }
 .capture-filter-ack { border-left: 2px solid var(--warning); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--warning) 8%, var(--surface-elevated)); padding: .6rem .7rem; }
 

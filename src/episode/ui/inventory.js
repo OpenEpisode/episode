@@ -7,7 +7,7 @@ import {
   normalizeEventFilter,
   resolveEventFilter,
   wireEventFilterSummary,
-} from "./event-filter.js?v=1";
+} from "./event-filter.js?v=3";
 import { titleCase } from "./format.js";
 
 const selected = value => value ? " selected" : "";

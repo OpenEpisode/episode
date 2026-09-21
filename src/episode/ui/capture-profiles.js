@@ -2,7 +2,7 @@ import { api, apiRequest } from "./api.js?v=3";
 import { pageHeader } from "./components.js?v=4";
 import { closeDialog, confirmDialog, notify, openDialog } from "./dialogs.js?v=1";
 import { escHtml } from "./dom.js";
-import { eventFilterNote, eventFilterSelect, resolveEventFilter, wireEventFilterSummary } from "./event-filter.js?v=1";
+import { eventFilterNote, eventFilterSelect, resolveEventFilter, wireEventFilterSummary } from "./event-filter.js?v=3";
 import { fmtShort, plural } from "./format.js?v=3";
 import { showContent, showError, showLoading } from "./view.js?v=1";
 

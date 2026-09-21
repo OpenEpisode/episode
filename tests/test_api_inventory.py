@@ -103,7 +103,6 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
     assert body["configuration"]["episode_policy"] == {
         "activity_window_seconds": 90,
         "event_filter": None,
-        "generic_event_filter": "inherit",
     }
     assert body["configuration"]["manufacturer"] == "Hikvision"
     assert body["identity"]["manufacturer"] == "Hikvision"

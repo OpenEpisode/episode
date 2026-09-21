@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import aiosqlite
 
 from episode.config import EpisodeConfig
-from episode.domain.event_filter import LEGACY_FILTER_SELECTOR_JSON
+from episode.domain.event_filter import BETA7_FILTER_SELECTOR_JSON
 from episode.domain.lifecycle import (
     DEFAULT_QUIESCENT_GRACE_SECONDS,
     QUIESCENT_GRACE_SETTING,
@@ -64,9 +64,6 @@ _CAPTURE_PROFILE_EVENT_COLUMNS = {
     "eligible_recording_device_ids": "TEXT",
 }
 
-# Additive capture-policy columns for existing databases. ``CREATE TABLE IF NOT
-# EXISTS`` does not alter existing tables, so these are applied via idempotent
-# ``ALTER TABLE ADD COLUMN`` guarded by a column-existence check.
 _CAPTURE_POLICY_DEVICE_COLUMNS = {
     "event_filter": "TEXT NOT NULL DEFAULT 'inherit'",
 }
@@ -75,9 +72,8 @@ _CAPTURE_POLICY_PROFILE_COLUMNS = {
     "event_filter": "TEXT NOT NULL DEFAULT '[]'",
 }
 
-# ``0.1.0-beta.7`` shipped a profile boolean and a Device tri-state. Their class
-# equivalents are backfilled below and the columns are then dropped, so no
-# legacy keyword survives in the schema or in stored values.
+# Beta.7 stored one boolean and one Device tri-state. Replace those columns with
+# the class selectors after translating their values once.
 _LEGACY_DEVICE_FILTER_COLUMN = "generic_event_filter"
 _LEGACY_PROFILE_FILTER_COLUMN = "filter_generic_events"
 
@@ -217,13 +213,7 @@ class Repository:
             raise
 
     async def _upgrade_capture_policy_schema(self, connection: aiosqlite.Connection) -> None:
-        """Replace the ``beta.7`` filter columns with event-class selectors.
-
-        One bounded, idempotent step per table: add the class-selector column,
-        backfill it from the legacy boolean/tri-state when that column exists,
-        then drop the legacy column. No rows are deleted and no legacy keyword
-        survives, so repeated ``initialize()`` calls converge on the same shape.
-        """
+        """Replace Beta.7 filter columns with current class selectors."""
         tables = {
             str(row["name"])
             for row in await connection.execute_fetchall(
@@ -244,8 +234,8 @@ class Repository:
                 for row in await connection.execute_fetchall(f"PRAGMA table_info({table})")
             }
             add_steps.extend(
-                (table, name, column_type)
-                for name, column_type in column_types.items()
+                (table, name, declaration)
+                for name, declaration in column_types.items()
                 if name not in columns
             )
             if legacy_column in columns:
@@ -255,8 +245,8 @@ class Repository:
 
         try:
             await connection.execute("BEGIN IMMEDIATE")
-            for table, name, column_type in add_steps:
-                await connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {column_type}")
+            for table, name, declaration in add_steps:
+                await connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
             if ("capture_profiles", _LEGACY_PROFILE_FILTER_COLUMN) in migrate_steps:
                 await connection.execute(
                     """UPDATE capture_profiles
@@ -264,7 +254,7 @@ class Repository:
                            WHEN filter_generic_events = 1 THEN ?
                            ELSE '[]'
                        END""",
-                    (LEGACY_FILTER_SELECTOR_JSON,),
+                    (BETA7_FILTER_SELECTOR_JSON,),
                 )
             if ("devices", _LEGACY_DEVICE_FILTER_COLUMN) in migrate_steps:
                 await connection.execute(
@@ -274,7 +264,7 @@ class Repository:
                            WHEN 'disabled' THEN '[]'
                            ELSE 'inherit'
                        END""",
-                    (LEGACY_FILTER_SELECTOR_JSON,),
+                    (BETA7_FILTER_SELECTOR_JSON,),
                 )
             for table, legacy_column in migrate_steps:
                 await self._drop_column(connection, table, legacy_column)

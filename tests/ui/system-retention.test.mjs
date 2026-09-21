@@ -141,7 +141,7 @@ const module = await import(moduleUrl(
     .replace('"./components.js?v=4"', JSON.stringify(componentsUrl))
     .replace('"./dialogs.js?v=1"', JSON.stringify(dialogsUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./event-filter.js?v=1"', JSON.stringify(eventFilterUrl))
+    .replace('"./event-filter.js?v=3"', JSON.stringify(eventFilterUrl))
     .replace('"./format.js?v=4"', JSON.stringify(formatUrl))
     .replace('"./timeline.js?v=6"', JSON.stringify(timelineUrl))
     .replace('"./inventory.js?v=7"', JSON.stringify(inventoryUrl))

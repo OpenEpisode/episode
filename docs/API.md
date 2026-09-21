@@ -264,9 +264,7 @@ Each Device carries its own `event_filter` in `episode_policy`: an array (possib
 empty) is that camera's own selector, and `null` (the default) means it follows
 the active Capture profile. The Device value wins in both directions, so `"[]"`
 is an explicit negative that keeps every observation while a profile filters.
-`filter_generic_events` (profile) and `generic_event_filter` (Device tri-state)
-are deprecated aliases of the same decision, accepted for one release and
-mirrored back on read; a request that sets both prefers `event_filter`.
+The class selector is the only supported filter representation at both levels.
 
 The active selection is capture policy, not Device connectivity. New active
 Events from excluded Devices are still preserved and returned with a
@@ -293,9 +291,7 @@ called out in release notes before the version is published.
 The inbound automation endpoint has additional trust and idempotency rules; see
 the [Event API guide](EVENT_API.md).
 
-`filter_generic_events` and the Device tri-state `generic_event_filter` are
-deprecated in favour of the class selectors at the same two levels. They remain
-accepted and mirrored for one release so existing clients keep working; new
-clients should read and write `event_filter` only. The participation `reason`
-value `generic_event_filtered` is unchanged and stays stable, with
-`filtered_event_class` and `filter_source` identifying the class and level.
+The participation `reason` value `generic_event_filtered` identifies a filtered
+Event, with `filtered_event_class` and `filter_source` identifying the class and
+the level that selected it. The Event remains preserved and may attach to an
+already-open Episode as context, but it does not trigger or extend capture.

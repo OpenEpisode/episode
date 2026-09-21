@@ -135,8 +135,8 @@ function presetOptions(presets, presetId) {
     .join("");
 }
 
-function filterFieldset(name, classes, level, note) {
-  return `<fieldset class="capture-filter-classes" data-filter-custom>
+function filterFieldset(name, classes, level, note, custom) {
+  return `<fieldset class="capture-filter-classes" data-filter-custom${custom ? "" : " hidden"}>
     <legend>Custom selection (used only when Custom… is chosen)</legend>
     ${eventClassCheckboxes(name, classes, level)}
     <p class="configuration-note">${escHtml(note)}</p>
@@ -148,12 +148,14 @@ export function eventFilterSelect(name, classes, level) {
   const current = normalizeEventFilter(classes);
   const presetId = presetForEventFilter(current, presets);
   const custom = presetId === null;
-  return `<label class="field capture-filter-field"><span>Filtered event classes</span>
-    <select name="${escHtml(name)}" data-filter-preset>${presetOptions(presets, presetId)}<option value="${EVENT_FILTER_CUSTOM}"${custom ? " selected" : ""}>Custom…</option></select>
-    <small class="capture-filter-summary">${escHtml(eventFilterSummary(current))}</small>
-    <small>${escHtml(FILTER_EFFECT_NOTE)}</small>
-  </label>
-  ${filterFieldset(name, current, level, FILTER_FIELDSET_NOTE)}`;
+  return `<div class="capture-filter-control">
+    <label class="field capture-filter-field"><span>Filtered event classes</span>
+      <select name="${escHtml(name)}" data-filter-preset>${presetOptions(presets, presetId)}<option value="${EVENT_FILTER_CUSTOM}"${custom ? " selected" : ""}>Custom…</option></select>
+      <small class="capture-filter-summary">${escHtml(eventFilterSummary(current))}</small>
+      <small>${escHtml(FILTER_EFFECT_NOTE)}</small>
+    </label>
+    ${filterFieldset(name, current, level, FILTER_FIELDSET_NOTE, custom)}
+  </div>`;
 }
 
 // Device level adds one state the profile level cannot have: no override at all,
@@ -168,16 +170,18 @@ export function deviceEventFilterSelect(name, value, options = {}) {
   const summary = inherits
     ? `Follows the active Capture profile${options.profileName ? ` (${options.profileName})` : ""}.`
     : eventFilterSummary(current);
-  return `<label class="field capture-filter-field"><span>Filtered event classes</span>
-    <select name="${escHtml(name)}" data-filter-preset>
-      <option value="${EVENT_FILTER_INHERIT}"${presetId === EVENT_FILTER_INHERIT ? " selected" : ""}>Inherit from Capture profile</option>
-      ${presetOptions(presets, presetId)}
-      <option value="${EVENT_FILTER_CUSTOM}"${custom ? " selected" : ""}>Custom…</option>
-    </select>
-    <small class="capture-filter-summary">${escHtml(summary)}</small>
-    <small>${escHtml(FILTER_EFFECT_NOTE)} This camera’s own setting wins over the active Capture profile, so “No filtering” keeps every observation here even while the profile filters.</small>
-  </label>
-  ${filterFieldset(name, current, "device", FILTER_FIELDSET_NOTE)}`;
+  return `<div class="capture-filter-control">
+    <label class="field capture-filter-field"><span>Filtered event classes</span>
+      <select name="${escHtml(name)}" data-filter-preset>
+        <option value="${EVENT_FILTER_INHERIT}"${presetId === EVENT_FILTER_INHERIT ? " selected" : ""}>Inherit from Capture profile</option>
+        ${presetOptions(presets, presetId)}
+        <option value="${EVENT_FILTER_CUSTOM}"${custom ? " selected" : ""}>Custom…</option>
+      </select>
+      <small class="capture-filter-summary">${escHtml(summary)}</small>
+      <small>${escHtml(FILTER_EFFECT_NOTE)} This camera’s own setting wins over the active Capture profile, so “No filtering” keeps every observation here even while the profile filters.</small>
+    </label>
+    ${filterFieldset(name, current, "device", FILTER_FIELDSET_NOTE, custom)}
+  </div>`;
 }
 
 // Reads one submitted control group. A preset expands to its classes, `custom`
@@ -214,6 +218,7 @@ export function wireEventFilterSummary(root, level, onChange = null) {
   // A summary is nice to have; the control group is still worth wiring without
   // one, so callers can gate on the effective selection.
   const summary = root.querySelector?.(".capture-filter-summary");
+  const customFieldset = root.querySelector?.("[data-filter-custom]");
   const customInputs = [...(root.querySelectorAll?.("[data-filter-custom] input") || [])];
   const classesNow = () => {
     const value = String(select.value ?? "");
@@ -225,6 +230,7 @@ export function wireEventFilterSummary(root, level, onChange = null) {
     return preset ? normalizeEventFilter(preset.classes) : [];
   };
   const update = () => {
+    if (customFieldset) customFieldset.hidden = String(select.value ?? "") !== EVENT_FILTER_CUSTOM;
     const classes = classesNow();
     if (summary) {
       summary.textContent =

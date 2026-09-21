@@ -18,7 +18,6 @@ from episode.capture_profiles import (
     CaptureProfileError,
     CaptureProfileNotFoundError,
     CaptureProfileService,
-    resolve_profile_event_filter,
 )
 
 
@@ -44,9 +43,7 @@ def capture_profiles_router(context: ApiContext) -> APIRouter:
             profile = await service().create_profile(
                 payload.name,
                 payload.device_ids,
-                event_filter=resolve_profile_event_filter(
-                    payload.event_filter, payload.filter_generic_events
-                ),
+                event_filter=payload.event_filter,
             )
         except CaptureProfileConflictError as error:
             raise HTTPException(409, str(error)) from error
@@ -102,9 +99,7 @@ def capture_profiles_router(context: ApiContext) -> APIRouter:
                 profile_id,
                 payload.name,
                 payload.device_ids,
-                event_filter=resolve_profile_event_filter(
-                    payload.event_filter, payload.filter_generic_events
-                ),
+                event_filter=payload.event_filter,
             )
         except CaptureProfileNotFoundError as error:
             raise HTTPException(404, str(error)) from error
