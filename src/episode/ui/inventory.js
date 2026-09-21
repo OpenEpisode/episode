@@ -1,6 +1,13 @@
 import { apiRequest } from "./api.js?v=3";
 import { closeDialog, confirmDialog, notify, openDialog } from "./dialogs.js?v=1";
 import { escHtml } from "./dom.js";
+import {
+  deviceEventFilterSelect,
+  EVENT_CLASS_LABELS,
+  normalizeEventFilter,
+  resolveEventFilter,
+  wireEventFilterSummary,
+} from "./event-filter.js?v=1";
 import { titleCase } from "./format.js";
 
 const selected = value => value ? " selected" : "";
@@ -67,10 +74,16 @@ function deviceDefaults(device) {
     manufacturerOverride: config.manufacturer || "",
     episodePolicy: {
       activity_window_seconds: policy.activity_window_seconds ?? 30,
+      // `null`/absent stays inherit; an array (including an empty one) is the
+      // camera's own decision.
+      event_filter: Array.isArray(policy.event_filter) ? policy.event_filter : null,
     },
     video: { enabled: !isNew, manual_endpoint: false, protocol: "rtsp", port: 554, path: "/Streaming/Channels/101", recording_mode: "on_event", ...(config.video || {}) },
     onvif: { enabled: !isNew, protocol: "http", port: 80, path: "/onvif/device_service", auth_mode: "digest_wsse", events_enabled: false, relaxed_xml: false, ...(config.onvif || {}) },
-    isapi: { enabled: false, protocol: "http", port: 80, path: "/ISAPI/Event/notification/alertStream", ignore_events: ["videoloss", "illaccess"], ...(config.isapi || {}) },
+    // Nothing is preset: `ignore_events` stops interpretation before a canonical
+    // Event exists, and class filtering now owns suppression after one exists. An
+    // operator who still needs the plugin-level lever sets it deliberately.
+    isapi: { enabled: false, protocol: "http", port: 80, path: "/ISAPI/Event/notification/alertStream", ignore_events: [], ...(config.isapi || {}) },
     sdk: { enabled: false, port: 8000, ...(config.hikvision_sdk || {}) },
     reolink: { enabled: false, host: "", port: 9000, media_enabled: false, events_enabled: false, ...(config.reolink || {}) },
   };
@@ -240,6 +253,8 @@ function devicePayload(data, editing, device) {
     clear_credentials: isChecked(data, "clear_credentials"),
     episode_policy: {
       activity_window_seconds: Number(field(data, "activity_window_seconds")),
+      // null means inherit; an array is the camera's own selector.
+      event_filter: resolveEventFilter(data, "event_filter", "device"),
     },
     video: {
       enabled: isChecked(data, "video_enabled"),
@@ -351,6 +366,7 @@ export function openDeviceEditor(device, areas, onSaved) {
       <div class="form-section"><h3>Capture</h3>
         <div class="form-grid capture-policy-fields">
           <label class="field"><span>Episode activity window</span><input name="activity_window_seconds" type="number" min="1" max="3600" required value="${values.episodePolicy.activity_window_seconds}"><small>Seconds this Device keeps an Episode open after each Event. Other recording Devices follow the Episode.</small></label>
+          ${deviceEventFilterSelect("event_filter", values.episodePolicy.event_filter)}
         </div>
         ${integrationToggle("video", "Video recording", "Capture this Device when its Area is active.", values.video.enabled, `
           <div class="form-grid">
@@ -666,6 +682,8 @@ export function openDeviceEditor(device, areas, onSaved) {
       testVideoButton.textContent = "Test video stream";
     }
   });
+
+  wireEventFilterSummary(overlay, "device");
 
   const manualVideo = overlay.querySelector("[data-manual-video]");
   const manualVideoToggle = manualVideo.querySelector('[name="manual_video_endpoint"]');

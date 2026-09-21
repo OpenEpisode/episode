@@ -4,12 +4,14 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 from collections.abc import Collection
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 
 from episode.config import EpisodeConfig
+from episode.domain.event_filter import LEGACY_FILTER_SELECTOR_JSON
 from episode.domain.lifecycle import (
     DEFAULT_QUIESCENT_GRACE_SECONDS,
     QUIESCENT_GRACE_SETTING,
@@ -62,6 +64,25 @@ _CAPTURE_PROFILE_EVENT_COLUMNS = {
     "eligible_recording_device_ids": "TEXT",
 }
 
+# Additive capture-policy columns for existing databases. ``CREATE TABLE IF NOT
+# EXISTS`` does not alter existing tables, so these are applied via idempotent
+# ``ALTER TABLE ADD COLUMN`` guarded by a column-existence check.
+_CAPTURE_POLICY_DEVICE_COLUMNS = {
+    "event_filter": "TEXT NOT NULL DEFAULT 'inherit'",
+}
+
+_CAPTURE_POLICY_PROFILE_COLUMNS = {
+    "event_filter": "TEXT NOT NULL DEFAULT '[]'",
+}
+
+# ``0.1.0-beta.7`` shipped a profile boolean and a Device tri-state. Their class
+# equivalents are backfilled below and the columns are then dropped, so no
+# legacy keyword survives in the schema or in stored values.
+_LEGACY_DEVICE_FILTER_COLUMN = "generic_event_filter"
+_LEGACY_PROFILE_FILTER_COLUMN = "filter_generic_events"
+
+_MIN_DROP_COLUMN_SQLITE = (3, 35, 0)
+
 _EVIDENCE_SELECT = """
 SELECT e.*,
        x.expired_at AS retention_expired_at,
@@ -107,6 +128,7 @@ class Repository:
         await self._conn.execute("PRAGMA synchronous = NORMAL")
         await self._upgrade_event_schema(self._conn)
         await self._conn.executescript(SCHEMA_SQL)
+        await self._upgrade_capture_policy_schema(self._conn)
         self._provenance = ProvenanceStore(self._conn)
         self._inventory = InventoryStore(self._conn)
         self._events = EventStore(self._conn)
@@ -193,6 +215,96 @@ class Repository:
         except BaseException:
             await connection.rollback()
             raise
+
+    async def _upgrade_capture_policy_schema(self, connection: aiosqlite.Connection) -> None:
+        """Replace the ``beta.7`` filter columns with event-class selectors.
+
+        One bounded, idempotent step per table: add the class-selector column,
+        backfill it from the legacy boolean/tri-state when that column exists,
+        then drop the legacy column. No rows are deleted and no legacy keyword
+        survives, so repeated ``initialize()`` calls converge on the same shape.
+        """
+        tables = {
+            str(row["name"])
+            for row in await connection.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name IN ('devices', 'capture_profiles')"
+            )
+        }
+        add_steps: list[tuple[str, str, str]] = []
+        migrate_steps: list[tuple[str, str]] = []
+        for table, legacy_column, column_types in (
+            ("devices", _LEGACY_DEVICE_FILTER_COLUMN, _CAPTURE_POLICY_DEVICE_COLUMNS),
+            ("capture_profiles", _LEGACY_PROFILE_FILTER_COLUMN, _CAPTURE_POLICY_PROFILE_COLUMNS),
+        ):
+            if table not in tables:
+                continue
+            columns = {
+                str(row["name"])
+                for row in await connection.execute_fetchall(f"PRAGMA table_info({table})")
+            }
+            add_steps.extend(
+                (table, name, column_type)
+                for name, column_type in column_types.items()
+                if name not in columns
+            )
+            if legacy_column in columns:
+                migrate_steps.append((table, legacy_column))
+        if not add_steps and not migrate_steps:
+            return
+
+        try:
+            await connection.execute("BEGIN IMMEDIATE")
+            for table, name, column_type in add_steps:
+                await connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {column_type}")
+            if ("capture_profiles", _LEGACY_PROFILE_FILTER_COLUMN) in migrate_steps:
+                await connection.execute(
+                    """UPDATE capture_profiles
+                       SET event_filter = CASE
+                           WHEN filter_generic_events = 1 THEN ?
+                           ELSE '[]'
+                       END""",
+                    (LEGACY_FILTER_SELECTOR_JSON,),
+                )
+            if ("devices", _LEGACY_DEVICE_FILTER_COLUMN) in migrate_steps:
+                await connection.execute(
+                    """UPDATE devices
+                       SET event_filter = CASE generic_event_filter
+                           WHEN 'enabled' THEN ?
+                           WHEN 'disabled' THEN '[]'
+                           ELSE 'inherit'
+                       END""",
+                    (LEGACY_FILTER_SELECTOR_JSON,),
+                )
+            for table, legacy_column in migrate_steps:
+                await self._drop_column(connection, table, legacy_column)
+            await connection.commit()
+            logger.info(
+                "Applied capture-policy schema steps: %s",
+                ", ".join(
+                    [f"add {table}.{name}" for table, name, _ in add_steps]
+                    + [f"replace {table}.{legacy}" for table, legacy in migrate_steps]
+                ),
+            )
+        except BaseException:
+            await connection.rollback()
+            raise
+
+    @staticmethod
+    async def _drop_column(
+        connection: aiosqlite.Connection,
+        table: str,
+        column: str,
+    ) -> None:
+        """Drop a legacy column, refusing to leave the two representations coexisting."""
+        version = tuple(int(part) for part in sqlite3.sqlite_version.split(".")[:3])
+        if version < _MIN_DROP_COLUMN_SQLITE:
+            raise RuntimeError(
+                f"Episode requires SQLite {'.'.join(str(part) for part in _MIN_DROP_COLUMN_SQLITE)}"
+                " or newer for ALTER TABLE DROP COLUMN to replace "
+                f"{table}.{column}; found {sqlite3.sqlite_version}"
+            )
+        await connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
 
     @staticmethod
     async def _enable_foreign_keys(connection: aiosqlite.Connection) -> None:
@@ -571,6 +683,16 @@ class Repository:
 
     async def update_event_episode(self, event_id: str, episode_id: str) -> None:
         await self._event_store().update_episode(event_id, episode_id)
+
+    async def update_event_participation(self, event: Event) -> None:
+        """Re-persist an Event's participation decision in place.
+
+        The engine learns some outcomes only after canonicalization, such as
+        whether an Episode was open to attach a filtered Event to. The decision
+        is derived data recorded on the Event row; the canonical observation
+        itself is never rewritten.
+        """
+        await self._event_store().update_participation(event.id, event.participation)
 
     async def visual_artifacts_for_event(self, event_id: str) -> list[RawArtifact]:
         rows = await self._conn.execute_fetchall(

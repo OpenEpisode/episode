@@ -6,6 +6,16 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from episode.domain.event_filter import (
+    FILTER_SOURCE_DEVICE,
+    FILTER_SOURCE_PROFILE,
+    FILTERED_REASON,
+    LEGACY_FILTER_CLASSES,
+    event_class,
+    is_filterable,
+    normalize_selector,
+    validate_selector,
+)
 from episode.domain.models import (
     CaptureProfile,
     CaptureProfileChange,
@@ -22,6 +32,24 @@ MAX_CAPTURE_PROFILE_NAME = 100
 MAX_CAPTURE_PROFILE_DEVICES = 500
 MAX_CAPTURE_PROFILE_CHANGES = 100
 _PROFILE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
+
+
+def resolve_profile_event_filter(
+    event_filter: list[str] | None,
+    filter_generic_events: bool | None,
+) -> list[str] | None:
+    """Resolve a profile selector request, preferring the class field.
+
+    ``None`` for both means "leave the stored selector alone" on update and "no
+    filtering" on create. The deprecated ``beta.7`` boolean is translated to its
+    historical class equivalent, which suppressed motion, status, and audio but
+    not ``security``.
+    """
+    if event_filter is not None:
+        return list(event_filter)
+    if filter_generic_events is None:
+        return None
+    return sorted(LEGACY_FILTER_CLASSES) if filter_generic_events else []
 
 
 class CaptureProfileError(ValueError):
@@ -81,9 +109,14 @@ class CaptureProfileService:
         )
 
     async def create_profile(
-        self, name: str, device_ids: list[str] | None = None
+        self,
+        name: str,
+        device_ids: list[str] | None = None,
+        *,
+        event_filter: list[str] | None = None,
     ) -> CaptureProfile:
         normalized_name = self._validate_name(name)
+        normalized_filter = self._validate_event_filter(event_filter)
         async with self._lock:
             normalized_ids = await self._validate_device_ids(device_ids or [])
             existing = await self._repository.list_capture_profiles()
@@ -95,6 +128,7 @@ class CaptureProfileService:
                 include_all_devices=False,
                 device_ids=normalized_ids,
                 builtin=False,
+                event_filter=normalized_filter,
             )
             try:
                 return await self._repository.create_capture_profile(profile)
@@ -111,8 +145,15 @@ class CaptureProfileService:
         profile_id: str,
         name: str,
         device_ids: list[str] | None = None,
+        *,
+        event_filter: list[str] | None = None,
     ) -> CaptureProfile:
         normalized_name = self._validate_name(name)
+        # ``None`` means "leave the stored selector alone"; an empty list is the
+        # explicit operator choice to stop filtering.
+        normalized_filter = (
+            None if event_filter is None else self._validate_event_filter(event_filter)
+        )
         async with self._lock:
             self._validate_profile_id(profile_id)
             existing = await self._repository.get_capture_profile(profile_id)
@@ -133,6 +174,9 @@ class CaptureProfileService:
                 existing,
                 name=normalized_name,
                 device_ids=normalized_ids,
+                event_filter=(
+                    normalized_filter if normalized_filter is not None else existing.event_filter
+                ),
                 updated_at=datetime.now(tz=timezone.utc),
             )
             try:
@@ -230,12 +274,34 @@ class CaptureProfileService:
             reason = "device_in_profile"
         else:
             reason = "device_not_in_profile"
+        filtered_event_type: str | None = None
+        filtered_event_class: str | None = None
+        filter_source: str | None = None
+        if allowed:
+            device_override = device.event_filter if device else None
+            selector = normalize_selector(
+                device_override if device_override is not None else profile.event_filter
+            )
+            if selector and is_filterable(event.event_type, selector):
+                allowed = False
+                reason = FILTERED_REASON
+                filtered_event_type = event.event_type
+                filtered_event_class = event_class(event.event_type)
+                filter_source = (
+                    FILTER_SOURCE_DEVICE if device_override is not None else FILTER_SOURCE_PROFILE
+                )
+                # ``attachment`` stays unset here: the Engine records whether it
+                # linked the Event to an open Episode or found none, so the
+                # outcome is never persisted ahead of the link itself.
         decision = ParticipationDecision(
             allowed=allowed,
             profile_id=profile.id,
             profile_name=profile.name,
             reason=reason,
             evaluated_at=datetime.now(tz=timezone.utc),
+            filtered_event_type=filtered_event_type,
+            filtered_event_class=filtered_event_class,
+            filter_source=filter_source,
         )
         targets = await self._resolve_target_ids(event, profile) if allowed else []
         return decision, targets
@@ -260,6 +326,23 @@ class CaptureProfileService:
             if mode == "on_episode" or (mode == "on_event" and device.id == event.device_id):
                 target_ids.append(device.id)
         return sorted(set(target_ids))
+
+    @staticmethod
+    def _validate_event_filter(event_filter: list[str] | None) -> list[str]:
+        """Validate a profile-level selector.
+
+        A profile offers exactly the classes a Device offers: one selector means
+        one thing whatever it names and whoever it is applied to. Suppressing a
+        security class across a group is a costly decision, so it is made
+        legible in the profile summary and the Device list marker rather than
+        forbidden by validation. Operator errors (an unknown class name, a
+        duplicate) surface as ``CaptureProfileError`` (HTTP 400) instead of
+        silently narrowing the selector.
+        """
+        try:
+            return validate_selector(event_filter, level="profile")
+        except ValueError as error:
+            raise CaptureProfileError(str(error)) from error
 
     async def _validate_device_ids(self, device_ids: list[str]) -> list[str]:
         if not isinstance(device_ids, list):

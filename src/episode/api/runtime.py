@@ -291,6 +291,9 @@ class OperationalView:
             "identity": self._device_identity(device),
             "setup_state": getattr(device, "setup_state", "ready"),
             "integrations": integrations,
+            # ``None`` (inherit) and ``[]`` (explicit negative) are different
+            # operator decisions, so the distinction survives to the UI.
+            "event_filter": (None if device.event_filter is None else sorted(device.event_filter)),
         }
 
     def device_detail(self, device: Device) -> dict[str, Any]:

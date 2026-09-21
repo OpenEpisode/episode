@@ -31,6 +31,13 @@ def _participation_data(event) -> dict[str, object] | None:
         "profile_name": decision.profile_name,
         "reason": decision.reason,
         "evaluated_at": _utc_iso(decision.evaluated_at),
+        # A filtered Event must stay explainable from the portable bundle alone,
+        # so the exact suppressed type, its class, the deciding level, and what
+        # happened instead of capture travel with it.
+        "filtered_event_type": decision.filtered_event_type,
+        "filtered_event_class": decision.filtered_event_class,
+        "filter_source": decision.filter_source,
+        "attachment": decision.attachment,
     }
 
 

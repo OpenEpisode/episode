@@ -4,6 +4,7 @@ import json
 
 import aiosqlite
 
+from episode.domain.event_filter import decode_device_filter, encode_device_filter
 from episode.domain.models import Area, Device
 
 _SETUP_STATE_KEY = "_setup_state"
@@ -51,9 +52,10 @@ class InventoryStore:
             """INSERT INTO devices (
                 id, name, device_type, area_id,
                 capabilities, ip_address, username, password,
-                configs, activity_window_seconds, metadata, enabled
+                configs, activity_window_seconds, metadata, enabled,
+                event_filter
             )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name,
                    device_type=excluded.device_type,
@@ -65,7 +67,8 @@ class InventoryStore:
                    configs=excluded.configs,
                    activity_window_seconds=excluded.activity_window_seconds,
                    metadata=excluded.metadata,
-                   enabled=excluded.enabled""",
+                   enabled=excluded.enabled,
+                   event_filter=excluded.event_filter""",
             (
                 device.id,
                 device.name,
@@ -89,6 +92,7 @@ class InventoryStore:
                 device.activity_window_seconds,
                 json.dumps({**device.metadata, _SETUP_STATE_KEY: device.setup_state}),
                 int(device.enabled),
+                encode_device_filter(device.event_filter),
             ),
         )
         await self._connection.commit()
@@ -186,5 +190,8 @@ class InventoryStore:
             activity_window_seconds=row["activity_window_seconds"],
             metadata=metadata,
             enabled=bool(row["enabled"]),
+            event_filter=decode_device_filter(
+                row["event_filter"] if "event_filter" in row.keys() else None
+            ),
             setup_state=setup_state,
         )

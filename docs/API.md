@@ -96,9 +96,9 @@ treated as proof that a vendor protocol is supported.
 
 Capture profiles are also bounded configuration. `GET /api/v1/capture-profiles`
 returns the built-in and custom profiles, including their explicit `active`,
-`builtin`, `include_all_devices`, and `device_ids` state. The built-in
-`all-devices` profile is immutable and dynamic; an empty custom `device_ids`
-array is valid.
+`builtin`, `include_all_devices`, `device_ids`, and `event_filter` state. The
+built-in `all-devices` profile is immutable and dynamic; an empty custom
+`device_ids` array is valid.
 
 Offset pagination is intentionally simple for the beta lifecycle. New activity
 arriving while a client walks older pages may move offsets; consumers requiring
@@ -245,11 +245,42 @@ recent_changes}` with bounded newest-first activation history. `PUT` on that
 resource accepts `{"profile_id": "..."}` and atomically changes the active
 selection; activating the already-active profile is an idempotent no-op.
 
+Capture profile create and update payloads accept an optional `event_filter`: a
+JSON array of event classes that this profile suppresses as capture triggers,
+default `[]` (no filtering). Every class is selectable, at both levels:
+`motion`, `heartbeat`, `condition`, `security`, `detection`, `access`, and
+`unknown`. A profile and a Device are offered exactly the same classes, so one
+selector means one thing whatever it names and whoever it is applied to. An
+unknown class name is rejected with `422`, as is a duplicate. `digital_input` (a
+wired alarm input, reached by both the Hikvision `alarm` report and an ONVIF
+digital-input topic) is a `detection`; see `docs/OPERATIONS.md` for what each
+class contains.
+
+Suppressing a class removes only its power to start or lengthen a recording. Its
+Raw Artifact, Receipt, and canonical Event are still persisted, and a filtered
+Event still joins an already open Episode as context.
+
+Each Device carries its own `event_filter` in `episode_policy`: an array (possibly
+empty) is that camera's own selector, and `null` (the default) means it follows
+the active Capture profile. The Device value wins in both directions, so `"[]"`
+is an explicit negative that keeps every observation while a profile filters.
+`filter_generic_events` (profile) and `generic_event_filter` (Device tri-state)
+are deprecated aliases of the same decision, accepted for one release and
+mirrored back on read; a request that sets both prefers `event_filter`.
+
 The active selection is capture policy, not Device connectivity. New active
 Events from excluded Devices are still preserved and returned with a
-`participation` object containing the durable decision, but have no Episode.
-Internal recording-target IDs are not exposed in Event API projections. Profile
-changes apply to later canonical Events and never interrupt current recordings.
+`participation` object containing the durable decision, but have no Episode. An
+Event suppressed by the class filter is returned with `participation`
+`reason: "generic_event_filtered"`, the exact normalized `filtered_event_type`,
+its `filtered_event_class`, and the deciding `filter_source` (`"device"` or
+`"profile"`). Such an Event still cannot open or extend an Episode or start an
+action, but when one was already open it is attributed to it: `episode_id` is
+set and `participation.attachment` is `"attached"`, otherwise
+`"no_open_episode"`. Attribution never extends the Episode, restarts a quiet one,
+or creates Evidence. Internal recording-target IDs are not exposed in Event API
+projections. Profile changes apply to later canonical Events and never interrupt
+current recordings.
 
 ## Compatibility during beta
 
@@ -261,3 +292,10 @@ called out in release notes before the version is published.
 
 The inbound automation endpoint has additional trust and idempotency rules; see
 the [Event API guide](EVENT_API.md).
+
+`filter_generic_events` and the Device tri-state `generic_event_filter` are
+deprecated in favour of the class selectors at the same two levels. They remain
+accepted and mirrored for one release so existing clients keep working; new
+clients should read and write `event_filter` only. The participation `reason`
+value `generic_event_filtered` is unchanged and stays stable, with
+`filtered_event_class` and `filter_source` identifying the class and level.
