@@ -19,9 +19,11 @@ import pytest
 
 from episode.plugins.reolink.preview import (
     PREVIEW_MAX_BYTES,
+    PREVIEW_PACKET_SAMPLE_LIMIT,
     PREVIEW_STREAMS,
     BcMediaWalker,
     PreviewFeed,
+    PreviewStats,
     media_chunk,
     nal_types,
     packet_kind,
@@ -199,6 +201,18 @@ def test_recorded_capture_reassembles_with_the_measured_tallies(capture) -> None
     assert feed.pending == 0, "a complete capture must leave no partial packet behind"
     assert stats.keyframed() is True, "the recorded stream is independently decodable"
     assert stats.first_iframe_ms is not None
+
+
+def test_packet_samples_are_bounded_with_exact_omitted_count() -> None:
+    """Long streams keep a useful prefix without growing diagnostics forever."""
+    stats = PreviewStats()
+    total = PREVIEW_PACKET_SAMPLE_LIMIT + 7
+    for index in range(total):
+        stats.record_packet("P", index)
+
+    assert len(stats.packets) == PREVIEW_PACKET_SAMPLE_LIMIT
+    assert stats.packets == [("P", index) for index in range(PREVIEW_PACKET_SAMPLE_LIMIT)]
+    assert stats.packet_samples_omitted == total - PREVIEW_PACKET_SAMPLE_LIMIT
 
 
 def test_continuation_frames_are_appended_undecrypted(capture) -> None:

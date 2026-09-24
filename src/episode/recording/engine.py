@@ -1031,10 +1031,12 @@ class RecordingEngine:
             ):
                 # Plugin sources are not retried indefinitely after ending or failing.
                 # Preserve partial fragments, but never call a truncated source complete.
-                source_failed = bool(rec.handler_error) or segments_after == 0
+                source_failed = bool(rec.handler_error or rec.handler_ended) or segments_after == 0
                 if source_failed and rec.last_error is None:
-                    rec.last_error = (
-                        rec.handler_error or "video source produced no decodable frames"
+                    rec.last_error = rec.handler_error or (
+                        "Video handler ended before Episode capture stopped"
+                        if rec.handler_ended
+                        else "Video source produced no decodable frames"
                     )
                 self._recordings.pop(key, None)
                 rec.state = "failed" if source_failed else rec.state

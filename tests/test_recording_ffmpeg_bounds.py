@@ -339,9 +339,17 @@ async def test_a_child_without_stderr_keeps_a_plain_reconnect_reason(
     await recorder.start()
     await recorder._start_recording("episode-quiet", _video_device("camera-x"), "rtsp://cam/stream")
     recording = recorder._recordings[("episode-quiet", "camera-x")]
-    await asyncio.wait_for(recording.task, timeout=30)
 
-    assert recording.last_error == "FFmpeg exited with code 1; retry limit exceeded"
+    for _ in range(100):
+        if recording.state == "reconnecting":
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("recorder did not enter reconnecting state")
+
+    assert recording.last_error == "FFmpeg exited with code 1; reconnecting"
+    assert recording.task is not None and not recording.task.done()
     assert "ffmpeg:" not in str(recorder.status())
+    await recorder._stop_recording(recording, reason="test_done")
     await recorder.stop()
     await recorder_repo.close()

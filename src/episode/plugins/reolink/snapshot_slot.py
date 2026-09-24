@@ -3,8 +3,8 @@
 A Reolink snapshot (``cmdId=109``) costs 0.3–1.1 s of camera encode time. Pulling
 it only after the event is canonical makes that cost fully serial with event
 processing. The slot lets the device arm a fetch as soon as the event frame
-arrives, then serve the result to the ordinary snapshot fetcher if it is still
-fresh.
+arrives, then serve the result to the matching Event-bound snapshot fetcher if
+it is still fresh.
 
 The slot never produces a delivery and never becomes Evidence, so the raw-first
 boundary is untouched: it is an optimisation over an already-preserved frame.
@@ -103,8 +103,9 @@ class SnapshotSlot:
         self._settings = settings or SnapshotPrearmSettings()
         self._clock = clock
         self._task: asyncio.Task[None] | None = None
-        self._content: tuple[bytes, str, float] | None = None
+        self._content: tuple[str, bytes, str, float] | None = None
         self._last_arm_at: float | None = None
+        self._next_token = 0
         self.counters = {"armed": 0, "hits": 0, "misses": 0, "expired": 0, "failed": 0}
 
     @property
@@ -112,23 +113,31 @@ class SnapshotSlot:
         """Whether pre-arming is active for this device."""
         return self._settings.enabled
 
-    def arm(self) -> bool:
+    def arm(self) -> str | None:
         """Start one background snapshot fetch; never raises into the caller.
 
-        Returns True when a fetch was started. Fire-and-forget: a no-op while a
-        fetch is in flight, and a no-op inside the ``min_interval`` guard.
+        Returns an opaque token when a fetch was started, otherwise ``None``.
+        Fire-and-forget: a no-op while a fetch is in flight, and a no-op inside the
+        ``min_interval`` guard. The
+        returned opaque token binds the result to the observation that armed it;
+        a later Event or current-view request cannot consume another Event's JPEG.
         """
         if not self._settings.enabled or self._task is not None:
-            return False
+            return None
         now = self._clock()
         if self._last_arm_at is not None and now - self._last_arm_at < self._settings.min_interval:
-            return False
+            return None
         self._last_arm_at = now
+        self._next_token += 1
+        token = str(self._next_token)
+        deadline = now + self._settings.ttl
+        # A result not consumed by its Event is never reused for a later one.
+        self._content = None
         self.counters["armed"] += 1
-        self._task = asyncio.create_task(self._run())
-        return True
+        self._task = asyncio.create_task(self._run(token, deadline))
+        return token
 
-    async def _run(self) -> None:
+    async def _run(self, token: str, deadline: float) -> None:
         try:
             content, content_type = await self._fetch()
         except Exception as error:  # pre-arm failure must not escape
@@ -137,18 +146,26 @@ class SnapshotSlot:
             return
         finally:
             self._task = None
-        self._content = (content, content_type, self._clock() + self._settings.ttl)
+        if self._clock() > deadline:
+            self.counters["expired"] += 1
+            return
+        self._content = (token, content, content_type, deadline)
 
-    def consume(self) -> tuple[bytes, str] | None:
-        """Return a still-fresh pre-armed snapshot, or None (counting why not)."""
-        held, self._content = self._content, None
+    def consume(self, token: str | None = None) -> tuple[bytes, str] | None:
+        """Return only the snapshot armed for ``token``; otherwise return None."""
+        held = self._content
         if held is None:
             self.counters["misses"] += 1
             return None
-        content, content_type, deadline = held
+        held_token, content, content_type, deadline = held
+        if token is None or token != held_token:
+            self.counters["misses"] += 1
+            return None
         if self._clock() > deadline:
+            self._content = None
             self.counters["expired"] += 1
             return None
+        self._content = None
         self.counters["hits"] += 1
         return content, content_type
 

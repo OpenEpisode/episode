@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import pytest
 
 from episode.domain.models import CapabilityConfig, Device
-from episode.media.registry import CameraMedia
+from episode.media.registry import CameraMedia, MediaRegistry
 from episode.plugins.models import (
     PluginContext,
     PluginInstanceState,
@@ -532,10 +532,44 @@ async def test_connection_registers_media_when_enabled():
     assert source.stream_uri == "rtsp://192.168.1.10/1"
     assert source.source == "reolink"
     assert source.snapshot_fetcher is not None
+    assert source.event_snapshot_fetcher is not None
     # Snapshot fetcher returns JPEG via the Reolink-native path
     data, content_type = await source.snapshot_fetcher()
     assert data[:2] == b"\xff\xd8"
     assert content_type == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_media_registry_routes_event_snapshot_tokens_separately():
+    ordinary_calls = 0
+    event_tokens: list[str] = []
+
+    async def ordinary_fetch():
+        nonlocal ordinary_calls
+        ordinary_calls += 1
+        return b"ordinary", "image/jpeg"
+
+    async def event_fetch(token: str):
+        event_tokens.append(token)
+        return b"event-bound", "image/jpeg"
+
+    registry = MediaRegistry()
+    registry.register(
+        CameraMedia(
+            device_id="cam-1",
+            source="reolink",
+            snapshot_fetcher=ordinary_fetch,
+            event_snapshot_fetcher=event_fetch,
+        )
+    )
+
+    assert await registry.fetch_snapshot("cam-1") == (b"ordinary", "image/jpeg")
+    assert await registry.fetch_snapshot("cam-1", snapshot_token="event-1") == (
+        b"event-bound",
+        "image/jpeg",
+    )
+    assert ordinary_calls == 1
+    assert event_tokens == ["event-1"]
 
 
 @pytest.mark.asyncio
@@ -879,6 +913,13 @@ async def test_connection_preserves_original_frame_bytes():
         assert delivery.artifact_type == "event_frame"
         assert delivery.metadata["kind"] == "raw_event_frame"
         assert delivery.metadata["command_id"] == 33
+
+        # Non-event telemetry frames share this ingress method but do not arm an
+        # Event-bound snapshot or need a token.
+        await connection._process_event_frame(252, b"telemetry", 250)
+        assert len(received) == 2
+        assert received[1].metadata["command_id"] == 252
+        assert "snapshot_fetch_token" not in received[1].metadata
     finally:
         await connection.stop()
 
@@ -933,7 +974,7 @@ async def test_snapshot_prearm_overlaps_the_ingestion_pipeline():
 
 @pytest.mark.asyncio
 async def test_snapshot_prearm_arms_on_event_frame_and_serves_fetcher():
-    """cmdId=33 arms a snapshot; the registry fetcher is served from the slot."""
+    """cmdId=33 binds a pre-armed snapshot to the derived event token."""
     received = []
 
     async def capture_sink(delivery):
@@ -954,14 +995,24 @@ async def test_snapshot_prearm_arms_on_event_frame_and_serves_fetcher():
         assert connection._snapshot_slot.counters["armed"] == 1
         held = connection._snapshot_slot._content
         assert held is not None
+        token = received[0].metadata["snapshot_fetch_token"]
+        assert held[0] == token
 
-        data, content_type = await connection._snapshot_fetcher()
+        # Ordinary/current-view fetches must not consume an Event's pre-arm.
+        fresh, fresh_type = await connection._snapshot_fetcher()
+        assert fresh_type == "image/jpeg"
+        assert fresh[:2] == b"\xff\xd8"
+        assert connection._snapshot_slot.counters["hits"] == 0
+        assert client.snapshot_fetches == 2  # pre-arm plus the ordinary fresh fetch
+
+        data, content_type = await connection._snapshot_fetcher(token)
         assert content_type == "image/jpeg"
         # The served bytes are the pre-armed object itself: exactly one
-        # cmdId=109 for the whole event, so no double-fetch.
-        assert data is held[0]
+        # cmdId=109 for the matching Event, so no second Event-bound fetch.
+        assert data is held[1]
         assert data[:2] == b"\xff\xd8"
         assert connection._snapshot_slot.counters["hits"] == 1
+        assert client.snapshot_fetches == 2  # matching Event consumes the pre-arm
         assert len(received) == 1  # pre-arm produced no delivery
     finally:
         await connection.stop()
@@ -1022,12 +1073,13 @@ async def test_snapshot_prearm_expiry_falls_back_to_live_fetch():
         connection._fetch_snapshot,
         settings=SnapshotPrearmSettings(ttl=0.5),
     )
-    connection._snapshot_slot.arm()
+    token = connection._snapshot_slot.arm()
+    assert token is not None
     await asyncio.sleep(0)
     assert connection._snapshot_slot.counters["armed"] == 1
 
     await asyncio.sleep(0.6)
-    data, _ = await connection._snapshot_fetcher()
+    data, _ = await connection._snapshot_fetcher(token)
     assert data[:2] == b"\xff\xd8"
     assert connection._snapshot_slot.counters["expired"] == 1
 
@@ -1590,6 +1642,7 @@ async def test_handler_preserves_then_expands_raw_frame():
             "channel": 0,
             "nonce": "",
             "use_aes": False,
+            "snapshot_fetch_token": "event-token",
         },
     )
 
@@ -1600,6 +1653,7 @@ async def test_handler_preserves_then_expands_raw_frame():
     assert len(derived) == 1
     assert derived[0].artifact_type == "derived_event_notification"
     assert derived[0].metadata["parent_receipt_id"] == "raw-receipt"
+    assert derived[0].metadata["snapshot_fetch_token"] == "event-token"
 
     notification = dataclasses.replace(
         raw,
@@ -1612,6 +1666,7 @@ async def test_handler_preserves_then_expands_raw_frame():
     interpreted = await plugin._handle(notification)
     assert interpreted.event is not None
     assert interpreted.event.event_type == "human_detection"
+    assert interpreted.event.metadata["snapshot_fetch_token"] == "event-token"
 
 
 @pytest.mark.asyncio

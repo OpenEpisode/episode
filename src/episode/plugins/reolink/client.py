@@ -20,6 +20,7 @@ from Crypto.Cipher import AES
 
 from episode.plugins.reolink.preview import (
     DEFAULT_PREVIEW_TIMEOUT,
+    PREVIEW_CONSUMER_STOP_TIMEOUT,
     PREVIEW_IDLE_TIMEOUT_SECONDS,
     PREVIEW_MAX_BYTES,
     PREVIEW_QUEUE_MAXSIZE,
@@ -33,6 +34,15 @@ from episode.plugins.reolink.preview import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _consume_task_result(task: asyncio.Task) -> None:
+    """Retrieve a detached task's result so late failures are not unhandled."""
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+
 
 # ── Protocol constants ────────────────────────────────────────────────
 
@@ -2360,8 +2370,7 @@ class BaichuanApiClient:
                 logger.debug("Preview stream ended early: %s", error)
             finally:
                 await self._send_preview_stop(variant, channel, request.handle)
-                out_queue.put_nowait(None)
-                await asyncio.gather(consumer, return_exceptions=True)
+                await self._finish_preview_consumer(out_queue, consumer)
 
             stats = feed.stats
             stats.dropped_frames += self._dispatcher.dropped_frames - dropped_before
@@ -2417,6 +2426,33 @@ class BaichuanApiClient:
                 return
             logger.debug("Preview Annex-B access unit pushed: %d bytes", len(chunk))
             await push(chunk)
+
+    async def _finish_preview_consumer(
+        self, queue: asyncio.Queue, consumer: asyncio.Task[None]
+    ) -> None:
+        """Stop and join the recorder consumer without letting teardown get stuck.
+
+        A normal consumer drains a sentinel after the camera has been stopped. If ``push`` has
+        failed or is stalled, the queue may be full (and the consumer may never reach that
+        sentinel), so both the graceful handoff and the cancellation path are bounded.
+        """
+        if not consumer.done():
+            try:
+                await asyncio.wait_for(queue.put(None), timeout=PREVIEW_CONSUMER_STOP_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.debug("Preview consumer did not accept its shutdown sentinel")
+
+        done, _ = await asyncio.wait({consumer}, timeout=PREVIEW_CONSUMER_STOP_TIMEOUT)
+        if not done:
+            logger.debug("Cancelling stalled preview consumer")
+            consumer.cancel()
+            done, _ = await asyncio.wait({consumer}, timeout=PREVIEW_CONSUMER_STOP_TIMEOUT)
+
+        if consumer.done():
+            await asyncio.gather(consumer, return_exceptions=True)
+        else:
+            logger.warning("Preview consumer did not stop within its cleanup bound")
+            consumer.add_done_callback(_consume_task_result)
 
     async def send_command(
         self,

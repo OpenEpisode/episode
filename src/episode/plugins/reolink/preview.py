@@ -48,6 +48,9 @@ PREVIEW_STREAMS: dict[str, tuple[int, str, int]] = {
 #: and small enough that a confused camera cannot grow a device's memory.
 PREVIEW_MAX_BYTES = 4 * 1024 * 1024
 
+#: Keep diagnostics useful without retaining one tuple for every packet in a long live stream.
+PREVIEW_PACKET_SAMPLE_LIMIT = 256
+
 #: Seconds to wait for the first video packet. The measured first keyframe is 157 ms
 #: (fw-50332294) to ~1 s on the slowest model, so this is a patient default, not a guess.
 DEFAULT_PREVIEW_TIMEOUT = 3.0
@@ -191,6 +194,15 @@ class PreviewStats:
     h264_idr: int = 0
     #: ``(kind, payload_size)`` in arrival order — the same table the fixtures record.
     packets: list[tuple[str, int]] = field(default_factory=list)
+    #: Packet records omitted after ``PREVIEW_PACKET_SAMPLE_LIMIT`` was reached.
+    packet_samples_omitted: int = 0
+
+    def record_packet(self, kind: str, size: int) -> None:
+        """Keep a bounded packet sample while retaining the exact omitted count."""
+        if len(self.packets) < PREVIEW_PACKET_SAMPLE_LIMIT:
+            self.packets.append((kind, size))
+        else:
+            self.packet_samples_omitted += 1
 
     def frames(self) -> int:
         """Picture count: one media packet is one picture on this transport."""
@@ -265,7 +277,7 @@ class BcMediaWalker:
             stats.width = struct.unpack_from("<I", buf, 8)[0]
             stats.height = struct.unpack_from("<I", buf, 12)[0]
             del buf[: max(header, 16)]
-            stats.packets.append((kind, 0))
+            stats.record_packet(kind, 0)
             return (kind, 0)
         if kind in ("AAC", "ADPCM"):
             # Audio: magic(4) + payloadSize(u16) + payloadSizeB(u16) [+ ADPCM sub-header].
@@ -285,7 +297,7 @@ class BcMediaWalker:
                 return None  # padding has not fully arrived yet
             del buf[: total + pad]
             self.stats.audio_count += 1
-            self.stats.packets.append((kind, size_a))
+            self.stats.record_packet(kind, size_a)
             return (kind, size_a)
         if len(buf) < VIDEO_HEADER_BYTES:
             return None
@@ -334,7 +346,7 @@ class BcMediaWalker:
         else:
             stats.h264_sps += types.count(H264_SPS)
             stats.h264_idr += types.count(H264_IDR)
-        stats.packets.append((kind, size))
+        stats.record_packet(kind, size)
         if self._sink is not None:
             # A consumer that dies (a closed pipe, a cancelled recording) must not stop
             # framing: the tallies are what the next decision is made from.
@@ -501,6 +513,9 @@ class PreviewFeed:
 #: Seconds allowed for the ``cmdId=6`` stop send. The stop is a courtesy the camera
 #: deserves even when its socket is already unwell, so it is bounded rather than free.
 PREVIEW_STOP_TIMEOUT = 3.0
+
+#: Maximum time allowed for a recorder consumer to finish after the camera was stopped.
+PREVIEW_CONSUMER_STOP_TIMEOUT = 1.0
 
 #: Frames the streaming path lets the dispatcher buffer for it before it starts dropping.
 PREVIEW_QUEUE_MAXSIZE = 96

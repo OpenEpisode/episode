@@ -38,11 +38,12 @@ async def test_slot_serves_one_fetch_then_misses():
     slot = SnapshotSlot(fetch, settings=SnapshotPrearmSettings(ttl=2.0), clock=clock)
 
     assert slot.consume() is None  # nothing armed yet
-    assert slot.arm() is True
+    token = slot.arm()
+    assert token is not None
     await asyncio.sleep(0)  # let the task run
     assert len(calls) == 1
 
-    served = slot.consume()
+    served = slot.consume(token)
     assert served == (b"\xff\xd8jpeg", "image/jpeg")
     assert slot.consume() is None  # consumed once
     assert slot.counters == {
@@ -61,11 +62,12 @@ async def test_slot_expired_snapshot_is_not_served():
 
     clock = FakeClock()
     slot = SnapshotSlot(fetch, settings=SnapshotPrearmSettings(ttl=2.0), clock=clock)
-    slot.arm()
+    token = slot.arm()
+    assert token is not None
     await asyncio.sleep(0)
 
     clock.advance(2.5)
-    assert slot.consume() is None
+    assert slot.consume(token) is None
     assert slot.counters["expired"] == 1
 
 
@@ -81,14 +83,16 @@ async def test_slot_respects_min_interval():
     slot = SnapshotSlot(
         fetch, settings=SnapshotPrearmSettings(ttl=2.0, min_interval=30.0), clock=clock
     )
-    assert slot.arm() is True
+    first_token = slot.arm()
+    assert first_token is not None
     await asyncio.sleep(0)
 
-    assert slot.arm() is False  # already in flight
+    assert slot.arm() is None  # already in flight
     clock.advance(1.0)
-    assert slot.arm() is False  # inside min_interval
+    assert slot.arm() is None  # inside min_interval
     clock.advance(60.0)
-    assert slot.arm() is True
+    second_token = slot.arm()
+    assert second_token is not None
     await asyncio.sleep(0)
     assert len(calls) == 2
 
@@ -103,7 +107,7 @@ async def test_slot_disabled_never_arms():
 
     slot = SnapshotSlot(fetch, settings=SnapshotPrearmSettings(enabled=False))
     assert slot.enabled is False
-    assert slot.arm() is False
+    assert slot.arm() is None
     await asyncio.sleep(0)
     assert calls == []
 
@@ -114,10 +118,11 @@ async def test_slot_failure_is_counted_and_not_raised():
         raise RuntimeError("camera busy")
 
     slot = SnapshotSlot(fetch)
-    assert slot.arm() is True
+    token = slot.arm()
+    assert token is not None
     await asyncio.sleep(0)
     assert slot.counters["failed"] == 1
-    assert slot.consume() is None
+    assert slot.consume(token) is None
     # A failed pre-arm must leave the slot free to arm again.
     assert slot.counters["armed"] == 1
 
@@ -137,11 +142,27 @@ async def test_slot_cancel_stops_inflight_fetch():
         return b"\xff\xd8", "image/jpeg"
 
     slot = SnapshotSlot(fetch)
-    slot.arm()
+    token = slot.arm()
+    assert token is not None
     await started.wait()
     await slot.cancel()
     assert cancelled.is_set()
     assert slot._task is None
+
+
+@pytest.mark.asyncio
+async def test_slot_rejects_mismatched_token_without_consuming_snapshot():
+    async def fetch():
+        return b"\xff\xd8jpeg", "image/jpeg"
+
+    slot = SnapshotSlot(fetch)
+    token = slot.arm()
+    assert token is not None
+    await asyncio.sleep(0)
+
+    assert slot.consume("another-event") is None
+    assert slot.counters["hits"] == 0
+    assert slot.consume(token) == (b"\xff\xd8jpeg", "image/jpeg")
 
 
 def test_parse_prearm_settings_defaults():

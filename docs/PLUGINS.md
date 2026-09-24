@@ -297,7 +297,9 @@ chooses an Episode, a deadline, or an Evidence type.
 The failure contract follows that ownership. A handler that raises, or one whose
 bytes the recorder's FFmpeg cannot decode, ends the recording and its bundle is
 published as an incomplete capture rather than a plausible-looking recording. A
-handler blocked handing over one chunk for longer than the recorder's write timeout
+handler that returns while the Episode is still recording is also an incomplete
+capture; normal recording shutdown cancels the handler. If a handler is blocked
+handing over one chunk for longer than the recorder's write timeout
 (`PIPE_WRITE_TIMEOUT_SECONDS`, 10 seconds) is treated as a stalled source, which
 ends the attempt the way a dead connection does. A handler is always cancelled when
 its recording stops, so a plugin cannot leak a camera session past the recording it

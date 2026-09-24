@@ -85,22 +85,33 @@ def _handler(*chunks: bytes):
     return handler
 
 
-def _live_feed(*chunks: bytes, seconds: float = FIXTURE_SECONDS):
+def _live_feed(
+    *chunks: bytes,
+    seconds: float = FIXTURE_SECONDS,
+    keep_open: bool = True,
+):
     """A handler spreading its bytes over ``seconds`` of wall-clock time.
 
     ``-use_wallclock_as_timestamps`` makes arrival time the timestamp, so the same bytes
     dumped into the pipe in one burst really are a bundle a few tens of milliseconds long.
     Spreading them over the fixture's own 4 s is what makes a piped fixture behave like
     the live stream it was recorded from, and that is the only honest way to assert
-    fragment counts or durations from it.
+    fragment counts or durations from it. A live source stays open after its last packet,
+    as a real camera would; the recorder must explicitly stop it before its output is
+    considered complete.
     """
     spacing = seconds / len(chunks) if chunks else 0.0
+    feed_complete = asyncio.Event()
 
     async def handler(push) -> None:
         for chunk in chunks:
             await asyncio.sleep(spacing)
             await push(chunk)
+        feed_complete.set()
+        if keep_open:
+            await asyncio.Event().wait()
 
+    handler.feed_complete = feed_complete
     return handler
 
 
@@ -108,6 +119,12 @@ def _live_access_units():
     """A handler feeding the fixture as framed packets at its nominal 15 fps."""
 
     return _live_feed(*_fixture_access_units(), seconds=FIXTURE_SECONDS)
+
+
+def _finite_access_units():
+    """A finite source used to verify that an early clean return is incomplete."""
+
+    return _live_feed(*_fixture_access_units(), seconds=FIXTURE_SECONDS, keep_open=False)
 
 
 def _camera_device() -> Device:
@@ -198,6 +215,12 @@ class Harness:
         """Wait for the recorder to finish this recording, finalization included."""
         assert recording.task is not None
         await asyncio.wait_for(recording.task, timeout=timeout)
+
+    async def await_feed(self, recording: Any, timeout: float = 30.0) -> None:
+        """Wait until a live fixture has handed every packet to the recorder."""
+        feed_complete = getattr(recording.video_handler, "feed_complete", None)
+        assert feed_complete is not None
+        await asyncio.wait_for(feed_complete.wait(), timeout=timeout)
 
     async def await_handler_task(self, recording: Any, timeout: float = 30.0) -> Any:
         """Wait until the recorder has spawned ffmpeg and started feeding it.
@@ -296,7 +319,8 @@ async def test_handler_bytes_become_a_real_playable_bundle(tmp_path):
     harness = Harness(tmp_path)
     await harness.start(_live_access_units())
     recording = await harness.begin()
-    await harness.await_recording(recording)
+    await harness.await_feed(recording)
+    await harness.recorder._stop_recording(recording, reason="test_done")
 
     shape = _playlist_shape(recording.bundle.playlist_path)
     assert shape["extinf"], "no segments were written from piped bytes"
@@ -335,7 +359,8 @@ async def test_the_wallclock_input_flag_is_what_makes_a_piped_bundle_gradeable(t
     harness = Harness(tmp_path)
     await harness.start(_live_access_units())
     recording = await harness.begin()
-    await harness.await_recording(recording)
+    await harness.await_feed(recording)
+    await harness.recorder._stop_recording(recording, reason="test_done")
     piped_shape = _playlist_shape(recording.bundle.playlist_path)
     piped_manifest = recording.bundle.refresh_manifest(state="complete")
 
@@ -425,6 +450,25 @@ async def test_handler_that_raises_mid_stream_yields_incomplete_evidence(tmp_pat
     assert ("episode-spike", "camera-native") not in {
         (item.episode_id, item.device_id) for item in harness.recorder._recordings.values()
     }
+
+    await harness.close()
+
+
+@needs_ffmpeg
+@pytest.mark.asyncio
+async def test_handler_that_ends_before_episode_capture_yields_incomplete_evidence(tmp_path):
+    """A clean source return is still a truncated capture while its Episode is active."""
+    harness = Harness(tmp_path)
+    await harness.start(_finite_access_units())
+    recording = await harness.begin()
+    await harness.await_recording(recording)
+
+    evidence = await harness.evidence()
+    assert evidence.evidence_type == "incomplete_recording"
+    assert evidence.metadata["reason"] == "video_handler_ended"
+    assert evidence.metadata["status"] == "incomplete"
+    assert recording.state == "failed"
+    assert "ended before Episode capture stopped" in (recording.last_error or "")
 
     await harness.close()
 
@@ -552,7 +596,8 @@ async def test_a_handler_without_a_codec_hint_still_produces_video(tmp_path):
     harness = Harness(tmp_path)
     await harness.start(_live_access_units(), codec_hint="")
     recording = await harness.begin()
-    await harness.await_recording(recording)
+    await harness.await_feed(recording)
+    await harness.recorder._stop_recording(recording, reason="test_done")
 
     shape = _playlist_shape(recording.bundle.playlist_path)
     assert shape["extinf"], shape
@@ -569,7 +614,8 @@ async def test_paced_handler_makes_several_fragments(tmp_path):
     harness = Harness(tmp_path, fragment_seconds=1)
     await harness.start(_live_access_units())
     recording = await harness.begin()
-    await harness.await_recording(recording)
+    await harness.await_feed(recording)
+    await harness.recorder._stop_recording(recording, reason="test_done")
 
     shape = _playlist_shape(recording.bundle.playlist_path)
     assert len(shape["extinf"]) >= 3, shape
@@ -585,7 +631,8 @@ async def test_retention_removes_every_piped_bundle_component(tmp_path):
     harness = Harness(tmp_path)
     await harness.start(_live_access_units())
     recording = await harness.begin()
-    await harness.await_recording(recording)
+    await harness.await_feed(recording)
+    await harness.recorder._stop_recording(recording, reason="test_done")
     bundle = recording.bundle
     components = {
         path.relative_to(bundle.root).as_posix()

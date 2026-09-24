@@ -162,15 +162,7 @@ def test_alarm_idle_fixture_is_the_measured_idle_shape(fixture_set: str) -> None
 
 
 def test_alarm_idle_fixture_yields_only_a_generic_event(fixture_set: str) -> None:
-    """Pinned measured behaviour, not an endorsement.
-
-    An idle ``cmdId=33`` push carries no detection, yet ``events.py`` falls through its type
-    mapping and labels it ``system``/``active`` — which the engine will happily correlate.
-    The live index of one install holds 4539 such events, so this is real noise and it is
-    recorded as gap **G10** in ``goose/PLAN-ReolinkMediaImprovement.md``. The assertion
-    deliberately excludes every detection type: an idle push must never masquerade as a
-    detection. If G10 is fixed, this test is where the expectation changes.
-    """
+    """An idle ``cmdId=33`` push remains unrecognized, never a detection event."""
     body = (FIXTURE_ROOT / fixture_set / "alarm_idle.xml").read_text(encoding="utf-8")
     events = parse_alarm_event_frame(body.encode("utf-8"), channel=0)
     detection_types = {
@@ -182,7 +174,7 @@ def test_alarm_idle_fixture_yields_only_a_generic_event(fixture_set: str) -> Non
         "line_crossing_detection",
     }
     assert events, "a parseable push must not parse to nothing"
-    assert {event.event_type for event in events} == {"system"}
+    assert {event.event_type for event in events} == {"unrecognized"}
     assert not {event.event_type for event in events} & detection_types
 
 

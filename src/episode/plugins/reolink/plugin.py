@@ -156,7 +156,21 @@ class ReolinkPlugin:
                     status=ReceiptStatus.REJECTED,
                     metadata={"reason": "derived_delivery_storage_unavailable"},
                 )
+            snapshot_token = envelope.metadata.get("snapshot_fetch_token")
             for index, event in enumerate(events):
+                notification_metadata = {
+                    "kind": "event_notification",
+                    "integration": "reolink",
+                    "parent_receipt_id": envelope.receipt_id,
+                    "notification_index": index,
+                    "event_type": event.event_type,
+                    "event_state": event.event_state,
+                    "observed_at": event.timestamp.isoformat(),
+                    "channel": event.channel,
+                    "event_id": event.event_id,
+                }
+                if isinstance(snapshot_token, str):
+                    notification_metadata["snapshot_fetch_token"] = snapshot_token
                 await self._delivery_sink(
                     RawPluginDelivery(
                         plugin_id=PLUGIN_ID,
@@ -171,17 +185,7 @@ class ReolinkPlugin:
                         source="reolink:events",
                         media_type="application/json",
                         artifact_type="derived_event_notification",
-                        metadata={
-                            "kind": "event_notification",
-                            "integration": "reolink",
-                            "parent_receipt_id": envelope.receipt_id,
-                            "notification_index": index,
-                            "event_type": event.event_type,
-                            "event_state": event.event_state,
-                            "observed_at": event.timestamp.isoformat(),
-                            "channel": event.channel,
-                            "event_id": event.event_id,
-                        },
+                        metadata=notification_metadata,
                     )
                 )
             return IngressHandlerResult(
@@ -244,6 +248,15 @@ class ReolinkPlugin:
             except ValueError:
                 pass
 
+        event_metadata = {
+            "integration": "reolink",
+            "channel": envelope.metadata.get("channel", 0),
+            "event_id": envelope.metadata.get("event_id", ""),
+        }
+        snapshot_token = envelope.metadata.get("snapshot_fetch_token")
+        if isinstance(snapshot_token, str):
+            event_metadata["snapshot_fetch_token"] = snapshot_token
+
         return IngressHandlerResult(
             claimed=True,
             event=EventObservation(
@@ -253,11 +266,7 @@ class ReolinkPlugin:
                 source="reolink:events",
                 device_id=envelope.device_id,
                 area_id=envelope.area_id,
-                metadata={
-                    "integration": "reolink",
-                    "channel": envelope.metadata.get("channel", 0),
-                    "event_id": envelope.metadata.get("event_id", ""),
-                },
+                metadata=event_metadata,
             ),
             metadata={"interpreted": True, "source": "reolink:events"},
         )

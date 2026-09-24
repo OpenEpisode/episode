@@ -385,15 +385,15 @@ class ReolinkDeviceConnection:
             self.config.device.name,
         )
 
-    async def _snapshot_fetcher(self) -> tuple[bytes, str]:
-        """Reolink-native snapshot fetcher used by the media registry.
+    async def _snapshot_fetcher(self, token: str | None = None) -> tuple[bytes, str]:
+        """Fetch an Event-bound Reolink snapshot, falling back to a fresh capture.
 
         Snapshots are fetched over the Baichuan binary protocol (cmdId=109),
-        not HTTP, so this bypasses the registry's HTTP fetch path. A fresh
-        pre-armed snapshot (armed when the event frame arrived) is served first
-        so the camera's 0.3-1.1 s encode overlaps event processing.
+        not HTTP, so this bypasses the registry's HTTP fetch path. A pre-armed
+        snapshot is used only when its opaque token matches the Event that
+        caused it; an absent or mismatched token always gets a fresh capture.
         """
-        prearmed = self._snapshot_slot.consume()
+        prearmed = self._snapshot_slot.consume(token)
         if prearmed is not None:
             return prearmed
         return await self._fetch_snapshot()
@@ -449,7 +449,8 @@ class ReolinkDeviceConnection:
                     password=self.config.device.password,
                     profile_token="",
                     source="reolink",
-                    snapshot_fetcher=self._snapshot_fetcher,
+                    snapshot_fetcher=self._fetch_snapshot,
+                    event_snapshot_fetcher=self._snapshot_fetcher,
                     video_handler=video_handler,
                     codec_hint=codec_hint,
                 )
@@ -611,11 +612,23 @@ class ReolinkDeviceConnection:
         # snapshot ~850ms behind the first video access unit). Pre-arming reads no frame
         # bytes and produces no delivery, so raw-first persistence is unaffected; it only
         # overlaps the camera's JPEG encode with the ingestion work.
+        snapshot_token: str | None = None
         if cmd_id == BC_CMD_ID_ALARM_EVENT_LIST:
             if self._snapshot_supported:
-                self._snapshot_slot.arm()
+                snapshot_token = self._snapshot_slot.arm()
             if self.config.media_enabled and self.config.preview.priming:
                 self._arm_preview()
+
+        delivery_metadata = {
+            "kind": "raw_event_frame",
+            "integration": "reolink",
+            "command_id": cmd_id,
+            "channel": channel,
+            "nonce": str(dec.get("nonce", "")),
+            "use_aes": bool(dec.get("use_aes", False)),
+        }
+        if snapshot_token is not None:
+            delivery_metadata["snapshot_fetch_token"] = snapshot_token
 
         await self._delivery_sink(
             RawPluginDelivery(
@@ -627,14 +640,7 @@ class ReolinkDeviceConnection:
                 source="reolink:events",
                 media_type="application/octet-stream",
                 artifact_type="event_frame",
-                metadata={
-                    "kind": "raw_event_frame",
-                    "integration": "reolink",
-                    "command_id": cmd_id,
-                    "channel": channel,
-                    "nonce": str(dec.get("nonce", "")),
-                    "use_aes": bool(dec.get("use_aes", False)),
-                },
+                metadata=delivery_metadata,
             )
         )
 

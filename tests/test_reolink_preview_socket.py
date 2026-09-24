@@ -329,6 +329,64 @@ async def test_stream_preview_pushes_annexb_access_units(set_name: str) -> None:
     assert b"<handle>0</handle>" in _bc(camera.stops[0])
 
 
+async def test_stream_preview_cancels_stalled_consumer_and_still_stops() -> None:
+    """A full output queue cannot prevent consumer cleanup or the camera stop."""
+    capture = wire.capture_fixture(wire.SET_NAMES[0])
+    frames = _media_frames(capture)
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+    never = asyncio.Event()
+
+    async def push(_chunk: bytes) -> None:
+        entered.set()
+        try:
+            await never.wait()
+        finally:
+            cancelled.set()
+
+    async with ScriptedCamera(frames=frames) as camera:
+        client = await _connect(camera)
+        try:
+            stream = asyncio.create_task(client.stream_preview(push, timeout=2.0))
+            await asyncio.wait_for(entered.wait(), timeout=2.0)
+            await asyncio.sleep(0.05)
+            stream.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await stream
+        finally:
+            await client.close()
+
+    assert entered.is_set(), "the stalled consumer must have received a frame"
+    assert cancelled.is_set(), "teardown must cancel a consumer that cannot drain"
+    assert len(camera.stops) == 1, "consumer backpressure must not skip cmdId=6"
+
+
+async def test_stalled_preview_consumer_cleanup_is_bounded_without_socket() -> None:
+    """Consumer cancellation is contained even when the loopback socket test is unavailable."""
+    client = object.__new__(BaichuanApiClient)
+    queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def push(_chunk: bytes) -> None:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    consumer = asyncio.create_task(client._drain_queue(queue, push))
+    await queue.put(b"in-flight")
+    await entered.wait()
+    await queue.put(b"queued")
+
+    await asyncio.wait_for(client._finish_preview_consumer(queue, consumer), timeout=4.0)
+
+    assert cancelled.is_set()
+    assert consumer.done()
+    assert consumer.cancelled()
+
+
 async def test_stream_preview_is_not_truncated_by_preview_timeout() -> None:
     """``preview_timeout`` bounds the first packet, never the recording duration.
 
