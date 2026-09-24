@@ -190,8 +190,14 @@ leaves their HLS bundles recoverable. On startup, capture can continue in the
 same logical recording with a discontinuity marker when its Episode remains
 active. Finalizing Episodes are retried after recorder recovery; a failed
 finalization remains visible as finalizing instead of being silently marked
-closed. Closed Episodes are trusted sealed history and are not scanned or
-rebuilt during normal startup.
+closed. If FFmpeg exits while an Episode is still active, the recorder keeps its
+existing HLS workspace and retries with capped backoff; it does not create a
+second recording Evidence item for the same camera and Episode. A Device outage
+therefore appears as reconnecting until capture resumes or the Episode ends.
+The Episode engine also resumes Event-to-Episode correlation interrupted after
+an Event was persisted, without changing that Event's original capture decision.
+Closed Episodes are trusted sealed history and are not scanned or rebuilt during
+normal startup.
 
 Startup loads the retention policy synchronously, then runs the initial visual
 cleanup in the background. Plugin activation remains synchronous so configured

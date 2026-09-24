@@ -210,7 +210,12 @@ class CaptureProfileService:
         async with self._lock:
             return await self._evaluate_event(event)
 
-    async def canonicalize_event(self, event: Event) -> tuple[Event, bool]:
+    async def canonicalize_event(
+        self,
+        event: Event,
+        *,
+        activity_window_seconds: int | None = None,
+    ) -> tuple[Event, bool]:
         """Persist an active Event and its capture decision as one row."""
         if event.event_state != EventState.ACTIVE:
             raise ValueError("Capture participation decisions apply only to active Events")
@@ -225,7 +230,10 @@ class CaptureProfileService:
             existing = await self._repository.find_event_by_dedup_key(event.dedup_key)
             if existing is not None:
                 return existing, False
-            decision, targets = await self._evaluate_event(event)
+            decision, targets = await self._evaluate_event(
+                event,
+                activity_window_seconds=activity_window_seconds,
+            )
             event.participation = decision
             event.eligible_recording_device_ids = targets
             return await self._repository.canonicalize_event(event)
@@ -233,6 +241,8 @@ class CaptureProfileService:
     async def _evaluate_event(
         self,
         event: Event,
+        *,
+        activity_window_seconds: int | None = None,
     ) -> tuple[ParticipationDecision, list[str]]:
         profile = await self._repository.get_active_capture_profile()
         if profile is None:
@@ -283,6 +293,7 @@ class CaptureProfileService:
             filtered_event_type=filtered_event_type,
             filtered_event_class=filtered_event_class,
             filter_source=filter_source,
+            activity_window_seconds=activity_window_seconds,
         )
         targets = await self._resolve_target_ids(event, profile) if allowed else []
         return decision, targets

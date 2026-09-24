@@ -8,7 +8,7 @@ import re
 import subprocess
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -65,6 +65,7 @@ class _EpisodeRecording:
     reconnect_count: int = 0
     last_exit_code: int | None = None
     last_error: str | None = None
+    retry_wakeup: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     @property
     def evidence_id(self) -> str:
@@ -110,6 +111,8 @@ class RecordingEngine:
         self._recoverable: dict[tuple[str, str], _EpisodeRecording] = {}
         self._running = False
         self._stall_seconds = max(60, fragment_seconds * 6)
+        self._retry_initial_seconds = 2.0
+        self._retry_max_seconds = 30.0
         self._completed_count = 0
         self._incomplete_count = 0
         self._reconnect_count = 0
@@ -318,11 +321,11 @@ class RecordingEngine:
                     },
                 )
         for key, recording in list(self._recoverable.items()):
-            self._recoverable.pop(key, None)
             await self._finalize_bundle(
                 recording,
                 reason="active_target_not_reconstructed",
             )
+            self._recoverable.pop(key, None)
 
     async def _episode_within_capture_horizon(self, episode, now: datetime) -> bool:
         """Keep recovery aligned with the engine's persisted settling policy."""
@@ -405,6 +408,7 @@ class RecordingEngine:
         self._observe_progress(rec)
         if rec.continued:
             rec.state = "reconnecting"
+        rec.retry_wakeup.clear()
         self._recordings[key] = rec
         rec.task = asyncio.create_task(self._record_episode(rec, rtsp_url))
         self._active_tasks.add(rec.task)
@@ -439,15 +443,19 @@ class RecordingEngine:
             for recording in self._recordings.values()
             if recording.episode_id == episode_id
         ]
+        await self._stop_recordings(
+            recordings,
+            raise_on_error=True,
+        )
+        # A background task can discover that its Episode became immutable
+        # while it was retrying, and its first publication attempt may fail.
+        # Re-read this map after stopping active tasks so such work remains
+        # part of the finalization barrier instead of being lost in the gap.
         recoverable = [
             recording
             for recording in self._recoverable.values()
             if recording.episode_id == episode_id
         ]
-        await self._stop_recordings(
-            recordings,
-            raise_on_error=True,
-        )
         for recording in recoverable:
             await self._finalize_bundle(recording, reason="episode_finalizing")
             self._recoverable.pop(
@@ -470,6 +478,7 @@ class RecordingEngine:
         for rec in recordings:
             self._recordings.pop(self._rec_key(rec.episode_id, rec.device_id), None)
             rec.stop_reason = reason
+            rec.retry_wakeup.set()
             self._signal_process(rec)
         if reason:
             await asyncio.gather(
@@ -552,186 +561,219 @@ class RecordingEngine:
                 rec.device_id,
             )
 
-    async def _record_episode(
-        self, rec: _EpisodeRecording, rtsp_url: str, _retries: int = 0
-    ) -> None:
+    async def _record_episode(self, rec: _EpisodeRecording, rtsp_url: str) -> None:
         key = self._rec_key(rec.episode_id, rec.device_id)
-        if rec.stop_reason == "application_shutdown" or not self._running:
-            rec.bundle.refresh_manifest(state="interrupted", reason="application_shutdown")
-            return
-        if self._recordings.get(key) is not rec:
-            await self._finalize_bundle(rec)
-            return
-        segments_before = rec.bundle.next_segment_index()
-        observed_segments = segments_before
-        last_progress = asyncio.get_running_loop().time()
-        rec.state = "reconnecting" if rec.continued or _retries else "starting"
-        flags = "independent_segments+program_date_time+temp_file+append_list"
-        if rec.continued or _retries:
-            flags += "+discont_start"
-        returncode = -1
-        wait_task: asyncio.Task | None = None
-        stall_signaled = False
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg",
-                "-y",
-                "-rtsp_transport",
-                "tcp",
-                "-i",
-                rtsp_url,
-                "-map",
-                "0:v:0",
-                "-map",
-                "0:a?",
-                "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                "-f",
-                "hls",
-                "-hls_time",
-                str(self._fragment_seconds),
-                "-hls_list_size",
-                "0",
-                "-hls_playlist_type",
-                "event",
-                "-hls_segment_type",
-                "fmp4",
-                "-hls_fmp4_init_filename",
-                "init.mp4",
-                "-hls_segment_filename",
-                "segments/segment-%06d.m4s",
-                "-hls_base_url",
-                "segments/",
-                "-start_number",
-                str(rec.bundle.next_segment_index()),
-                "-hls_flags",
-                flags,
-                "index.m3u8",
-                cwd=str(rec.bundle.root),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            rec.proc = proc
-            wait_task = asyncio.create_task(proc.wait())
-            while not wait_task.done():
-                await asyncio.wait({wait_task}, timeout=1)
-                await asyncio.to_thread(rec.bundle.refresh_manifest, state="recording")
-                current_segments = rec.bundle.next_segment_index()
-                if current_segments > observed_segments:
-                    observed_segments = current_segments
-                    last_progress = asyncio.get_running_loop().time()
-                    self._observe_progress(rec)
-                elif (
-                    not wait_task.done()
-                    and not stall_signaled
-                    and asyncio.get_running_loop().time() - last_progress > self._stall_seconds
-                ):
-                    stall_signaled = True
-                    rec.state = "stalled"
-                    rec.last_error = (
-                        f"No new media fragment for more than {self._stall_seconds} seconds"
-                    )
-                    self._stalled_count += 1
-                    self._last_error = rec.last_error
-                    logger.warning(
-                        "Recording stalled for episode %s camera %s; restarting FFmpeg",
-                        rec.episode_id[:8],
-                        rec.device_id,
-                    )
-                    self._signal_process(rec)
-            returncode = await wait_task
-        except asyncio.CancelledError:
-            await self._terminate_process(rec)
-            if wait_task:
-                await asyncio.gather(wait_task, return_exceptions=True)
-            rec.bundle.preserve_temporary_components()
-            rec.bundle.refresh_manifest(state="interrupted", reason="recording_task_cancelled")
-            raise
-        except Exception:
-            await self._terminate_process(rec)
-            if wait_task:
-                await asyncio.gather(wait_task, return_exceptions=True)
-            logger.exception(
-                "Recording process failed for episode %s camera %s",
-                rec.episode_id[:8],
-                rec.device_id,
-            )
-        finally:
-            rec.proc = None
-
-        if rec.stop_reason == "application_shutdown" or not self._running:
-            rec.bundle.preserve_temporary_components()
-            rec.bundle.refresh_manifest(state="interrupted", reason="application_shutdown")
-            return
-        if self._recordings.get(key) is not rec:
-            await self._finalize_bundle(rec)
-            return
-
-        episode = await self._repo.get_episode(rec.episode_id)
-        if not episode or episode.state not in {
-            EpisodeState.ACTIVE,
-            EpisodeState.QUIESCENT,
-        }:
-            self._recordings.pop(key, None)
-            await self._finalize_bundle(rec)
-            return
-
-        segments_after = rec.bundle.next_segment_index()
-        retry = 0 if segments_after > segments_before else _retries + 1
-        rec.last_exit_code = returncode
-        rec.reconnect_count += 1
-        self._reconnect_count += 1
-        if retry > 3:
-            self._recordings.pop(key, None)
-            rec.state = "failed"
-            rec.last_error = (
-                "Recording stalled repeatedly; retry limit exceeded"
-                if stall_signaled
-                else f"FFmpeg exited with code {returncode}; retry limit exceeded"
-            )
-            self._failure_count += 1
-            self._last_error = rec.last_error
-            await self._finalize_bundle(rec, incomplete=True, reason="retry_limit_exceeded")
-            logger.error(
-                "Recording failed for episode %s camera %s after 3 retries",
-                rec.episode_id[:8],
-                rec.device_id,
-            )
-            return
-        rec.state = "reconnecting"
-        if not stall_signaled:
-            rec.last_error = f"FFmpeg exited with code {returncode}; reconnecting"
-        self._last_error = rec.last_error
-        logger.warning(
-            "Recording process ended for episode %s camera %s "
-            "(ffmpeg exit %s), reconnecting (%d/3)",
-            rec.episode_id[:8],
-            rec.device_id,
-            returncode,
-            retry,
-        )
-        await asyncio.sleep(2)
-        if self._recordings.get(key) is not rec:
+        retry_attempt = 0
+        while True:
             if rec.stop_reason == "application_shutdown" or not self._running:
                 rec.bundle.preserve_temporary_components()
                 rec.bundle.refresh_manifest(state="interrupted", reason="application_shutdown")
-            else:
-                await self._finalize_bundle(rec)
-            return
-        episode = await self._repo.get_episode(rec.episode_id)
-        if not episode or episode.state not in {
-            EpisodeState.ACTIVE,
-            EpisodeState.QUIESCENT,
-        }:
-            self._recordings.pop(key, None)
-            await self._finalize_bundle(rec, incomplete=True, reason="episode_closed")
-            return
-        rec.continued = True
-        await self._record_episode(rec, rtsp_url, retry)
+                return
+            if self._recordings.get(key) is not rec:
+                await self._finalize_from_retry_task(rec)
+                return
+
+            segments_before = rec.bundle.next_segment_index()
+            observed_segments = segments_before
+            last_progress = asyncio.get_running_loop().time()
+            rec.state = "reconnecting" if rec.continued or retry_attempt else "starting"
+            flags = "independent_segments+program_date_time+temp_file+append_list"
+            if rec.continued:
+                flags += "+discont_start"
+            returncode = -1
+            wait_task: asyncio.Task | None = None
+            stall_signaled = False
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg",
+                    "-y",
+                    "-rtsp_transport",
+                    "tcp",
+                    "-i",
+                    rtsp_url,
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "0:a?",
+                    "-c:v",
+                    "copy",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "128k",
+                    "-f",
+                    "hls",
+                    "-hls_time",
+                    str(self._fragment_seconds),
+                    "-hls_list_size",
+                    "0",
+                    "-hls_playlist_type",
+                    "event",
+                    "-hls_segment_type",
+                    "fmp4",
+                    "-hls_fmp4_init_filename",
+                    "init.mp4",
+                    "-hls_segment_filename",
+                    "segments/segment-%06d.m4s",
+                    "-hls_base_url",
+                    "segments/",
+                    "-start_number",
+                    str(rec.bundle.next_segment_index()),
+                    "-hls_flags",
+                    flags,
+                    "index.m3u8",
+                    cwd=str(rec.bundle.root),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                rec.proc = proc
+                wait_task = asyncio.create_task(proc.wait())
+                while not wait_task.done():
+                    await asyncio.wait({wait_task}, timeout=1)
+                    await asyncio.to_thread(rec.bundle.refresh_manifest, state="recording")
+                    current_segments = rec.bundle.next_segment_index()
+                    if current_segments > observed_segments:
+                        observed_segments = current_segments
+                        last_progress = asyncio.get_running_loop().time()
+                        self._observe_progress(rec)
+                    elif (
+                        not wait_task.done()
+                        and not stall_signaled
+                        and asyncio.get_running_loop().time() - last_progress > self._stall_seconds
+                    ):
+                        stall_signaled = True
+                        rec.state = "stalled"
+                        rec.last_error = (
+                            f"No new media fragment for more than {self._stall_seconds} seconds"
+                        )
+                        self._stalled_count += 1
+                        self._last_error = rec.last_error
+                        logger.warning(
+                            "Recording stalled for episode %s camera %s; restarting FFmpeg",
+                            rec.episode_id[:8],
+                            rec.device_id,
+                        )
+                        self._signal_process(rec)
+                returncode = await wait_task
+            except asyncio.CancelledError:
+                await self._terminate_process(rec)
+                if wait_task:
+                    await asyncio.gather(wait_task, return_exceptions=True)
+                rec.bundle.preserve_temporary_components()
+                rec.bundle.refresh_manifest(state="interrupted", reason="recording_task_cancelled")
+                raise
+            except Exception:
+                await self._terminate_process(rec)
+                if wait_task:
+                    await asyncio.gather(wait_task, return_exceptions=True)
+                logger.exception(
+                    "Recording process failed for episode %s camera %s",
+                    rec.episode_id[:8],
+                    rec.device_id,
+                )
+            finally:
+                rec.proc = None
+
+            if rec.stop_reason == "application_shutdown" or not self._running:
+                rec.bundle.preserve_temporary_components()
+                rec.bundle.refresh_manifest(state="interrupted", reason="application_shutdown")
+                return
+            if self._recordings.get(key) is not rec:
+                await self._finalize_from_retry_task(rec)
+                return
+
+            episode = await self._repo.get_episode(rec.episode_id)
+            if not episode or episode.state not in {
+                EpisodeState.ACTIVE,
+                EpisodeState.QUIESCENT,
+            }:
+                self._recordings.pop(key, None)
+                await self._finalize_from_retry_task(rec)
+                return
+
+            segments_after = rec.bundle.next_segment_index()
+            retry_attempt = 0 if segments_after > segments_before else retry_attempt + 1
+            retry_delay = self._retry_delay_seconds(retry_attempt)
+            rec.last_exit_code = returncode
+            rec.reconnect_count += 1
+            self._reconnect_count += 1
+            rec.state = "reconnecting"
+            if not stall_signaled:
+                rec.last_error = f"FFmpeg exited with code {returncode}; reconnecting"
+            self._last_error = rec.last_error
+            logger.warning(
+                "Recording process ended for episode %s camera %s "
+                "(ffmpeg exit %s), reconnecting after %.1f seconds",
+                rec.episode_id[:8],
+                rec.device_id,
+                returncode,
+                retry_delay,
+            )
+            stopped = await self._wait_for_retry(rec, retry_delay)
+            if stopped:
+                if rec.stop_reason == "application_shutdown" or not self._running:
+                    rec.bundle.preserve_temporary_components()
+                    rec.bundle.refresh_manifest(state="interrupted", reason="application_shutdown")
+                    return
+                if self._recordings.get(key) is not rec:
+                    await self._finalize_from_retry_task(rec)
+                    return
+
+            episode = await self._repo.get_episode(rec.episode_id)
+            if not episode or episode.state not in {
+                EpisodeState.ACTIVE,
+                EpisodeState.QUIESCENT,
+            }:
+                self._recordings.pop(key, None)
+                await self._finalize_from_retry_task(
+                    rec,
+                    incomplete=True,
+                    reason="episode_closed",
+                )
+                return
+            rec.continued = True
+
+    @staticmethod
+    async def _wait_for_retry(rec: _EpisodeRecording, delay: float) -> bool:
+        """Wait for backoff or a stop signal, whichever arrives first."""
+        delay_task = asyncio.create_task(asyncio.sleep(delay))
+        wake_task = asyncio.create_task(rec.retry_wakeup.wait())
+        tasks = (delay_task, wake_task)
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            return wake_task in done
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _retry_delay_seconds(self, retry_attempt: int) -> float:
+        """Return exponential reconnect backoff capped at the operational maximum."""
+        delay = self._retry_initial_seconds
+        for _ in range(max(0, retry_attempt - 1)):
+            delay = min(delay * 2, self._retry_max_seconds)
+            if delay >= self._retry_max_seconds:
+                break
+        return delay
+
+    async def _finalize_from_retry_task(
+        self,
+        rec: _EpisodeRecording,
+        *,
+        incomplete: bool = False,
+        reason: str | None = None,
+    ) -> None:
+        try:
+            await self._finalize_bundle(rec, incomplete=incomplete, reason=reason)
+        except Exception:
+            self._recoverable[self._rec_key(rec.episode_id, rec.device_id)] = rec
+            logger.exception(
+                "Could not finalize recording for episode %s camera %s; "
+                "retaining the recovery workspace",
+                rec.episode_id[:8],
+                rec.device_id,
+            )
 
     async def _finalize_bundle(
         self,

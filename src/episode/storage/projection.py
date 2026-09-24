@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Collection
+from collections.abc import Awaitable, Callable, Collection
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from episode.domain.models import EpisodeState, RawArtifact
 from episode.storage.bundles import relative_bundle_path, write_manifest
 
 if TYPE_CHECKING:
     from episode.storage.repository import Repository
+
+_T = TypeVar("_T")
+_MANIFEST_PAGE_SIZE = 1_000
 
 
 def _utc_iso(value: datetime | None) -> str | None:
@@ -31,6 +34,7 @@ def _participation_data(event) -> dict[str, object] | None:
         "profile_name": decision.profile_name,
         "reason": decision.reason,
         "evaluated_at": _utc_iso(decision.evaluated_at),
+        "activity_window_seconds": decision.activity_window_seconds,
         # A filtered Event must stay explainable from the portable bundle alone,
         # so the exact suppressed type, its class, the deciding level, and what
         # happened instead of capture travel with it.
@@ -39,6 +43,23 @@ def _participation_data(event) -> dict[str, object] | None:
         "filter_source": decision.filter_source,
         "attachment": decision.attachment,
     }
+
+
+async def _read_all_pages(
+    list_page: Callable[..., Awaitable[list[_T]]],
+    *,
+    page_size: int,
+    **filters: object,
+) -> list[_T]:
+    """Read a complete ordered collection through a limit/offset repository method."""
+    items: list[_T] = []
+    offset = 0
+    while True:
+        page = await list_page(**filters, limit=page_size, offset=offset)
+        items.extend(page)
+        if len(page) < page_size:
+            return items
+        offset += page_size
 
 
 class EpisodeBundleProjector:
@@ -133,11 +154,20 @@ class EpisodeBundleProjector:
             for item in device_snapshots
         ]
 
-        events = await self._repository.list_events(episode_id=episode_id, limit=10000)
-        evidence = await self._repository.list_evidence(episode_id=episode_id, limit=10000)
-        receipts = await self._repository.list_ingestion_receipts(
+        events = await _read_all_pages(
+            self._repository.list_events,
+            page_size=_MANIFEST_PAGE_SIZE,
             episode_id=episode_id,
-            limit=10000,
+        )
+        evidence = await _read_all_pages(
+            self._repository.list_evidence,
+            page_size=_MANIFEST_PAGE_SIZE,
+            episode_id=episode_id,
+        )
+        receipts = await _read_all_pages(
+            self._repository.list_ingestion_receipts,
+            page_size=_MANIFEST_PAGE_SIZE,
+            episode_id=episode_id,
         )
         events.sort(key=lambda item: item.timestamp)
         evidence.sort(key=lambda item: item.timestamp)

@@ -95,6 +95,10 @@ class ParticipationDecision:
     filtered_event_class: str | None = None
     filter_source: str | None = None
     attachment: str | None = None
+    # Snapshot of the Device's effective activity window at canonicalization.
+    # This lets crash recovery rebuild an Episode without reinterpreting later
+    # inventory edits. Older persisted decisions omit the value.
+    activity_window_seconds: int | None = None
 
 
 @dataclass

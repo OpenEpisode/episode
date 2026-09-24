@@ -665,6 +665,73 @@ class Repository:
             observed_before=observed_before,
         )
 
+    async def list_unassigned_active_events(
+        self,
+        *,
+        limit: int = 200,
+        after: tuple[datetime, str] | None = None,
+        order_by_ingress: bool = True,
+    ) -> list[Event]:
+        return await self._event_store().list_unassigned_active(
+            limit=limit,
+            after=after,
+            order_by_ingress=order_by_ingress,
+        )
+
+    async def event_recovery_ingress_time(self, event: Event) -> datetime | None:
+        """Resolve an orphan Event's original ingress time without guessing.
+
+        A crash can land after the canonical Event commit but before its Receipt
+        is linked. The Event's raw payload path identifies the exact delivery
+        artifact in that window. Only an exact persisted path match is backfilled;
+        a moved or missing path is not guessed from a filename or payload.
+        """
+        if self._provenance is None:
+            raise RuntimeError("Repository is not initialized")
+
+        explicitly_linked = await self._conn.execute_fetchall(
+            "SELECT 1 FROM ingestion_receipts WHERE event_id = ? LIMIT 1",
+            (event.id,),
+        )
+        if not explicitly_linked and event.episode_id is None and event.raw_payload_path:
+            rows = await self._conn.execute_fetchall(
+                """SELECT r.id
+                   FROM ingestion_receipts r
+                   JOIN raw_artifacts a ON a.id = r.artifact_id
+                   WHERE r.event_id IS NULL
+                     AND r.evidence_id IS NULL
+                   AND a.file_path = ?
+                   ORDER BY r.received_at ASC, r.id ASC""",
+                (event.raw_payload_path,),
+            )
+            if len(rows) == 1:
+                await self.link_ingestion_receipt(rows[0]["id"], event_id=event.id)
+            elif rows:
+                logger.warning(
+                    "Could not backfill Receipt for Event %s: Raw Artifact path is ambiguous",
+                    event.id,
+                )
+
+        rows = await self._conn.execute_fetchall(
+            """SELECT MIN(received_at) AS received_at
+               FROM ingestion_receipts
+               WHERE event_id = ?""",
+            (event.id,),
+        )
+        received_at = rows[0]["received_at"] if rows else None
+        if received_at:
+            value = datetime.fromisoformat(received_at)
+        elif event.participation is not None:
+            # The decision timestamp is captured by the core at canonicalization
+            # and is the best available boundary for direct/legacy Events that
+            # had no linked Receipt.
+            value = event.participation.evaluated_at
+        else:
+            return None
+        return (
+            value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        )
+
     async def find_recent_events_by_device(self, device_id: str, since: datetime) -> list[Event]:
         return await self._event_store().find_recent_by_device(device_id, since)
 
@@ -1195,6 +1262,7 @@ class Repository:
         *,
         at: datetime | None = None,
         quiescent_grace_seconds: int = DEFAULT_QUIESCENT_GRACE_SECONDS,
+        require_existing_activity: bool = False,
     ) -> Episode | None:
         """Find an Area Episode open at the supplied ingress time.
 
@@ -1206,10 +1274,40 @@ class Repository:
         grace = validate_quiescent_grace_seconds(quiescent_grace_seconds)
         grace_cutoff = _utc_iso(reference - timedelta(seconds=grace))
         fallback_cutoff = _utc_iso(reference - timedelta(seconds=timeout + grace))
+        lower_bound = ""
+        params: list[object] = [area_id]
+        if require_existing_activity:
+            # Episode.start_time is the camera's source timestamp and may be
+            # skewed. During crash recovery, use the earliest ingress time of
+            # an active, capture-participating Event already in the Episode.
+            # Receipts are preferred; the persisted participation evaluation
+            # time is the fallback for beta.8/direct-ingress Events.
+            lower_bound = """
+               AND julianday(?) >= julianday(
+                   (SELECT MIN(COALESCE(
+                       (SELECT MIN(r.received_at)
+                        FROM ingestion_receipts r
+                        WHERE r.event_id = active_event.id),
+                       CASE WHEN json_valid(active_event.participation)
+                            THEN json_extract(active_event.participation, '$.evaluated_at') END,
+                       active_event.timestamp
+                   ))
+                    FROM events active_event
+                    WHERE active_event.episode_id = episodes.id
+                      AND active_event.event_state = 'active'
+                      AND NOT (
+                          json_valid(active_event.participation)
+                          AND json_extract(active_event.participation, '$.allowed') = 0
+                      ))
+               )
+            """
+            params.append(_utc_iso(reference))
+        params.extend((grace_cutoff, fallback_cutoff))
         rows = await self._conn.execute_fetchall(
-            """SELECT * FROM episodes
+            f"""SELECT * FROM episodes
                WHERE primary_area_id = ?
                AND state IN ('active', 'quiescent')
+               {lower_bound}
                AND (
                    (minimum_end_at IS NOT NULL
                     AND julianday(minimum_end_at) >= julianday(?))
@@ -1222,7 +1320,7 @@ class Repository:
                    COALESCE(last_activity_at, last_event_time, start_time)
                ) DESC
                LIMIT 1""",
-            (area_id, grace_cutoff, fallback_cutoff),
+            params,
         )
         episode = self._row_to_episode(rows[0]) if rows else None
         if episode:
@@ -1241,6 +1339,61 @@ class Repository:
             episode.last_activity_at if episode else None,
         )
         return episode
+
+    async def find_empty_episode_for_recovery(
+        self,
+        event_id: str,
+        timeout: int,
+        *,
+        at: datetime,
+        quiescent_grace_seconds: int = DEFAULT_QUIESCENT_GRACE_SECONDS,
+    ) -> Episode | None:
+        """Find the unique empty Episode shell left by a correlation crash.
+
+        Episode creation commits before its first Event is linked. If the
+        process stops in that window, an exact source-timestamp match is the
+        only durable key shared by the shell and orphan. Require one unique
+        empty shell so recovery never guesses between Episodes.
+        """
+        grace = validate_quiescent_grace_seconds(quiescent_grace_seconds)
+        grace_cutoff = _utc_iso(at - timedelta(seconds=grace))
+        fallback_cutoff = _utc_iso(at - timedelta(seconds=timeout + grace))
+        rows = await self._conn.execute_fetchall(
+            """SELECT e.*
+               FROM episodes e
+               JOIN events orphan ON orphan.id = ?
+                                  AND orphan.area_id = e.primary_area_id
+                                  AND orphan.timestamp = e.start_time
+               WHERE orphan.episode_id IS NULL
+                 AND orphan.event_state = 'active'
+                 AND e.state IN ('active', 'quiescent')
+                 AND e.event_count = 0
+                 AND NOT EXISTS (
+                     SELECT 1 FROM events linked WHERE linked.episode_id = e.id
+                 )
+                 AND (
+                     (e.minimum_end_at IS NOT NULL
+                      AND julianday(e.minimum_end_at) >= julianday(?))
+                     OR
+                     (e.minimum_end_at IS NULL
+                      AND julianday(COALESCE(e.last_activity_at, e.last_event_time, e.start_time))
+                          >= julianday(?))
+                 )
+                 AND (
+                     SELECT COUNT(*)
+                     FROM episodes matching
+                     WHERE matching.primary_area_id = e.primary_area_id
+                       AND matching.state IN ('active', 'quiescent')
+                       AND matching.start_time = orphan.timestamp
+                       AND matching.event_count = 0
+                       AND NOT EXISTS (
+                           SELECT 1 FROM events linked WHERE linked.episode_id = matching.id
+                       )
+                 ) = 1
+               LIMIT 1""",
+            (event_id, grace_cutoff, fallback_cutoff),
+        )
+        return self._row_to_episode(rows[0]) if rows else None
 
     async def find_episode_for_area_at(
         self,
@@ -1329,9 +1482,17 @@ class Repository:
                         raw_payload_path = new_path
 
         if raw_payload_path and not receipts:
+            artifact = (
+                await self._provenance.find_artifact_by_path(raw_payload_path)
+                if self._provenance is not None
+                else None
+            )
+            old_path = raw_payload_path
             raw_payload_path = await async_move_to_episode(
                 self._data_dir, episode_id, raw_payload_path, "events"
             )
+            if artifact and raw_payload_path != old_path and self._provenance is not None:
+                await self._provenance.update_artifact_path(artifact.id, raw_payload_path)
         if raw_payload_path != event.raw_payload_path:
             await self._conn.execute(
                 "UPDATE events SET raw_payload_path = ? WHERE id = ?",

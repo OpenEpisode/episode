@@ -6,7 +6,15 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
+from episode.domain.event_filter import FILTERED_REASON
 from episode.domain.models import Event, EventState, ParticipationDecision, make_event_dedup_key
+
+_RECOVERY_INGRESS_SQL = """COALESCE(
+    (SELECT MIN(r.received_at) FROM ingestion_receipts r WHERE r.event_id = e.id),
+    CASE WHEN json_valid(e.participation)
+         THEN json_extract(e.participation, '$.evaluated_at') END,
+    e.timestamp
+)"""
 
 
 def _utc_iso(value: datetime) -> str:
@@ -150,6 +158,50 @@ class EventStore:
             f"""SELECT * FROM events{where}
                   ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?""",
             params + [limit, offset],
+        )
+        return [self._row_to_event(row) for row in rows]
+
+    async def list_unassigned_active(
+        self,
+        *,
+        limit: int = 200,
+        after: tuple[datetime, str] | None = None,
+        order_by_ingress: bool = True,
+    ) -> list[Event]:
+        """Return a page of active Events with an incomplete stored decision."""
+        clauses = [
+            "event_state = ?",
+            "episode_id IS NULL",
+            "area_id != ''",
+            "eligible_recording_device_ids IS NOT NULL",
+            "CASE WHEN json_valid(eligible_recording_device_ids) THEN "
+            "json_type(eligible_recording_device_ids) = 'array' ELSE 0 END = 1",
+            """CASE WHEN json_valid(participation) THEN
+                   CASE
+                     WHEN json_extract(participation, '$.allowed') = 1 THEN 1
+                     WHEN json_extract(participation, '$.allowed') = 0
+                       AND json_extract(participation, '$.reason') = ?
+                       AND COALESCE(json_type(participation, '$.attachment'), 'null') = 'null'
+                     THEN 1
+                     ELSE 0
+                   END
+                 ELSE 0
+               END = 1""",
+        ]
+        params: list[object] = [EventState.ACTIVE.value, FILTERED_REASON]
+        ingress_sql = _RECOVERY_INGRESS_SQL if order_by_ingress else "e.timestamp"
+        if after is not None:
+            clauses.append(
+                f"(julianday({ingress_sql}) > julianday(?) "
+                f"OR (julianday({ingress_sql}) = julianday(?) AND e.id > ?))"
+            )
+            after_timestamp = _utc_iso(after[0])
+            params.extend((after_timestamp, after_timestamp, after[1]))
+        rows = await self._connection.execute_fetchall(
+            f"""SELECT e.* FROM events e
+                WHERE {" AND ".join(clauses)}
+                ORDER BY julianday({ingress_sql}) ASC, e.id ASC LIMIT ?""",
+            [*params, max(1, min(int(limit), 500))],
         )
         return [self._row_to_event(row) for row in rows]
 

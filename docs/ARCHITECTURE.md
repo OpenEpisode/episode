@@ -148,8 +148,10 @@ The decision stores the profile identity and evaluation time separately from
 plugin metadata. For an accepted Event it also snapshots the exact recording
 target IDs selected at that moment. Action dispatch and restart recovery consume
 that snapshot instead of re-evaluating the current profile, Device Area, enabled
-state, or recording mode. A later profile or inventory change therefore affects
-new Events only and cannot stop an existing capture.
+state, or recording mode. The triggering Device's effective activity window is
+snapshotted with the decision as well, so recovering an interrupted correlation
+does not apply a later Device edit. A later profile or inventory change therefore
+affects new Events only and cannot stop an existing capture.
 
 After a new Episode and its triggering Event association are durable, the
 engine publishes one vendor-neutral `episode.created` runtime message. Updates
@@ -289,7 +291,12 @@ globally scanned or rebuilt during normal startup. The Episode engine restores
 open lifecycle state; the recording engine recovers interrupted workspaces and
 retries persisted `FINALIZING` Episodes after recorder recovery. An interrupted
 HLS recording resumes in its existing Evidence workspace with an explicit
-playlist discontinuity; it does not create a second logical recording.
+playlist discontinuity; it does not create a second logical recording. The
+Episode engine also resumes active Events committed before a crash interrupted
+correlation, using their stored participation decision and original receipt
+time when available (otherwise the saved decision time) rather than current
+profile settings. Intentionally excluded Events and
+filtered Events already marked as having no open Episode stay unassigned.
 
 Retention policy is loaded synchronously so the running service knows its
 effective safety policy, while the initial visual cleanup runs in the
@@ -320,9 +327,11 @@ Raw Artifacts describe immutable content; Receipts exclusively describe how,
 when, and from where that content arrived.
 
 Startup recovery derives Event and Evidence counters from canonical rows and
-rebuilds portable manifests only for unsealed Episodes. Interrupted writes can
-therefore be repaired while sealed history is left untouched and out of the
-normal startup path.
+rebuilds portable manifests only for unsealed Episodes. Final manifests read
+every associated Event, Evidence item, and Receipt in pages rather than cutting
+off large Episodes at a fixed row count. Interrupted writes can therefore be
+repaired while sealed history is left untouched and out of the normal startup
+path.
 
 Area and Device inventory is persistent configuration stored in SQLite and
 managed through the UI. `episode.json` remains responsible only for system-wide
