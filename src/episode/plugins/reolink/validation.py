@@ -90,16 +90,18 @@ async def validate_device(
             capabilities.append("events")
         details["events_supported"] = events_supported
 
-        # Snapshots (cmdId=109)
-        snapshot_bytes = 0
+        # Snapshots (cmdId=109): read the acknowledgment only. Validation is a capability
+        # question, so paying 0.3-1.1 s for a picture we discard is waste — and on a slow
+        # or stalled camera it is the difference between a usable validation and a timeout.
+        probe = None
         try:
-            snapshot = await asyncio.wait_for(client.get_snapshot(channel=0), timeout=probe_timeout)
-            if snapshot and snapshot[:2] == b"\xff\xd8":
-                snapshot_bytes = len(snapshot)
+            probe = await asyncio.wait_for(client.snapshot_probe(channel=0), timeout=probe_timeout)
+            if probe is not None and probe.response_code < 400:
                 capabilities.append("snapshots")
         except Exception as exc:
             logger.debug("Reolink validation: snapshot probe failed: %s", exc)
-        details["snapshot_bytes"] = snapshot_bytes
+        declared = probe.declared_bytes if probe is not None else None
+        details["snapshot_declared_bytes"] = declared
 
         summary = f"Reolink responded · {info.model or 'Device'}"
         if "media" in capabilities:

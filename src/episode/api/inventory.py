@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from episode.domain.event_filter import validate_selector
 from episode.domain.models import CapabilityConfig, Device
 
 RecordingMode = Literal["disabled", "on_event", "on_episode"]
@@ -59,7 +60,10 @@ class ISAPIConfigurationRequest(BaseModel):
     protocol: str = Field(default="http", max_length=16)
     port: int | None = Field(default=80, ge=1, le=65535)
     path: str = Field(default="/ISAPI/Event/notification/alertStream", max_length=500)
-    ignore_events: list[str] = Field(default_factory=lambda: ["videoloss", "illaccess"])
+    # Empty by default: these names stop the plugin *interpreting* a vendor
+    # message, so nothing becomes a canonical Event and no core filter decision
+    # is ever recorded. Suppressing noise belongs in ``event_filter`` instead.
+    ignore_events: list[str] = Field(default_factory=list)
 
     @field_validator("ignore_events")
     @classmethod
@@ -78,6 +82,9 @@ class ReolinkConfigurationRequest(BaseModel):
     port: int | None = Field(default=9000, ge=1, le=65535)
     media_enabled: bool = False
     events_enabled: bool = False
+    native_video: bool = False
+    preview_variant: str = Field(default="main", max_length=16)
+    preview_timeout: float | None = Field(default=None, ge=1.0, le=10.0)
 
     @field_validator("host")
     @classmethod
@@ -87,6 +94,20 @@ class ReolinkConfigurationRequest(BaseModel):
 
 class EpisodePolicyRequest(BaseModel):
     activity_window_seconds: int | None = Field(default=None, ge=1, le=3600)
+    # Event classes this Device suppresses. ``null`` inherits the active Capture
+    # Profile; ``[]`` is the explicit negative "this camera filters nothing".
+    event_filter: list[str] | None = None
+
+    @field_validator("event_filter")
+    @classmethod
+    def validate_event_filter(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        try:
+            # A Device may select every class; profiles offer the same set.
+            return validate_selector(value, level="device")
+        except ValueError as error:
+            raise ValueError(str(error)) from error
 
 
 class DeviceWriteRequest(BaseModel):
@@ -217,6 +238,7 @@ def editable_device_configuration(device: Device) -> dict:
         password_configured=bool(device.password),
         episode_policy=EpisodePolicyRequest(
             activity_window_seconds=device.activity_window_seconds,
+            event_filter=(list(device.event_filter) if device.event_filter is not None else None),
         ),
         video=VideoConfigurationRequest(
             enabled=video is not None,
@@ -256,6 +278,13 @@ def editable_device_configuration(device: Device) -> dict:
             events_enabled=bool(reolink.settings.get("events_enabled", False))
             if reolink
             else False,
+            native_video=bool(reolink.settings.get("native_video", False)) if reolink else False,
+            preview_variant=reolink.settings.get("preview_variant", "main") if reolink else "main",
+            preview_timeout=(
+                float(reolink.settings.get("preview_timeout"))
+                if reolink and reolink.settings.get("preview_timeout") is not None
+                else None
+            ),
         ),
     ).model_dump()
 
@@ -314,6 +343,10 @@ def device_from_request(
         settings["host"] = request.reolink.host
         settings["media_enabled"] = request.reolink.media_enabled
         settings["events_enabled"] = request.reolink.events_enabled
+        settings["native_video"] = request.reolink.native_video
+        settings["preview_variant"] = request.reolink.preview_variant
+        if request.reolink.preview_timeout is not None:
+            settings["preview_timeout"] = request.reolink.preview_timeout
         configs["reolink"] = CapabilityConfig(
             port=request.reolink.port,
             settings=settings,
@@ -358,6 +391,7 @@ def device_from_request(
         activity_window_seconds=request.episode_policy.activity_window_seconds,
         metadata=metadata,
         enabled=request.enabled,
+        event_filter=request.episode_policy.event_filter,
         setup_state=request.setup_state,
     )
 
@@ -400,6 +434,10 @@ def validation_device_from_request(
             "host": request.reolink.host,
             "media_enabled": request.reolink.media_enabled,
             "events_enabled": request.reolink.events_enabled,
+            "native_video": request.reolink.native_video,
+            "preview_variant": request.reolink.preview_variant,
         },
     )
+    if request.reolink.preview_timeout is not None:
+        device.configs["reolink"].settings["preview_timeout"] = request.reolink.preview_timeout
     return device

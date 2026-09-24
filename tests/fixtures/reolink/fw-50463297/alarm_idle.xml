@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<AlarmEventList version="1.1">
+<AlarmEvent version="1.1">
+<channelId>0</channelId>
+<status>none</status>
+<AItype>none</AItype>
+<recording>0</recording>
+<timeStamp>0</timeStamp>
+<smartAiTypeList />
+</AlarmEvent>
+</AlarmEventList>
+</body>

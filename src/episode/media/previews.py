@@ -83,8 +83,11 @@ class CurrentViewService:
             return content, media_type
 
     def _has_snapshot(self, device_id: str) -> bool:
+        """Return True when a snapshot is reachable by URI or by a plugin fetcher."""
         source = self._snapshots.get(device_id)
-        return bool(source and source.snapshot_uri)
+        if source is None:
+            return False
+        return bool(source.snapshot_uri) or source.snapshot_fetcher is not None
 
     def _fresh_cache_entry(self, device_id: str) -> _CachedPreview | None:
         cached = self._cache.get(device_id)

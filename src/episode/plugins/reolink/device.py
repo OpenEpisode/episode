@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 from episode.domain.models import CapabilityConfig, Device
@@ -25,6 +25,8 @@ from episode.plugins.models import (
     RawPluginDeliverySink,
 )
 from episode.plugins.reolink.client import (
+    BC_CMD_ID_ALARM_EVENT_LIST,
+    DEFAULT_PROBE_TIMEOUT,
     BaichuanApiClient,
     ReolinkDeviceInfo,
     ReolinkError,
@@ -37,10 +39,21 @@ from episode.plugins.reolink.events import (
     parse_alarm_event_frame,
     parse_battery_status_frame,
 )
+from episode.plugins.reolink.preview import PreviewSettings, parse_preview_settings
+from episode.plugins.reolink.snapshot_slot import (
+    SnapshotPrearmSettings,
+    SnapshotSlot,
+    parse_prearm_settings,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_PORT = 9000
+DEFAULT_DEDUP_WINDOW = 1.0
+#: Bounds one snapshot *capture* (cmdId=109 request → last JPEG byte). Kept equal to the
+#: client default so wiring it changes nothing; raise it only for a camera measured slow.
+DEFAULT_SNAPSHOT_TIMEOUT = 10.0
+SNAPSHOT_TIMEOUT_BOUNDS = (1.0, 60.0)
 
 
 @dataclass(frozen=True)
@@ -53,7 +66,10 @@ class ReolinkDeviceConfig:
     media_enabled: bool = False
     retry_delay: float = 30.0
     event_retry_delay: float = 5.0
-    dedup_window: float = 5.0
+    dedup_window: float = DEFAULT_DEDUP_WINDOW
+    snapshot_timeout: float = DEFAULT_SNAPSHOT_TIMEOUT
+    snapshot_prearm: SnapshotPrearmSettings = field(default_factory=SnapshotPrearmSettings)
+    preview: PreviewSettings = field(default_factory=PreviewSettings)
 
 
 ClientFactory = Callable[[ReolinkDeviceConfig], BaichuanApiClient]
@@ -97,6 +113,25 @@ class ReolinkDeviceConnection:
         self._discovered: ReolinkDeviceInfo | None = None
         self._stream_url: StreamUrlInfo | None = None
         self._snapshot_supported: bool = False
+        self._snapshot_probe: dict[str, object] | None = None
+        self._snapshot_slot = SnapshotSlot(self._fetch_snapshot, settings=config.snapshot_prearm)
+        # One native preview at a time per device, and its tallies. Priming is a fire-and-
+        # forget task (never run inside the ingress handler, which would delay event frames),
+        # so its counters live on the connection rather than on a caller's local variable.
+        self._preview_task: asyncio.Task[None] | None = None
+        self._preview_counters = {
+            "attempted": 0,
+            "observed": 0,
+            "keyframed": 0,
+            "timeout_total": 0,
+            "failed": 0,
+        }
+        # Last pass only: priming is judged by what the most recent event saw, and keeping
+        # history would be a second, unbounded record of the same thing.
+        self._preview_first_packet_ms: float | None = None
+        self._preview_first_iframe_ms: float | None = None
+        self._preview_keyframe: bool | None = None
+        self._preview_codec: str = ""
         self._task: asyncio.Task | None = None
         self._event_task: asyncio.Task | None = None
         self._running = False
@@ -164,6 +199,8 @@ class ReolinkDeviceConnection:
             self.config.device.name,
         )
         self._running = False
+        await self._snapshot_slot.cancel()
+        await self._cancel_preview()
 
         # Cancel event task first
         if self._event_task:
@@ -227,24 +264,46 @@ class ReolinkDeviceConnection:
                     error,
                 )
 
-    async def _discover_stream(self) -> None:
-        """Discover stream URLs via StreamInfoList command."""
-        logger.debug(
-            "Reolink:%s discovering stream URL",
-            self.config.device.name,
-        )
-        # Probe snapshot support first (best-effort) so it is known before
-        # _apply_discovery persists device capabilities, ensuring the
-        # "snapshots" capability is not lost (mirrors validation).
+    async def _probe_snapshot_support(self) -> None:
+        """Learn whether ``cmdId=109`` works, without receiving a picture (G6).
+
+        Reads the snapshot acknowledgment only. The probe resets the client's socket,
+        which is why capability — not bytes — is the result we keep: a camera that
+        answers the request supports snapshots, and the next real capture re-authenticates
+        through the ordinary retry path.
+        """
         try:
-            snapshot = await self._client.get_snapshot(channel=0)
-            self._snapshot_supported = bool(snapshot and snapshot[:2] == b"\xff\xd8")
+            ack = await self._client.snapshot_probe(
+                channel=0, timeout=min(DEFAULT_PROBE_TIMEOUT, self.config.timeout)
+            )
         except Exception as error:
             logger.debug(
                 "Reolink:%s snapshot probe failed: %s",
                 self.config.device.name,
                 error,
             )
+            self._snapshot_supported = False
+            self._snapshot_probe = None
+            return
+        self._snapshot_supported = ack is not None and ack.response_code < 400
+        self._snapshot_probe = None if ack is None else {"declared_bytes": ack.declared_bytes}
+
+    async def _discover_stream(self) -> None:
+        """Discover stream URLs via StreamInfoList command."""
+        logger.debug(
+            "Reolink:%s discovering stream URL",
+            self.config.device.name,
+        )
+        # Probe snapshot support (best-effort) so it is known before
+        # _apply_discovery persists device capabilities, ensuring the
+        # "snapshots" capability is not lost (mirrors validation).
+        # The probe reads only the cmdId=109 acknowledgment, so a connect does not
+        # pay for a picture it throws away; a camera that acknowledges supports
+        # snapshots even if a later capture times out. Once support is established it is
+        # not asked twice, because the probe resets the socket and a mid-life re-discovery
+        # would otherwise cost the event subscription for no new information.
+        if self._snapshot_probe is None:
+            await self._probe_snapshot_support()
 
         try:
             self._stream_url = await self._client.get_stream_url(channel=0)
@@ -330,9 +389,18 @@ class ReolinkDeviceConnection:
         """Reolink-native snapshot fetcher used by the media registry.
 
         Snapshots are fetched over the Baichuan binary protocol (cmdId=109),
-        not HTTP, so this bypasses the registry's HTTP fetch path.
+        not HTTP, so this bypasses the registry's HTTP fetch path. A fresh
+        pre-armed snapshot (armed when the event frame arrived) is served first
+        so the camera's 0.3-1.1 s encode overlaps event processing.
         """
-        jpeg = await self._client.get_snapshot(channel=0)
+        prearmed = self._snapshot_slot.consume()
+        if prearmed is not None:
+            return prearmed
+        return await self._fetch_snapshot()
+
+    async def _fetch_snapshot(self) -> tuple[bytes, str]:
+        """Fetch a snapshot over cmdId=109 and validate the JPEG magic."""
+        jpeg = await self._client.get_snapshot(channel=0, timeout=self.config.snapshot_timeout)
         if not jpeg or jpeg[:2] != b"\xff\xd8":
             raise LookupError(f"Reolink snapshot unavailable for device {self.config.device.id}")
         return jpeg, "image/jpeg"
@@ -357,6 +425,22 @@ class ReolinkDeviceConnection:
             )
             return
         try:
+            video_handler = None
+            codec_hint = ""
+            if self.config.preview.native_video:
+                # F1: the on-demand cmdId=3 burst is the recording source. The camera leads
+                # with an I-Frame, so the recorder's pipe gets an independently decodable
+                # picture ~157 ms after the command — instead of after a fresh RTSP
+                # keyframe-wait. The codec comes from what the camera actually sent on the
+                # last preview (cmdId=146 data is not a reliable codec source).
+                video_handler = self._preview_handler
+                codec_hint = self._preview_codec_hint
+            logger.debug(
+                "Reolink:%s media source mode=%s codec_hint=%r",
+                self.config.device.name,
+                "native-video-handler" if video_handler is not None else "rtsp-only",
+                codec_hint,
+            )
             self._media_registry.register(
                 CameraMedia(
                     device_id=self.config.device.id,
@@ -366,6 +450,8 @@ class ReolinkDeviceConnection:
                     profile_token="",
                     source="reolink",
                     snapshot_fetcher=self._snapshot_fetcher,
+                    video_handler=video_handler,
+                    codec_hint=codec_hint,
                 )
             )
             self._media_registered = True
@@ -516,6 +602,21 @@ class ReolinkDeviceConnection:
         now = datetime.now(tz=timezone.utc)
 
         dec = self._client.decryption_params
+        # Fire the camera-side warm-ups *before* the ingestion pipeline blocks on the
+        # delivery sink. The delivery sink persists the raw frame and then drives the
+        # engine synchronously through canonicalization and (for an active event) starting
+        # the video recording, which costs ~0.8s before it returns. If pre-arming waited
+        # for that, the snapshot's 0.3–1.1s JPEG encode would not overlap the episode
+        # opening — it would start only after video was already flowing (observed in logs:
+        # snapshot ~850ms behind the first video access unit). Pre-arming reads no frame
+        # bytes and produces no delivery, so raw-first persistence is unaffected; it only
+        # overlaps the camera's JPEG encode with the ingestion work.
+        if cmd_id == BC_CMD_ID_ALARM_EVENT_LIST:
+            if self._snapshot_supported:
+                self._snapshot_slot.arm()
+            if self.config.media_enabled and self.config.preview.priming:
+                self._arm_preview()
+
         await self._delivery_sink(
             RawPluginDelivery(
                 plugin_id="reolink",
@@ -543,6 +644,135 @@ class ReolinkDeviceConnection:
             last_message_at=now,
             error=None,
         )
+
+    def _arm_preview(self) -> bool:
+        """Schedule one native preview observation (``cmdId=3``) for this event.
+
+        Fire-and-forget and serialized per device: a priming pass that is still running is
+        not joined by a second one, because two media sessions on one socket would
+        interleave their frames into a single reassembly and pay the camera twice. Nothing
+        here awaits, so the event loop stays free for the next ``cmdId=33`` frame.
+        """
+        if self._preview_task is not None and not self._preview_task.done():
+            return False
+        self._preview_counters["attempted"] += 1
+        self._preview_task = asyncio.create_task(self._prime_preview())
+        return True
+
+    async def _prime_preview(self) -> None:
+        """One preview pass, counted; a failure is only ever a counter.
+
+        Priming helps the *next* recording start sooner; it must never be the reason this
+        event, this snapshot, or this recording fails. The client's own ``finally`` sends
+        ``cmdId=6``, so even a cancelled pass cannot leave the camera streaming.
+        """
+        try:
+            stats = await self._client.observe_preview_first_packet(
+                channel=0,
+                variant=self.config.preview.variant,
+                timeout=self.config.preview.timeout,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - priming never becomes the event's failure
+            self._preview_counters["failed"] += 1
+            self._publish_preview_details()
+            logger.debug(
+                "Reolink:%s preview priming failed: %s",
+                self.config.device.name,
+                error,
+            )
+            return
+        self._preview_counters["observed"] += 1
+        if stats.frames() == 0:
+            # No video packet inside preview_timeout: the pass asked for a keyframe and the
+            # camera answered nothing. This is the counter the plan's abort rule is measured
+            # against, so it must mean exactly one thing.
+            self._preview_counters["timeout_total"] += 1
+        if stats.keyframed():
+            self._preview_counters["keyframed"] += 1
+        self._preview_first_packet_ms = (
+            round(stats.first_packet_ms, 1) if stats.first_packet_ms is not None else None
+        )
+        self._preview_first_iframe_ms = (
+            round(stats.first_iframe_ms, 1) if stats.first_iframe_ms is not None else None
+        )
+        self._preview_keyframe = stats.keyframed()
+        self._preview_codec = stats.codec
+        self._publish_preview_details()
+        logger.debug(
+            "Reolink:%s primed native preview: %s %s frames=%d first=%s ms",
+            self.config.device.name,
+            stats.codec or "?",
+            f"{stats.width}x{stats.height}" if stats.width else "?",
+            stats.frames(),
+            self._preview_first_packet_ms if self._preview_first_packet_ms is not None else "none",
+        )
+
+    async def _cancel_preview(self) -> None:
+        """Cancel an in-flight priming pass so no task outlives the connection."""
+        task, self._preview_task = self._preview_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _preview_handler(self, push: Callable[[bytes], Awaitable[None]]) -> None:
+        """One on-demand native recording burst, handed to the recorder's pipe.
+
+        This is the F1 source: ``stream_preview`` runs ``cmdId=3`` and ``cmdId=6`` (in
+        ``finally``) and pushes each Annex-B access unit to ``push`` as it is reassembled.
+        The camera opens with an independently decodable picture, so the recorder's first
+        frame is not held up by a fresh RTSP keyframe-wait. The burst is bounded by the
+        episode: the recorder cancels this handler at episode end (``timeout`` only bounds
+        the wait for the first packet), so recording duration matches ONVIF rather than a
+        fixed preview deadline. Cancellation or failure simply ends the burst; the
+        recorder's own reconnect/stall handling owns the outcome.
+        """
+        logger.debug(
+            "Reolink:%s native preview burst starting (variant=%s first_packet_timeout=%.1fs)",
+            self.config.device.name,
+            self.config.preview.variant,
+            self.config.preview.timeout,
+        )
+        try:
+            stats = await self._client.stream_preview(
+                push,
+                channel=0,
+                variant=self.config.preview.variant,
+                timeout=self.config.preview.timeout,
+            )
+        except asyncio.CancelledError:
+            logger.debug("Reolink:%s native preview burst cancelled", self.config.device.name)
+            raise
+        except Exception as error:  # noqa: BLE001 - the recorder owns the outcome
+            logger.debug(
+                "Reolink:%s native preview burst failed: %s",
+                self.config.device.name,
+                error,
+            )
+            raise
+        logger.debug(
+            "Reolink:%s native preview burst done (frames=%d media_bytes=%d codec=%s "
+            "res=%s first_packet_ms=%s)",
+            self.config.device.name,
+            stats.frames(),
+            stats.media_bytes,
+            stats.codec or "?",
+            f"{stats.width}x{stats.height}" if stats.width else "?",
+            f"{stats.first_packet_ms:.1f}" if stats.first_packet_ms is not None else "none",
+        )
+
+    @property
+    def _preview_codec_hint(self) -> str:
+        """The recorder's elementary-stream demuxer for the last preview the camera sent.
+
+        Derived from what the camera actually streamed, never from ``videoEncType`` (no
+        capture maps its 0/1 values to H.264/H.265). Empty when no preview has run yet —
+        the engine's piped branch guesses rather than trusts a wrong hint.
+        """
+        from episode.plugins.reolink.preview import codec_hint as _hint
+
+        return _hint(self._preview_codec)
 
     def decode_event_frame(
         self,
@@ -598,6 +828,33 @@ class ReolinkDeviceConnection:
             message,
         )
 
+    def _preview_details(self) -> dict[str, object]:
+        """The priming counters and last measurement, flat and named as the plan names them.
+
+        Split out from :meth:`_refresh_status` because a priming pass can finish while discovery
+        has not (or never will): these numbers describe a pass this connection actually made, and
+        an operator answering "is priming doing anything?" needs them even on a degraded device.
+        Publishing them must not change state or capabilities — only ``_refresh_status`` may.
+        """
+        return {
+            "preview_priming": self.config.preview.priming,
+            "preview_variant": self.config.preview.variant,
+            "preview_timeout": self.config.preview.timeout,
+            "preview_attempted": self._preview_counters["attempted"],
+            "preview_observed": self._preview_counters["observed"],
+            "preview_first_packet_ms": self._preview_first_packet_ms,
+            "preview_first_iframe_ms": self._preview_first_iframe_ms,
+            "preview_codec": self._preview_codec,
+            "preview_keyframe": self._preview_keyframe,
+            "preview_timeout_total": self._preview_counters["timeout_total"],
+            "preview_failed_total": self._preview_counters["failed"],
+        }
+
+    def _publish_preview_details(self) -> None:
+        """Merge the preview counters into status, leaving state and capabilities alone."""
+        merged = {**dict(self._status.details), **self._preview_details()}
+        self._status = replace(self._status, details=merged)
+
     def _refresh_status(self) -> None:
         """Recompute and persist the connection's capabilities and status."""
         if not self._discovered:
@@ -621,6 +878,11 @@ class ReolinkDeviceConnection:
                 "connected": True,
                 "events_enabled": self.config.events_enabled,
                 "stream_url": self._stream_url.main_stream_url if self._stream_url else "",
+                "snapshot_timeout": self.config.snapshot_timeout,
+                "snapshot_probe": self._snapshot_probe,
+                "snapshot_prearm": self.config.snapshot_prearm.enabled,
+                "snapshot_slot": dict(self._snapshot_slot.counters),
+                **self._preview_details(),
             },
         )
         logger.debug(
@@ -628,6 +890,32 @@ class ReolinkDeviceConnection:
             self.config.device.name,
             capabilities,
         )
+
+
+def _bounded_setting(
+    value: object,
+    default: float,
+    bounds: tuple[float, float],
+    name: str,
+) -> tuple[float, list[str]]:
+    """Read one bounded numeric setting; fall back to the default and report why.
+
+    Startup must not fail on a bad value: the device still connects with the documented
+    default, and the operator sees a warning rather than a dead integration.
+    """
+    warnings: list[str] = []
+    if value is None:
+        return default, warnings
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        warnings.append(f"{name} must be a number; using {default}")
+        return default, warnings
+    low, high = bounds
+    if not low <= parsed <= high:
+        warnings.append(f"{name} must be between {low} and {high}; using {default}")
+        return default, warnings
+    return parsed, warnings
 
 
 def device_config(
@@ -658,6 +946,19 @@ def device_config(
     if timeout <= 0:
         return None, "Reolink timeout must be greater than zero."
 
+    snapshot_timeout, snapshot_timeout_warnings = _bounded_setting(
+        settings.get("snapshot_timeout"),
+        DEFAULT_SNAPSHOT_TIMEOUT,
+        SNAPSHOT_TIMEOUT_BOUNDS,
+        "snapshot_timeout",
+    )
+    for warning in snapshot_timeout_warnings:
+        logger.warning("Reolink:%s %s", device.name, warning)
+
+    preview, preview_warnings = parse_preview_settings(settings)
+    for warning in preview_warnings:
+        logger.warning("Reolink:%s %s", device.name, warning)
+
     logger.debug(
         "Reolink device config validated: id=%s name=%s host=%s port=%d",
         device.id,
@@ -674,7 +975,10 @@ def device_config(
             events_enabled=bool(settings.get("events_enabled", False)),
             media_enabled=bool(settings.get("media_enabled", False)),
             event_retry_delay=float(settings.get("event_retry_delay", 5.0)),
-            dedup_window=float(settings.get("dedup_window", 5.0)),
+            dedup_window=float(settings.get("dedup_window", DEFAULT_DEDUP_WINDOW)),
+            snapshot_timeout=snapshot_timeout,
+            snapshot_prearm=parse_prearm_settings(settings)[0],
+            preview=preview,
         ),
         None,
     )

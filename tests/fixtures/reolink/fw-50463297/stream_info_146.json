@@ -1,0 +1,125 @@
+{
+  "channel": 0,
+  "tables": [
+    {
+      "bitrate": [
+        3072,
+        4096,
+        5120,
+        6144,
+        7168,
+        8192,
+        9216,
+        10240,
+        12288
+      ],
+      "defaultBitrate": 10240,
+      "defaultFramerate": 20,
+      "defaultGop": 2,
+      "framerate": [
+        20,
+        18,
+        16,
+        15,
+        12,
+        10,
+        8,
+        6,
+        4
+      ],
+      "height": 2160,
+      "type": "mainStream",
+      "videoEncType": 1,
+      "videoEncTypeOptions": [
+        1
+      ],
+      "width": 7680
+    },
+    {
+      "bitrate": [
+        256,
+        512,
+        1024,
+        1536,
+        2048
+      ],
+      "defaultBitrate": 1024,
+      "defaultFramerate": 20,
+      "defaultGop": 4,
+      "framerate": [
+        20,
+        15,
+        10,
+        7,
+        4
+      ],
+      "height": 432,
+      "type": "subStream",
+      "videoEncType": 0,
+      "videoEncTypeOptions": [
+        0
+      ],
+      "width": 1536
+    },
+    {
+      "bitrate": [
+        3072,
+        4096,
+        5120,
+        6144,
+        7168,
+        8192,
+        9216,
+        10240
+      ],
+      "defaultBitrate": 8192,
+      "defaultFramerate": 20,
+      "defaultGop": 2,
+      "framerate": [
+        20,
+        18,
+        16,
+        15,
+        12,
+        10,
+        8,
+        6,
+        4,
+        2
+      ],
+      "height": 1152,
+      "type": "mainStream",
+      "videoEncType": 1,
+      "videoEncTypeOptions": [
+        1
+      ],
+      "width": 4096
+    },
+    {
+      "bitrate": [
+        256,
+        512,
+        1024,
+        1536,
+        2048
+      ],
+      "defaultBitrate": 1024,
+      "defaultFramerate": 20,
+      "defaultGop": 4,
+      "framerate": [
+        20,
+        15,
+        10,
+        7,
+        4
+      ],
+      "height": 432,
+      "type": "subStream",
+      "videoEncType": 0,
+      "videoEncTypeOptions": [
+        0
+      ],
+      "width": 1536
+    }
+  ]
+}

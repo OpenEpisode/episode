@@ -92,6 +92,58 @@ or start actions. Inactive Events bypass this gate so a transition received
 while its preceding Episode is still mutable can be preserved alongside that
 accepted Event without opening a new Episode or extending its deadline.
 
+The same gate applies a configurable **event class filter**. The core classifies
+canonical, vendor-neutral `event_type` strings (`src/episode/domain/event_filter.py`)
+into semantic classes and never into vendor names: `motion`, `heartbeat`,
+`condition`, `security`, `detection`, `access`, and `unknown`. A selector is a
+set of classes, and an active Event is suppressed when its class is in the
+effective selector. Every class is selectable, and both levels offer the same
+set, so no class is privileged and a Capture Profile is not less capable than a
+Device. Unknown types classify as `unknown`, which keeps the default safe: an
+operator has to select that class deliberately before anything the build cannot
+name is suppressed. Suppression removes only the power to start or lengthen a
+recording; the Raw Artifact, Receipt, and canonical Event are persisted first,
+and a filtered Event still joins an open Episode as context. Mapping vendor
+topics to canonical types stays a plugin responsibility; the core owns the class
+model.
+
+Because the class model is the operator's only lever, one filter has to mean the
+same thing on every camera. That holds only while adapters resolve equivalent
+signals to the same canonical type and none of them falls back into a filterable
+class when it does not recognise a message. An integration that cannot tell what
+a message means emits `unrecognized`, not a name it happens to own such as
+`system` (`heartbeat`), because otherwise one camera's noise could be suppressed
+while an identical signal from another camera could not be. An
+integration may also decline to interpret a topic at all; such deliveries stay
+preserved, are reported on the plugin's Device status rather than guessed into a
+type, and can never be filtered because they never become Events.
+`tests/test_event_filter_parity.py` pins both properties across every built-in
+Device integration.
+
+Suppression is not deletion. A filtered Event keeps `allowed=False` with reason
+`generic_event_filtered`, the exact `filtered_event_type`, its
+`filtered_event_class`, and the deciding `filter_source`, and remains persisted,
+queryable, and auditable. It cannot open or extend an Episode or start actions.
+When an Episode was already open, the Event is instead **attributed** to it
+(`episode_id` set, participation `attachment` `attached`) so the record shows
+what the camera saw during that activity, without extending its deadline,
+restarting a quiescent Episode, or producing Evidence; with nothing open,
+`attachment` is `no_open_episode`. Attribution never reopens a closed Episode.
+
+Effective filtering resolves by precedence: an explicit per-Device `event_filter`
+(an array, possibly empty) overrides the active Capture Profile's selector; `null`
+(the default) follows the profile, and `[]` is an explicit negative that keeps
+every observation while a profile filters. This specific-over-general rule means a
+camera-level choice always wins over the profile-level policy, including against
+its own Area. Like all participation decisions, the filter is evaluated at
+canonicalization time and snapshotted with the Event, so later profile or camera
+changes affect only new Events. A stored Device value that cannot be read at all
+(corrupted rather than written by an operator) resolves to inherit, not to `[]`:
+inventing an explicit negative from a damaged row would pin a camera out of
+profile policy permanently and silently, whereas inherit keeps the operator's
+current profile authoritative and heals when the Device is saved again. Neither
+fallback can widen filtering.
+
 The decision stores the profile identity and evaluation time separately from
 plugin metadata. For an accepted Event it also snapshots the exact recording
 target IDs selected at that moment. Action dispatch and restart recovery consume
@@ -121,7 +173,8 @@ src/episode/
 │       └── sdk/
 ├── media/            camera media registry and timelapse service
 ├── actions/          vendor-neutral snapshot action
-├── capture_profiles.py  core capture-participation policy
+├── capture_profiles.py  core capture-participation policy and event class filter
+├── domain/event_filter.py  vendor-neutral event classes, selectors, and precedence
 ├── installation.py   global non-secret installation identity settings
 ├── notifications.py  bounded outbound Episode-start delivery
 ├── domain/           vendor-neutral models and identities
@@ -154,6 +207,30 @@ reconnect behavior, and notification interpretation. Exact received Event
 frames cross the same raw-first boundary before recognized observations are
 normalized. Unsupported frames remain preserved, and the plugin remains inert
 unless a Device explicitly enables it.
+
+Within that boundary the plugin may also prepare media ahead of demand: a
+snapshot fetch can start when an Event frame arrives instead of after the Event
+becomes canonical, and an opt-in native preview pass (`cmdId=3`, stopped by
+`cmdId=6` on every exit path) can learn a camera's codec, resolution, and
+time-to-first-keyframe while warming its encoder. Both are fire-and-forget,
+serialized, bounded, and counted, and neither produces a delivery. **Recording
+ownership stays in the core**: the recorder owns the HLS/fMP4 bundle, its
+component inventory, crash recovery, and retention, so native bytes may inform
+and prime a recording but never become Video Evidence from inside the plugin.
+
+An opt-in `native_video` setting makes the on-demand `cmdId=3` burst the
+recording **source** instead of RTSP (F1). The plugin does not keep a continuous
+preview session: it issues the command when a recording starts, the camera opens
+with an I-Frame, and `cmdId=6` stops the burst on every exit path. The bytes are
+handed to the core recorder's pipe as Annex-B access units through the
+`video_handler` contract, so the bundle, manifest, Evidence, and retention remain
+core-owned — only the origin of the elementary stream changes. Because the camera
+leads with a keyframe, the acquisition delay (recording start → first access
+unit) collapses from the ~3.5 s an RTSP keyframe-wait costs toward the measured
+~0.15 s of the first native picture. A native HEVC source is written with the
+`hvc1` codec tag — WebKit (Safari), the browser with the broadest HEVC playback,
+requires it and rejects the in-band `hev1` tag; the parameter sets stay in
+`init.mp4`, so each fragment is self-contained for decoder initialization.
 
 The optional Event API is the vendor-neutral exception to plugin interpretation:
 its JSON schema is already a canonical observation contract, so a core-owned
@@ -347,6 +424,14 @@ capture is recovering. The finalization barrier writes the last manifest before
 the Episode becomes closed, so a closed bundle is not silently reconstructed
 from current inventory.
 
+Each canonical Event also carries its capture participation decision — allowed,
+profile identity, reason, evaluated time, and for a filtered Event the
+suppressed type, its class, the deciding level, and the attachment outcome — so
+an operator can tell why an observation did not drive capture without the
+database or the UI. A filtered Event that attached to an already-open Episode is
+counted and snapshotted with it, because it is genuinely part of what happened
+there; only its power to start or extend anything was removed.
+
 Area and Device identity snapshots are recorded when an Event is accepted into
 an Episode and when participating Evidence is associated. They preserve the
 name, physical role, area relationship, address, and other safe display identity
@@ -394,7 +479,13 @@ compatibility recovery path.
 
 The recording action copies the camera video bitstream and transcodes audio to
 AAC when present; it does not silently transcode video Evidence for browser
-compatibility. Current views prefer native HLS and use the pinned,
+compatibility. Video normally arrives over a camera URL, but a plugin may instead
+push framed access units on the recorder's behalf, in which case FFmpeg reads them
+from a pipe and is stamped by arrival time because an elementary stream carries no
+timestamps of its own. The input is the only part that changes: the recorder still
+owns the child process, the bundle, finalization, and retention, and it cancels the
+plugin's feed when it stops reading so a camera session cannot outlive the
+recording. Current views prefer native HLS and use the pinned,
 integrity-checked hls.js CDN build only as a fallback. They are live operational
 previews with standard browser video controls; Episode-specific DVR and review
 controls are intentionally not part of the current-view contract. Completed

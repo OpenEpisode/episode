@@ -27,6 +27,30 @@ In particular, a plugin reports an observation; it does not choose the Episode
 deadline. Core correlation resolves the authoritative Device and applies that
 Device's activity window after successful processing.
 
+A plugin also does not decide whether an observation drives capture. The core
+maps canonical `event_type` strings to event classes and applies the Capture
+Profile or Device selector (`docs/ARCHITECTURE.md`). Map vendor topics to the
+existing canonical types and pass anything you cannot attest to through
+verbatim: an unrecognized type is `unknown`, which an operator must select
+explicitly before it is suppressed, so a camera stays audible by default. Do not
+invent or rename types to make a message fall inside
+or outside a class — that moves a capture-coverage decision into plugin code and
+makes the operator's policy unreadable. Dropping messages before the core sees
+them (for example a vendor `ignore_events` option) stops *interpretation* and
+produces no canonical Event; use it only for traffic that should never become an
+Event, and say so in the plugin's own documentation.
+
+Built-in Device integrations declare the vendor spellings they recognise, the
+canonical type each one means, and the vendor documentation that says so, in
+`episode/plugins/event_vocabulary.py`. Fill a row in from your vendor's
+documentation rather than from a captured payload or from another adapter's
+naming, and replace `needs-documentation` in the same change;
+`tests/test_event_vocabulary.py` fails when a row is added without a citation,
+when an adapter emits a canonical name the class model does not know, or when two
+spellings of one signal land in different classes. An undocumented signal is
+carried as `unknown` until its row exists — that is the safe state, not a bug
+to route around by guessing a type.
+
 Plugins must import only from `episode.plugin_api`. Modules below
 `episode.plugins`, `episode.ingestion`, `episode.storage`, and `episode.engine`
 are implementation details and may change without a plugin API version change.
@@ -251,6 +275,33 @@ Only explicitly assigned Devices may be registered. Call
 `context.media.unregister(device_id)` when replacing an endpoint; Episode also
 removes media owned by the plugin during shutdown. Media registration is runtime
 state: it does not rewrite evidence or editable Device configuration.
+
+### Plugin-native snapshot and video sources
+
+A protocol that cannot serve media over plain HTTP can register callables on the
+in-tree media source instead of URIs. `snapshot_fetcher` returns
+`(content, content_type)` or raises, and is preferred over `snapshot_uri`.
+`video_handler` is its symmetric counterpart for recording: Episode calls
+`handler(push)` and the handler pushes Annex-B access units with `await
+push(chunk)` until it returns, raises, or is cancelled, and `codec_hint` names the
+elementary-stream demuxer (`h264` or `hevc`) from a real capability rather than a
+guess. Both are in-tree contracts: `plugin_api.MediaSource` exposes only URIs, so
+out-of-tree plugins cannot supply either until the contract version that does is
+agreed.
+
+The recorder keeps writing the same HLS bundle either way; only where the bytes
+come from changes. Fragmentation, the component manifest, finalization, retention,
+and the incomplete-versus-recording decision stay core-owned, and a handler never
+chooses an Episode, a deadline, or an Evidence type.
+
+The failure contract follows that ownership. A handler that raises, or one whose
+bytes the recorder's FFmpeg cannot decode, ends the recording and its bundle is
+published as an incomplete capture rather than a plausible-looking recording. A
+handler blocked handing over one chunk for longer than the recorder's write timeout
+(`PIPE_WRITE_TIMEOUT_SECONDS`, 10 seconds) is treated as a stalled source, which
+ends the attempt the way a dead connection does. A handler is always cancelled when
+its recording stops, so a plugin cannot leak a camera session past the recording it
+fed.
 
 ## Working example
 

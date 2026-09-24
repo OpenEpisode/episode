@@ -13,10 +13,24 @@ import logging
 import struct as _struct
 import xml.etree.ElementTree as ET
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from Crypto.Cipher import AES
+
+from episode.plugins.reolink.preview import (
+    DEFAULT_PREVIEW_TIMEOUT,
+    PREVIEW_IDLE_TIMEOUT_SECONDS,
+    PREVIEW_MAX_BYTES,
+    PREVIEW_QUEUE_MAXSIZE,
+    PREVIEW_STOP_TIMEOUT,
+    PREVIEW_STREAMS,
+    PreviewFeed,
+    PreviewStats,
+    annexb,
+    preview_request_payload,
+    preview_stop_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -508,6 +522,10 @@ class BaichuanFrameDispatcher:
         self._event_queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue(maxsize=256)
         self._task: asyncio.Task | None = None
         self._running = False
+        #: Frames the dispatcher itself refused because a queue-backed consumer had not
+        #: caught up. Without this, an overloaded consumer looks identical to a camera that
+        #: stopped sending, and a lost-frame bug reads as a healthy stream.
+        self.dropped_frames = 0
 
     def start(self) -> None:
         """Start the background dispatch loop."""
@@ -556,7 +574,11 @@ class BaichuanFrameDispatcher:
                                 try:
                                     target.put_nowait((cmd_id, resp_code, payload_offset, body))
                                 except asyncio.QueueFull:
-                                    pass  # slow consumer; drop rather than block
+                                    # Slow consumer: drop rather than block, because blocking
+                                    # here would stall every other reader on this socket. The
+                                    # drop is counted — an overloaded consumer must not be
+                                    # indistinguishable from a camera that stopped sending.
+                                    self.dropped_frames += 1
                                 resolved = True
                                 break
                             continue
@@ -648,6 +670,9 @@ class BaichuanFrameDispatcher:
         timeout: float,
         predicate: Callable[[int, int], bool] | None = None,
         send: Callable[[], Awaitable[None]] | None = None,
+        queue: asyncio.Queue | None = None,
+        idle_timeout: float | None = None,
+        first_frame_timeout: float | None = None,
     ) -> AsyncIterator[tuple[int, int, int, bytes]]:
         """Continuously yield frames matching ``cmd_id`` without registration gaps.
 
@@ -659,8 +684,25 @@ class BaichuanFrameDispatcher:
 
         ``send`` is awaited once, right after registration and before any frame
         is read. Yields ``(cmd_id, response_code, payload_offset, body)``.
+
+        ``queue`` accepts a caller-supplied (bounded) queue so a slow consumer pays
+        in counted dropped frames rather than in memory.
+
+        Bounds:
+
+        - ``timeout`` is the overall wall-clock deadline for the iteration.
+        - ``idle_timeout`` ends the iteration after that long without a matching
+          frame, which is how a source that stopped sending differs from one
+          that is merely slow.
+        - ``first_frame_timeout``, when set, bounds only the wait for the *first*
+          matching frame; after one arrives the iteration is bounded by ``idle_timeout``
+          or cancellation, never by a wall-clock deadline. This is the recording-source
+          shape: a dead camera fails fast on its first packet, but a live stream runs
+          until the caller (the episode) cancels it, so a preview timeout cannot truncate
+          a recording the episode is still extending.
         """
-        queue: asyncio.Queue[tuple[int, int, int, bytes] | None] = asyncio.Queue()
+        if queue is None:
+            queue = asyncio.Queue()
         match = predicate or (lambda c, m: c == cmd_id)
         loop = asyncio.get_event_loop()
 
@@ -670,17 +712,48 @@ class BaichuanFrameDispatcher:
         try:
             if send is not None:
                 await send()
+            # ``timeout`` is the overall deadline only while no ``first_frame_timeout``
+            # is set. With ``first_frame_timeout``, it bounds the wait for the first
+            # frame; once one is seen the stream is bounded by ``idle_timeout`` or
+            # cancellation (the episode), never by the wall clock — so the preview timeout
+            # controls how fast a dead camera fails, not how long a recording may last.
             deadline = loop.time() + timeout
-            while loop.time() < deadline:
+            first_deadline = (
+                loop.time() + first_frame_timeout if first_frame_timeout is not None else None
+            )
+            last_frame_at = loop.time()
+            seen = False
+            while True:
+                if first_deadline is not None:
+                    # Recording-source shape: once a frame is seen the wall clock is not a
+                    # bound; only an idle timeout (or cancellation) may end the iteration.
+                    if not seen:
+                        remaining = first_deadline - loop.time()
+                    elif idle_timeout is not None:
+                        remaining = idle_timeout - (loop.time() - last_frame_at)
+                    else:
+                        remaining = 1.0  # poll until cancelled
+                else:
+                    remaining = deadline - loop.time()
                 try:
-                    frame = await asyncio.wait_for(
-                        queue.get(),
-                        timeout=min(1.0, deadline - loop.time()),
-                    )
+                    frame = await asyncio.wait_for(queue.get(), timeout=min(1.0, remaining))
                 except asyncio.TimeoutError:
+                    if first_deadline is not None:
+                        if not seen:
+                            if loop.time() - last_frame_at >= first_frame_timeout:
+                                break  # no first frame: a source that never answered
+                        elif (
+                            idle_timeout is not None and loop.time() - last_frame_at >= idle_timeout
+                        ):
+                            break  # the source went quiet, it is not merely slow
+                        continue
+                    if loop.time() >= deadline:
+                        break  # the overall deadline passed
                     continue
                 if frame is None:
                     break
+                seen = True
+                last_frame_at = loop.time()
                 yield frame
         finally:
             # Remove this continuous waiter so a late frame is never
@@ -713,11 +786,73 @@ class StreamUrlInfo:
 
     main_stream_url: str = ""
     sub_stream_url: str = ""
-    snapshot_url: str = ""
     protocol: str = "rtsp"
     success: bool = False
     error: str = ""
     streams: list[dict[str, Any]] | None = None
+
+
+#: Upper bound for a snapshot we are willing to buffer. Matches the core media registry's
+#: own ceiling (``media/registry.py``), so the client never accepts more than the caller
+#: would reject anyway.
+SNAPSHOT_CEILING_BYTES = 25 * 1024 * 1024
+
+#: Budget for the capability-only snapshot probe. The camera answers the request itself in
+#: tens of milliseconds; everything beyond this budget is picture transfer, which a probe
+#: deliberately does not want.
+DEFAULT_PROBE_TIMEOUT = 3.0
+
+
+@dataclass(frozen=True)
+class SnapshotAck:
+    """What a ``cmdId=109`` acknowledgment says *before* any picture byte arrives.
+
+    ``declared_bytes`` is the camera's promise of how many JPEG bytes it will send
+    (``<pictureSize>``). Measured on every captured firmware (``tests/fixtures/reolink/``):
+    the exchange delivers exactly that many bytes, which makes it a sound completion oracle
+    instead of a timeout. It is ``None`` when the firmware omits the field.
+    """
+
+    response_code: int
+    declared_bytes: int | None = None
+    body: str = ""
+
+
+def _scalar_text(value: Any) -> str:
+    """Scalar text out of a parsed leaf, coping with the ``{"_value": ..}`` wrapping."""
+    if isinstance(value, dict):
+        return str(value.get("_value", ""))
+    return str(value)
+
+
+def parse_snapshot_ack(payload: bytes) -> SnapshotAck | None:
+    """Parse a ``cmdId=109`` acknowledgment; ``None`` if ``payload`` is not one.
+
+    Binary JPEG chunks never parse to XML, so feeding them here is cheap and means the
+    caller can try every frame slot without knowing which one holds the acknowledgment.
+    A declared size that is absent, unparseable, or non-positive is reported as ``None``
+    rather than guessed.
+    """
+    parsed = parse_xml_body(payload)
+    if not parsed or "_raw_xml" in parsed:
+        return None
+    snap = parsed.get("Snap")
+    if not isinstance(snap, dict):
+        return None
+    declared: int | None = None
+    value = snap.get("pictureSize")
+    if value is not None:
+        try:
+            candidate = int(_scalar_text(value).strip())
+        except ValueError:
+            candidate = -1
+        if candidate > 0:
+            declared = candidate
+    return SnapshotAck(
+        response_code=0,
+        declared_bytes=declared,
+        body=payload.decode("utf-8", "replace"),
+    )
 
 
 @dataclass(frozen=True)
@@ -770,6 +905,13 @@ class BaichuanApiClient:
         self._connected: bool = False
         self._host_channel_id: int = 250  # Default, may change to 0 on retry
         self._snapshot_lock = asyncio.Lock()
+        # One native media session per camera at a time: two cmdId=3 sessions on one socket
+        # would interleave their frames into a single reassembly, and the camera itself is
+        # the resource being protected.
+        self._preview_lock = asyncio.Lock()
+        #: Annex-B access units the streaming path could not buffer because the recorder
+        #: was not draining; counted so an overloaded consumer is never a silent loss.
+        self._stream_dropped = 0
 
         # Event state tracking (per-channel, for transition detection)
         self._alarm_event_state: dict[int, dict[str, Any]] = defaultdict(dict)
@@ -1629,7 +1771,7 @@ class BaichuanApiClient:
 
         return await self._run_with_retry(_do)
 
-    async def get_snapshot(self, channel: int = 0) -> bytes | None:
+    async def get_snapshot(self, channel: int = 0, timeout: float | None = None) -> bytes | None:
         """Request a snapshot image from the camera (retried on failure).
 
         Handles the push-based binary JPEG response flow:
@@ -1637,17 +1779,101 @@ class BaichuanApiClient:
         2. Response: XML acknowledgment followed by binary JPEG chunks with
            <binaryData>1</binaryData> in the extension. The binary payload is
            decrypted with the negotiated encryption mode.
+
+        ``timeout`` bounds one capture attempt. Pass it explicitly when the caller
+        knows the picture is worth waiting for; otherwise the client default applies.
         """
 
         async def _do():
             """Fetch a snapshot, retrying on transient failures."""
-            return await self._get_snapshot_impl(channel)
+            return await self._get_snapshot_impl(channel, timeout=timeout)
 
         async with self._snapshot_lock:
             return await self._run_with_retry(_do)
 
-    async def _get_snapshot_impl(self, channel: int = 0) -> bytes | None:
-        """Request a snapshot image (single attempt)."""
+    async def snapshot_probe(
+        self, channel: int = 0, timeout: float = DEFAULT_PROBE_TIMEOUT
+    ) -> SnapshotAck | None:
+        """Ask whether ``cmdId=109`` works, without receiving the picture (G6).
+
+        Sends the snapshot request and reads only the XML acknowledgment, which carries
+        ``<pictureSize>`` — so support and the expected size are known in tens of
+        milliseconds instead of the 0.27–1.03 s the full captures measured on three
+        firmwares cost.
+
+        The camera starts streaming JPEG chunks the moment it answers, and they share this
+        socket with everything else. The connection is therefore reset in ``finally``:
+        dropping a half-sent picture at the socket level cannot leak stale chunks into the
+        *next* real snapshot, and reconnect + re-login is self-healing for every other
+        caller. ``None`` means the camera did not acknowledge within ``timeout``.
+
+        Takes the snapshot lock so a probe can never cut a real capture in half, and a
+        capture never races the probe's socket reset.
+        """
+        async with self._snapshot_lock:
+            return await self._snapshot_probe_impl(channel, timeout)
+
+    async def _snapshot_probe_impl(self, channel: int, timeout: float) -> SnapshotAck | None:
+        """One probe exchange: send the request, read the acknowledgment, reset."""
+        if not self.authenticated:
+            raise ReolinkError("Not authenticated")
+        if self._dispatcher is None:
+            raise ReolinkError("Frame dispatcher not initialized")
+
+        header_channel_id = channel + 1
+        ext_xml = build_channel_extension_xml(channel)
+        snap_xml = build_snapshot_xml(channel)
+        body, payload_offset = self._encrypt_command_body(ext_xml, snap_xml)
+        msg_num = self._next_msg_num()
+
+        async def _send_probe() -> None:
+            """Send the snapshot request frame."""
+            await self._send_frame(
+                BC_CMD_ID_SNAPSHOT,
+                body,
+                use_24_header=True,
+                channel=header_channel_id,
+                msg_num=msg_num,
+                payload_offset=payload_offset,
+            )
+
+        probe_ack: SnapshotAck | None = None
+        try:
+            async for resp_cmd, resp_code, resp_offset, resp_body in self._dispatcher.iter_matching(
+                BC_CMD_ID_SNAPSHOT,
+                timeout=timeout,
+                send=_send_probe,
+            ):
+                if resp_cmd != BC_CMD_ID_SNAPSHOT:
+                    continue
+                if resp_code >= 400:
+                    probe_ack = SnapshotAck(response_code=resp_code)
+                    break
+                for candidate in (resp_body[:resp_offset], resp_body[resp_offset:], resp_body):
+                    parsed = parse_snapshot_ack(self._decrypt_part(candidate))
+                    if parsed is not None:
+                        probe_ack = replace(parsed, response_code=resp_code)
+                        break
+                if probe_ack is not None:
+                    break
+        except Exception as error:
+            logger.debug("Snapshot probe failed: %s", error)
+        finally:
+            # Never leave the camera's picture stream in flight behind a probe.
+            await self._reset_connection()
+        return probe_ack
+
+    async def _get_snapshot_impl(
+        self, channel: int = 0, timeout: float | None = None
+    ) -> bytes | None:
+        """Request a snapshot image (single attempt).
+
+        Either signal ends the capture, whichever the camera gives first: the ack's declared
+        ``pictureSize`` (exact on every measured firmware, so a stalled camera costs the
+        caller's own ``timeout`` rather than a full default window) or the JPEG EOI marker. A
+        capture that ends with *neither* is reported as a failure rather than padded into a
+        plausible-looking file.
+        """
         if not self.authenticated:
             raise ReolinkError("Not authenticated")
 
@@ -1663,6 +1889,8 @@ class BaichuanApiClient:
         if self._dispatcher is None:
             raise ReolinkError("Frame dispatcher not initialized")
 
+        attempt_timeout = self.timeout if timeout is None else timeout
+
         async def _send_snapshot() -> None:
             """Send the snapshot request frame."""
             await self._send_frame(
@@ -1676,8 +1904,11 @@ class BaichuanApiClient:
 
         # Collect binary JPEG chunks from push frames
         chunks: list[bytes] = []
-        timeout_at = asyncio.get_event_loop().time() + self.timeout
+        received = 0
+        declared: int | None = None
+        timeout_at = asyncio.get_event_loop().time() + attempt_timeout
         soi_found = False
+        eoi_seen = False
 
         def _find_soi(buf: bytes) -> int:
             """Find the JPEG start-of-image marker (FF D8)."""
@@ -1728,9 +1959,26 @@ class BaichuanApiClient:
 
             is_binary = b"<binaryData>1</binaryData>" in ext_part
 
-            # If not marked as binary, it may be the XML ack frame.
+            # If not marked as binary, this is the XML acknowledgment, which carries the
+            # declared size that decides completion below.
             if not is_binary:
-                # Skip the initial XML acknowledgment (no JPEG payload)
+                if declared is None:
+                    for candidate in (enc_payload, resp_body):
+                        try:
+                            ack = parse_snapshot_ack(self._decrypt_part(candidate))
+                        except Exception:
+                            ack = None
+                        if ack is not None and ack.declared_bytes:
+                            declared = ack.declared_bytes
+                            break
+                    if declared and declared > SNAPSHOT_CEILING_BYTES:
+                        logger.warning(
+                            "Snapshot declared %d bytes, above the %d MiB ceiling; aborting",
+                            declared,
+                            SNAPSHOT_CEILING_BYTES // (1024 * 1024),
+                        )
+                        chunks.clear()
+                        break
                 continue
 
             # Decrypt the payload as its own AES-CFB stream
@@ -1749,21 +1997,426 @@ class BaichuanApiClient:
                     # Not JPEG yet; wait for the next binary chunk
                     continue
 
+            if received + len(payload_part) > SNAPSHOT_CEILING_BYTES:
+                logger.warning(
+                    "Snapshot exceeded the %d MiB ceiling after %d bytes; discarding",
+                    SNAPSHOT_CEILING_BYTES // (1024 * 1024),
+                    received,
+                )
+                chunks.clear()
+                break
+
             chunks.append(payload_part)
+            received += len(payload_part)
+
             if _has_eoi(payload_part):
-                break  # Complete JPEG received
+                # JPEG end-of-image marker: the picture says it is complete, which also
+                # covers a camera whose declared size was wrong.
+                eoi_seen = True
+                break
+            if declared and received >= declared:
+                # Measured on three firmwares: the exchange delivers exactly the declared
+                # byte count, so the declaration is the other completion signal. It also
+                # covers an EOI split across two chunks, which a per-chunk marker scan
+                # cannot see.
+                if received > declared:
+                    logger.warning(
+                        "Snapshot overshot its declared size: %d > %d", received, declared
+                    )
+                break
 
         if chunks:
             jpeg = b"".join(chunks)
             # Ensure we have a complete JPEG
             if len(jpeg) >= 2 and jpeg[0] == 0xFF and jpeg[1] == 0xD8:
-                if not jpeg.endswith(b"\xff\xd9"):
+                if not eoi_seen and declared and received < declared:
+                    logger.warning(
+                        "Snapshot capture incomplete: %d of %d declared bytes; rejecting",
+                        received,
+                        declared,
+                    )
+                    return None
+                if declared is None and not jpeg.endswith(b"\xff\xd9"):
+                    # Legacy fallback: with no declaration the byte count proves nothing,
+                    # so keep closing the stream. When the camera declared the size and we
+                    # received it, the received bytes *are* the picture and inventing a
+                    # marker would corrupt the checksum an Evidence record carries.
                     jpeg += b"\xff\xd9"
                 logger.info("Snapshot captured: %d bytes", len(jpeg))
                 return jpeg
 
         logger.warning("Snapshot capture failed: no JPEG data received")
         return None
+
+    # ── Native live video (cmdId=3 / cmdId=6) ─────────────────────────
+
+    @dataclass(frozen=True)
+    class _PreviewRequest:
+        """One prepared ``cmdId=3`` request, so its handle cannot be lost before the stop."""
+
+        body: bytes
+        payload_offset: int
+        msg_num: int
+        handle: int
+        header_stream: int
+
+    def _preview_frame_parts(self, body: bytes, payload_offset: int) -> tuple[str, bytes]:
+        """``(extension_text, media_payload)`` for one ``cmdId=3`` frame.
+
+        A frame with ``payload_offset == 0`` is a cleartext continuation: it carries no
+        extension at all and its whole body is media, which is why the offset — not
+        ``<binaryData>`` — is what identifies media frames on this transport. Treating
+        ``binaryData`` as the media marker (which suffices for ``cmdId=109``) drops frames
+        on two of the three measured firmwares.
+        """
+        if payload_offset <= 0:
+            return "", body
+        try:
+            extension_text = self._decrypt_part(body[:payload_offset]).decode(
+                "utf-8", errors="replace"
+            )
+        except Exception:
+            # An undecodable extension must not lose the media bytes behind it: without a
+            # recorded encryptLen the payload is treated as starting in the clear.
+            extension_text = ""
+        return extension_text, body[payload_offset:]
+
+    def _prepare_preview(self, variant: str, channel: int) -> _PreviewRequest:
+        """Encode a ``cmdId=3`` request, keeping its handle for the eventual stop.
+
+        Handle and header ``streamType`` come from the measured pairs in
+        :data:`preview.PREVIEW_STREAMS`, so a caller cannot send main's handle with the
+        sub-stream's header. The request body has no extension slot (offset 0).
+        """
+        key = variant if variant in PREVIEW_STREAMS else "main"
+        handle, stream_name, header_stream = PREVIEW_STREAMS[key]
+        body, payload_offset = self._encrypt_command_body(
+            "", preview_request_payload(handle, stream_name, channel)
+        )
+        return self._PreviewRequest(
+            body, payload_offset, self._next_msg_num(), handle, header_stream
+        )
+
+    async def _send_preview_stop(self, variant: str, channel: int, handle: int) -> None:
+        """``cmdId=6``, repeating the request's ``handle``; bounded and never raising.
+
+        An empty stop body is answered ``405`` and the camera keeps streaming the old
+        profile into whatever reads the socket next, so the handle is repeated here. The
+        send is bounded because a stalled socket must not pin a capture open past its own
+        deadline, and a failed stop is logged rather than raised: whoever called us has
+        already decided the capture is over, and their outcome must not be replaced by
+        this one.
+        """
+        _handle, _stream_name, header_stream = PREVIEW_STREAMS.get(variant, PREVIEW_STREAMS["main"])
+        try:
+            body, payload_offset = self._encrypt_command_body(
+                "", preview_stop_payload(handle, channel)
+            )
+            await asyncio.wait_for(
+                self._send_frame(
+                    BC_CMD_ID_STOP_PREVIEW,
+                    body,
+                    use_24_header=True,
+                    channel=channel + 1,
+                    stream_type=header_stream,
+                    payload_offset=payload_offset,
+                ),
+                timeout=min(self.timeout, PREVIEW_STOP_TIMEOUT),
+            )
+        except Exception as error:  # noqa: BLE001 - stopping must not mask the capture's result
+            logger.debug("Preview stop (%s) failed: %s", variant, error)
+
+    async def observe_preview_first_packet(
+        self,
+        channel: int = 0,
+        *,
+        variant: str = "main",
+        timeout: float = DEFAULT_PREVIEW_TIMEOUT,
+        max_bytes: int = PREVIEW_MAX_BYTES,
+        stop_on_keyframe: bool = True,
+        sink: Callable[[bytes], None] | None = None,
+    ) -> PreviewStats:
+        """Observe one native preview burst (``cmdId=3``), then stop it (``cmdId=6``).
+
+        This answers what a camera *will* send before anyone commits to a recording — codec,
+        resolution, and how long until an independently decodable picture — and doubles as
+        encoder priming ahead of an event. It is deliberately short: the read loop exits at
+        the first independently decodable picture (or the first complete picture, when
+        ``stop_on_keyframe`` is false), never at the end of a stream, and the buffered total
+        is capped at ``max_bytes``.
+
+        ``cmdId=6`` is sent in ``finally``, so a timeout, a rejected request, a raising sink,
+        or a cancellation cannot leave the camera streaming into the next reader. The socket
+        is never reset here (unlike the snapshot probe): preview frames carry their own
+        cmdId, so alarm pushes on the same connection keep flowing throughout.
+
+        Two bounds exist because the preview shares the socket with the event pushes it is
+        meant to help. The waiter's queue is bounded (``PREVIEW_QUEUE_MAXSIZE``), so a
+        consumer that stops keeping up pays in counted dropped frames rather than in memory
+        or in a stalled dispatcher. And the per-client ``_preview_lock`` makes two concurrent
+        captures on one camera impossible: a second caller waits rather than opening a second
+        media session whose frames would interleave into the first one's framing.
+        """
+        if not self.authenticated:
+            raise ReolinkError("Not authenticated")
+        if self._dispatcher is None:
+            raise ReolinkError("Frame dispatcher not initialized")
+
+        async with self._preview_lock:
+            return await self._observe_preview_once(
+                channel,
+                variant=variant,
+                timeout=timeout,
+                max_bytes=max_bytes,
+                stop_on_keyframe=stop_on_keyframe,
+                sink=sink,
+            )
+
+    async def _observe_preview_once(
+        self,
+        channel: int,
+        *,
+        variant: str,
+        timeout: float,
+        max_bytes: int,
+        stop_on_keyframe: bool,
+        sink: Callable[[bytes], None] | None,
+    ) -> PreviewStats:
+        """One ``cmdId=3`` → ``cmdId=6`` exchange, held by the caller's preview lock."""
+        request = self._prepare_preview(variant, channel)
+        # ``max_bytes`` bounds one picture too, not just the running total: the exit rule is the
+        # first picture, so a total bound the walker never reached would be a limit that only
+        # looks enforced. A capture whose keyframe is larger than the caller's bound is therefore
+        # refused (and counted) rather than buffered whole.
+        feed = PreviewFeed(
+            variant=variant, max_bytes=max_bytes, packet_max_bytes=max_bytes, sink=sink
+        )
+        dropped_before = self._dispatcher.dropped_frames
+        loop = asyncio.get_event_loop()
+        started = loop.time()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=PREVIEW_QUEUE_MAXSIZE)
+        rejected = False
+
+        async def _send_preview() -> None:
+            """Send the preview request frame."""
+            await self._send_frame(
+                BC_CMD_ID_PREVIEW,
+                request.body,
+                use_24_header=True,
+                channel=channel + 1,
+                stream_type=request.header_stream,
+                msg_num=request.msg_num,
+                payload_offset=request.payload_offset,
+            )
+
+        try:
+            # Matched on cmdId alone. We are the only consumer of cmdId=3, and the measured
+            # media frames do not reliably echo the request's msgNum, so correlating on it
+            # would starve the capture rather than make it safer.
+            async for _cmd, resp_code, frame_offset, frame_body in self._dispatcher.iter_matching(
+                BC_CMD_ID_PREVIEW,
+                timeout=timeout,
+                send=_send_preview,
+                queue=queue,
+            ):
+                if resp_code >= 400:
+                    logger.warning("Preview request rejected: responseCode=%d", resp_code)
+                    rejected = True
+                    break
+                extension, payload = self._preview_frame_parts(frame_body, frame_offset)
+                feed.push_frame(
+                    payload_offset=frame_offset,
+                    extension=extension,
+                    payload=payload,
+                    decrypt=self._decrypt_part,
+                    elapsed_ms=(loop.time() - started) * 1000.0,
+                )
+                if feed.full:
+                    break  # the bound was hit: nothing further will be framed
+                if stop_on_keyframe and feed.stats.keyframed():
+                    # One independently decodable picture is the whole point of a capture;
+                    # anything past it is a stream nobody asked for.
+                    break
+                if not stop_on_keyframe and feed.stats.frames() > 0:
+                    break
+        except Exception as error:  # noqa: BLE001 - the stop below is what matters here
+            logger.debug("Preview capture ended early: %s", error)
+        finally:
+            await self._send_preview_stop(variant, channel, request.handle)
+
+        stats = feed.stats
+        stats.dropped_frames += self._dispatcher.dropped_frames - dropped_before
+        if rejected or stats.frames() == 0:
+            logger.warning(
+                "Preview capture produced no media frames (variant=%s, %d frame(s) in)",
+                variant,
+                feed.frames_in,
+            )
+        return stats
+
+    async def stream_preview(
+        self,
+        push: Callable[[bytes], Awaitable[None]],
+        channel: int = 0,
+        *,
+        variant: str = "main",
+        timeout: float = DEFAULT_PREVIEW_TIMEOUT,
+    ) -> PreviewStats:
+        """Stream one native preview burst (``cmdId=3``) as Annex-B access units.
+
+        This is the recorder-facing shape of the native source (F1): the camera always
+        opens the burst with an independently decodable picture, so ``push`` receives an
+        I-Frame almost immediately — the keyframe-wait a fresh RTSP session pays is gone.
+        Each validated video payload is Annex-B-framed and handed to ``push`` as it is
+        reassembled, so nothing accumulates here beyond the caller's own backpressure.
+
+        ``cmdId=6`` is sent in ``finally``, so a raising consumer, a timeout, or a
+        cancellation cannot leave the camera streaming into the next reader. The preview
+        lock is held for the whole stream, so a second capture cannot interleave its frames
+        into this reassembly.
+
+        ``timeout`` bounds only the wait for the *first* video packet — a dead camera fails
+        fast rather than hanging the recorder. After the first packet the burst streams
+        until the caller cancels it (the recorder ends the episode), or the source goes
+        idle for ``PREVIEW_IDLE_TIMEOUT_SECONDS``. This keeps recording duration aligned
+        with the episode length rather than a fixed preview deadline. The per-frame queue
+        bound and the awaited ``push`` provide backpressure that stops the recorder from
+        overrunning the camera's own encode rate.
+        """
+        if not self.authenticated:
+            raise ReolinkError("Not authenticated")
+        if self._dispatcher is None:
+            raise ReolinkError("Frame dispatcher not initialized")
+
+        async with self._preview_lock:
+            request = self._prepare_preview(variant, channel)
+            logger.debug(
+                "Preview stream opening (variant=%s channel=%d timeout=%.1fs)",
+                variant,
+                channel,
+                timeout,
+            )
+            # The dispatcher's queue is separate from the recorder's: ``iter_matching``
+            # buffers raw ``cmdId=3`` frames in one, and the Annex-B access units the
+            # recorder consumes live in another. Sharing a queue would make the consumer
+            # race the dispatcher for the same bytes.
+            frame_queue: asyncio.Queue = asyncio.Queue(maxsize=PREVIEW_QUEUE_MAXSIZE)
+            out_queue: asyncio.Queue = asyncio.Queue(maxsize=PREVIEW_QUEUE_MAXSIZE)
+            feed = PreviewFeed(
+                variant=variant,
+                max_bytes=None,  # streaming: hand bytes on, never accumulate here
+                packet_max_bytes=PREVIEW_MAX_BYTES,
+                sink=lambda payload: self._sink_annexb(payload, out_queue),
+            )
+            dropped_before = self._dispatcher.dropped_frames
+            loop = asyncio.get_event_loop()
+            started = loop.time()
+            rejected = False
+            consumer = asyncio.create_task(self._drain_queue(out_queue, push))
+
+            async def _send_preview() -> None:
+                """Send the preview request frame."""
+                await self._send_frame(
+                    BC_CMD_ID_PREVIEW,
+                    request.body,
+                    use_24_header=True,
+                    channel=channel + 1,
+                    stream_type=request.header_stream,
+                    msg_num=request.msg_num,
+                    payload_offset=request.payload_offset,
+                )
+
+            try:
+                async for (
+                    _cmd,
+                    resp_code,
+                    frame_offset,
+                    frame_body,
+                ) in self._dispatcher.iter_matching(
+                    BC_CMD_ID_PREVIEW,
+                    timeout=timeout,
+                    first_frame_timeout=timeout,
+                    idle_timeout=PREVIEW_IDLE_TIMEOUT_SECONDS,
+                    send=_send_preview,
+                    queue=frame_queue,
+                ):
+                    if resp_code >= 400:
+                        logger.warning("Preview stream rejected: responseCode=%d", resp_code)
+                        rejected = True
+                        break
+                    extension, payload = self._preview_frame_parts(frame_body, frame_offset)
+                    feed.push_frame(
+                        payload_offset=frame_offset,
+                        extension=extension,
+                        payload=payload,
+                        decrypt=self._decrypt_part,
+                        elapsed_ms=(loop.time() - started) * 1000.0,
+                    )
+                    if feed.full:
+                        break  # the bound was hit: nothing further is framed
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:  # noqa: BLE001 - the stop below is what matters
+                logger.debug("Preview stream ended early: %s", error)
+            finally:
+                await self._send_preview_stop(variant, channel, request.handle)
+                out_queue.put_nowait(None)
+                await asyncio.gather(consumer, return_exceptions=True)
+
+            stats = feed.stats
+            stats.dropped_frames += self._dispatcher.dropped_frames - dropped_before
+            if rejected or stats.frames() == 0:
+                logger.warning(
+                    "Preview stream produced no media frames (variant=%s, %d frame(s) in)",
+                    variant,
+                    feed.frames_in,
+                )
+            logger.debug(
+                "Preview stream done (variant=%s frames=%d media_bytes=%d "
+                "codec=%s res=%s dropped_bytes=%d dropped_frames=%d sink_dropped=%d "
+                "first_packet_ms=%s first_iframe_ms=%s)",
+                variant,
+                stats.frames(),
+                stats.media_bytes,
+                stats.codec or "?",
+                f"{stats.width}x{stats.height}" if stats.width else "?",
+                stats.dropped_bytes,
+                stats.dropped_frames,
+                self._stream_dropped,
+                f"{stats.first_packet_ms:.1f}" if stats.first_packet_ms is not None else "none",
+                f"{stats.first_iframe_ms:.1f}" if stats.first_iframe_ms is not None else "none",
+            )
+            return stats
+
+    def _sink_annexb(self, payload: bytes, queue: asyncio.Queue) -> None:
+        """Enqueue one Annex-B-framed access unit for the recorder's push.
+
+        The walker's sink is synchronous, so the camera frame is never blocked on the
+        consumer: the bounded queue is the backpressure. A full queue (a recorder that
+        stopped draining) is a counted drop, indistinguishable from a camera that stopped
+        sending only by the queue's own bound — and the walker keeps framing regardless.
+        """
+        try:
+            queue.put_nowait(annexb(payload))
+        except asyncio.QueueFull:
+            self._stream_dropped += 1
+            logger.debug(
+                "Preview Annex-B queue full: dropped access unit (%d total dropped)",
+                self._stream_dropped,
+            )
+
+    async def _drain_queue(
+        self,
+        queue: asyncio.Queue,
+        push: Callable[[bytes], Awaitable[None]],
+    ) -> None:
+        """Await ``push`` for each queued access unit; stop on the sentinel."""
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                return
+            logger.debug("Preview Annex-B access unit pushed: %d bytes", len(chunk))
+            await push(chunk)
 
     async def send_command(
         self,

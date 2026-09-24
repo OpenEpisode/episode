@@ -31,6 +31,38 @@ async def inventory_api(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_isapi_defaults_to_interpreting_every_vendor_event(inventory_api):
+    """Ignored Events is empty by default.
+
+    A non-empty default stops the plugin *interpreting* the message, so the
+    Raw Artifact and Receipt exist but no canonical Event ever does, and the
+    core event class filter is never consulted. ``videoloss`` was in the
+    ``beta.7`` default, which silently removed the ``security`` class from
+    those cameras, so a new Device must start with nothing ignored.
+    """
+    _repository, _inventory, client = inventory_api
+    area = await client.post("/api/v1/areas", json={"name": "Front gate"})
+    assert area.status_code == 201
+
+    created = await client.post(
+        "/api/v1/devices",
+        json={
+            "name": "Gate camera",
+            "area_id": area.json()["id"],
+            "ip_address": "192.0.2.10",
+            "username": "admin",
+            "password": "top-secret",
+            "isapi": {"enabled": True},
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["configuration"]["isapi"]["ignore_events"] == []
+
+    stored = await _repository.get_device("gate-camera")
+    assert stored.get_config("isapi").settings["ignore_events"] == []
+
+
+@pytest.mark.asyncio
 async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
     repository, inventory, client = inventory_api
 
@@ -70,6 +102,7 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
     assert body["capture_policy"]["activity_window_seconds"] == 90
     assert body["configuration"]["episode_policy"] == {
         "activity_window_seconds": 90,
+        "event_filter": None,
     }
     assert body["configuration"]["manufacturer"] == "Hikvision"
     assert body["identity"]["manufacturer"] == "Hikvision"
@@ -438,6 +471,9 @@ async def test_reolink_events_and_media_roundtrip(inventory_api):
                 "enabled": True,
                 "media_enabled": True,
                 "events_enabled": True,
+                "native_video": True,
+                "preview_variant": "sub",
+                "preview_timeout": 4.0,
             },
         },
     )
@@ -447,11 +483,17 @@ async def test_reolink_events_and_media_roundtrip(inventory_api):
     assert reolink is not None
     assert reolink.settings["media_enabled"] is True
     assert reolink.settings["events_enabled"] is True
+    assert reolink.settings["native_video"] is True
+    assert reolink.settings["preview_variant"] == "sub"
+    assert reolink.settings["preview_timeout"] == 4.0
 
     # Round-trip back through editable configuration
     body = device_response.json()
     assert body["configuration"]["reolink"]["media_enabled"] is True
     assert body["configuration"]["reolink"]["events_enabled"] is True
+    assert body["configuration"]["reolink"]["native_video"] is True
+    assert body["configuration"]["reolink"]["preview_variant"] == "sub"
+    assert body["configuration"]["reolink"]["preview_timeout"] == 4.0
 
     # Disable events on update
     update = await client.put(

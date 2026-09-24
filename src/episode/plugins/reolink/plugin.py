@@ -18,7 +18,11 @@ from episode.plugins.models import (
     PluginStatus,
     RawPluginDelivery,
 )
-from episode.plugins.reolink.device import ReolinkDeviceConnection, device_config
+from episode.plugins.reolink.device import (
+    DEFAULT_DEDUP_WINDOW,
+    ReolinkDeviceConnection,
+    device_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +40,23 @@ def _configured_devices(devices: tuple[Mapping[str, object], ...]) -> list[Mappi
         for device in devices
         if "reolink" in device.get("configs", {}) and device.get("enabled", True)
     ]
+
+
+def _dedup_windows(devices: list[Mapping[str, object]]) -> dict[str, float]:
+    """Map device ID to its configured state-suppression window, so the
+    effective window matches the documented setting."""
+    windows: dict[str, float] = {}
+    for device in devices:
+        device_id = str(device.get("id") or "")
+        if not device_id:
+            continue
+        configs = device.get("configs") or {}
+        settings = (configs.get("reolink") or {}).get("settings") or {}
+        try:
+            windows[device_id] = float(settings.get("dedup_window", DEFAULT_DEDUP_WINDOW))
+        except (TypeError, ValueError):
+            windows[device_id] = DEFAULT_DEDUP_WINDOW
+    return windows
 
 
 class _ReolinkEventTracker:
@@ -76,6 +97,7 @@ class ReolinkPlugin:
         self._suppressed_counts: dict[str, int] = {}
         self._last_events: dict[str, str] = {}
         self._trackers: dict[str, _ReolinkEventTracker] = {}
+        self._dedup_windows = _dedup_windows(self._configured_devices)
         self._registered = False
         logger.info(
             "Reolink plugin initialized: %d configured device(s), "
@@ -192,7 +214,10 @@ class ReolinkPlugin:
             )
 
         # Suppress repeated identical states (time-aware edge detection).
-        tracker = self._trackers.setdefault(envelope.device_id, _ReolinkEventTracker())
+        tracker = self._trackers.setdefault(
+            envelope.device_id,
+            _ReolinkEventTracker(window=self._dedup_windows.get(envelope.device_id, 1.0)),
+        )
         if not tracker.is_transition(event_type, event_state, envelope.received_at):
             self._suppressed_counts[envelope.device_id] = (
                 self._suppressed_counts.get(envelope.device_id, 0) + 1

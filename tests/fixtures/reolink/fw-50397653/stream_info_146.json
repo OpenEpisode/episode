@@ -1,0 +1,203 @@
+{
+  "channel": 0,
+  "tables": [
+    {
+      "bitrate": [
+        1024,
+        1536,
+        2048,
+        3072,
+        4096,
+        5120,
+        6144,
+        7168,
+        8192
+      ],
+      "defaultBitrate": 6144,
+      "defaultFramerate": 25,
+      "defaultGop": 2,
+      "framerate": [
+        25,
+        22,
+        20,
+        18,
+        16,
+        15,
+        12,
+        10,
+        8,
+        6,
+        4,
+        2
+      ],
+      "height": 2160,
+      "type": "mainStream",
+      "videoEncType": 0,
+      "videoEncTypeOptions": [
+        0,
+        1
+      ],
+      "width": 3840
+    },
+    {
+      "bitrate": [
+        64,
+        128,
+        160,
+        192,
+        256,
+        384,
+        512
+      ],
+      "defaultBitrate": 256,
+      "defaultFramerate": 10,
+      "defaultGop": 4,
+      "framerate": [
+        15,
+        10,
+        7,
+        4
+      ],
+      "height": 360,
+      "type": "subStream",
+      "videoEncType": 0,
+      "videoEncTypeOptions": [
+        0,
+        1
+      ],
+      "width": 640
+    },
+    {
+      "bitrate": [
+        1024,
+        1536,
+        2048,
+        3072,
+        4096,
+        5120,
+        6144,
+        7168,
+        8192
+      ],
+      "defaultBitrate": 6144,
+      "defaultFramerate": 25,
+      "defaultGop": 2,
+      "framerate": [
+        25,
+        22,
+        20,
+        18,
+        16,
+        15,
+        12,
+        10,
+        8,
+        6,
+        4,
+        2
+      ],
+      "height": 1440,
+      "type": "mainStream",
+      "videoEncType": 0,
+      "videoEncTypeOptions": [
+        0,
+        1
+      ],
+      "width": 2560
+    },
+    {
+      "bitrate": [
+        64,
+        128,
+        160,
+        192,
+        256,
+        384,
+        512
+      ],
+      "defaultBitrate": 256,
+      "defaultFramerate": 10,
+      "defaultGop": 4,
+      "framerate": [
+        15,
+        10,
+        7,
+        4
+      ],
+      "height": 360,
+      "type": "subStream",
+      "videoEncType": 0,
+      "videoEncTypeOptions": [
+        0,
+        1
+      ],
+      "width": 640
+    },
+    {
+      "bitrate": [
+        1024,
+        1536,
+        2048,
+        3072,
+        4096,
+        5120,
+        6144,
+        7168,
+        8192
+      ],
+      "defaultBitrate": 6144,
+      "defaultFramerate": 25,
+      "defaultGop": 2,
+      "framerate": [
+        25,
+        22,
+        20,
+        18,
+        16,
+        15,
+        12,
+        10,
+        8,
+        6,
+        4,
+        2
+      ],
+      "height": 1296,
+      "type": "mainStream",
+      "videoEncType": 0,
+      "videoEncTypeOptions": [
+        0,
+        1
+      ],
+      "width": 2304
+    },
+    {
+      "bitrate": [
+        64,
+        128,
+        160,
+        192,
+        256,
+        384,
+        512
+      ],
+      "defaultBitrate": 256,
+      "defaultFramerate": 10,
+      "defaultGop": 4,
+      "framerate": [
+        15,
+        10,
+        7,
+        4
+      ],
+      "height": 360,
+      "type": "subStream",
+      "videoEncType": 0,
+      "videoEncTypeOptions": [
+        0,
+        1
+      ],
+      "width": 640
+    }
+  ]
+}

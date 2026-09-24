@@ -1,0 +1,24 @@
+{
+  "captured_at": "2026-09-21T17:31:23+00:00",
+  "channel": 0,
+  "cipher": "aes-128-cfb",
+  "cipher_code": 18,
+  "dropped_frames": 0,
+  "files": [
+    "alarm_idle.xml",
+    "stream_info_146.json",
+    "snapshot_exchange_109.json",
+    "snapshot_ack_109.xml",
+    "preview_frames_main.json",
+    "preview_packets_main.json",
+    "preview_meta_main.json"
+  ],
+  "firmware_version": "50332294",
+  "mac_address": "(none)",
+  "model": "IPC",
+  "notes": [],
+  "push_parser_disagreements": 0,
+  "pushes_observed": 1,
+  "sanitized": "no credential-derived value, no cipher body, no image bytes",
+  "schema": "episode.reolink_fixtures.v1"
+}
