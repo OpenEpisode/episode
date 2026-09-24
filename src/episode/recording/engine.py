@@ -564,7 +564,10 @@ class RecordingEngine:
             self._recordings.pop(self._rec_key(rec.episode_id, rec.device_id), None)
             rec.stop_reason = reason
             rec.retry_wakeup.set()
-            self._signal_process(rec)
+            # A piped source is stopped gracefully: closing stdin lets ffmpeg flush its
+            # final fragment and exit 0, instead of truncating the last segment with a
+            # SIGTERM. URL sources keep the terminate-and-reconnect behavior.
+            self._graceful_signal_process(rec)
         if reason:
             await asyncio.gather(
                 *(self._journal_interruption(rec, reason) for rec in recordings),
@@ -594,6 +597,32 @@ class RecordingEngine:
                 rec.proc.terminate()
             except ProcessLookupError:
                 pass
+
+    @staticmethod
+    def _graceful_signal_process(rec: _EpisodeRecording) -> None:
+        """Stop a piped source without truncating its final fragment.
+
+        A plugin-fed recorder feeds ffmpeg through stdin, and ffmpeg only flushes its
+        last fragment once stdin hits EOF. Terminating the child (``_signal_process``)
+        cuts that final segment off, which is why a 4 s fixture records as ~2.8 s. For a
+        piped source the graceful stop is to close stdin first and let ffmpeg flush and
+        exit 0; the handler task is cancelled so the plugin's session does not outlive
+        the recording, and the child is terminated only if it refuses to exit.
+        """
+        if rec.video_handler is None:
+            # URL sources cannot be told to flush: keep the terminate-and-reconnect path.
+            RecordingEngine._signal_process(rec)
+            return
+        if rec.handler_task is not None and not rec.handler_task.done():
+            rec.handler_task.cancel()
+        # Closing stdin signals EOF, which is what lets ffmpeg finalize the bundle.
+        if rec.proc and rec.proc.stdin is not None and rec.proc.returncode is None:
+            try:
+                rec.proc.stdin.close()
+            except Exception:
+                pass
+        else:
+            RecordingEngine._signal_child_process(rec)
 
     @staticmethod
     def _signal_process(rec: _EpisodeRecording) -> None:
