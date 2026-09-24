@@ -13,7 +13,12 @@ from episode.ingestion.router import IngressRouter
 from episode.ingestion.service import IngestionService
 from episode.media.registry import MediaRegistry
 from episode.plugins.deliveries import RawPluginDeliveryStore
-from episode.plugins.models import PluginContext, RawPluginDelivery
+from episode.plugins.models import (
+    PluginContext,
+    PluginInstanceState,
+    PluginInstanceStatus,
+    RawPluginDelivery,
+)
 from episode.plugins.onvif.plugin import ONVIFPlugin
 from episode.storage.repository import Repository
 
@@ -31,6 +36,114 @@ ACTIVE_NOTIFICATION = b"""<?xml version="1.0"?>
   </wsnt:NotificationMessage>
  </PullMessagesResponse></s:Body>
 </s:Envelope>"""
+
+
+UNMAPPED_NOTIFICATION = ACTIVE_NOTIFICATION.replace(
+    b"tns1:RuleEngine/TamperDetector/Tamper",
+    b"tns1:VendorCustom/UnnamedDetector",
+).replace(b'Name="IsTamper"', b'Name="State"')
+
+
+class _FakeONVIFConnection:
+    """A started Device connection, so plugin status has an instance to report on."""
+
+    def __init__(self, config, _sink, _media=None, _update_sink=None):
+        self.config = config
+        self._status = PluginInstanceStatus(
+            id=config.device.id,
+            name=config.device.name,
+            state=PluginInstanceState.RUNNING,
+        )
+
+    def status(self) -> PluginInstanceStatus:
+        return self._status
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_unmapped_topic_is_preserved_and_reported_without_becoming_an_event(tmp_path):
+    """A topic this adapter cannot name stays preserved but never becomes a canonical
+    Event, so it can never be filtered into silence. It is reported on the Device
+    status instead of being guessed at."""
+    config = EpisodeConfig(data_dir=str(tmp_path / "data"), episode_timeout=30)
+    repository = Repository(config)
+    await repository.initialize()
+    await repository.upsert_area(Area(id="entrance", name="Entrance"))
+    await repository.upsert_device(
+        Device(id="camera-1", name="Camera", area_id="entrance", device_type="camera")
+    )
+    engine = EpisodeEngine(repository, EventBus(), timeout=30)
+    await engine.start()
+    router = IngressRouter()
+    ingestion = IngestionService(config.data_dir, repository, engine, router)
+    sink = RawPluginDeliveryStore(ingestion)
+    plugin = ONVIFPlugin(
+        PluginContext(
+            tmp_path,
+            configured_devices=(
+                {
+                    "id": "camera-1",
+                    "name": "Camera",
+                    "area_id": "entrance",
+                    "ip_address": "192.0.2.10",
+                    "username": "operator",
+                    "password": "secret",
+                    "configs": {"onvif": {}},
+                },
+            ),
+            raw_delivery_sink=sink,
+            ingress_router=router,
+            media_registry=MediaRegistry(),
+            device_update_sink=repository.upsert_device,
+        ),
+        connection_factory=_FakeONVIFConnection,
+    )
+    await plugin.start()
+    try:
+        for _delivery in range(2):
+            await sink(
+                RawPluginDelivery(
+                    plugin_id="onvif",
+                    device_id="camera-1",
+                    area_id="entrance",
+                    received_at=datetime.now(tz=timezone.utc),
+                    payload=UNMAPPED_NOTIFICATION,
+                    source="onvif:events",
+                    media_type="application/soap+xml",
+                    artifact_type="event_batch",
+                    metadata={"kind": "pull_response"},
+                )
+            )
+
+        assert await repository.list_events() == [], "no canonical Event from an unnamed topic"
+        receipts = await repository.list_ingestion_receipts()
+        unmapped = [
+            receipt for receipt in receipts if receipt.metadata.get("reason") == "unmapped_topic"
+        ]
+        assert len(unmapped) == 2
+        assert all(receipt.status == ReceiptStatus.IGNORED for receipt in unmapped)
+        # Both levels stay sealed and retrievable, so the operator can name the topic.
+        for receipt in unmapped:
+            artifact = await repository.get_raw_artifact(receipt.artifact_id)
+            assert b"tns1:VendorCustom/UnnamedDetector" in Path(artifact.file_path).read_bytes()
+        for receipt in receipts:
+            if receipt.metadata.get("reason") != "expanded_to_notifications":
+                continue
+            artifact = await repository.get_raw_artifact(receipt.artifact_id)
+            assert Path(artifact.file_path).read_bytes() == UNMAPPED_NOTIFICATION
+
+        instance = plugin.status().instances[0]
+        assert instance.details["unmapped_topics"] == {"tns1:VendorCustom/UnnamedDetector": 2}
+        assert instance.details["events_received"] == 0
+    finally:
+        await plugin.stop()
+        await engine.stop()
+        await repository.close()
 
 
 @pytest.mark.asyncio

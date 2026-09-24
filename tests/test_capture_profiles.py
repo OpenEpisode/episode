@@ -97,6 +97,10 @@ async def test_default_profile_is_dynamic_and_custom_empty_profile_excludes_even
             "evaluated_at": stored.participation.evaluated_at.isoformat(
                 timespec="microseconds"
             ).replace("+00:00", "Z"),
+            "filtered_event_type": None,
+            "filtered_event_class": None,
+            "filter_source": None,
+            "attachment": None,
         }
         assert "eligible_recording_device_ids" not in projected
     finally:
@@ -525,6 +529,107 @@ async def test_repository_upgrades_beta6_event_schema_at_startup(tmp_path):
         assert event.eligible_recording_device_ids is None
     finally:
         await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_repository_migrates_and_drops_beta7_capture_filter_columns(tmp_path):
+    config = EpisodeConfig(data_dir=str(tmp_path), db_path=str(tmp_path / "episode.db"))
+    repo = Repository(config)
+    await repo.initialize()
+    await repo.upsert_area(Area(id="front", name="Front"))
+    for device_id, event_filter in (
+        ("enabled", ["security"]),
+        ("disabled", ["security"]),
+        ("inherit", ["security"]),
+    ):
+        await repo.upsert_device(
+            Device(
+                id=device_id,
+                name=device_id,
+                device_type="camera",
+                area_id="front",
+                event_filter=event_filter,
+            )
+        )
+    service = CaptureProfileService(repo)
+    filtered_profile = await service.create_profile(
+        "Filtered", ["enabled"], event_filter=["security"]
+    )
+    unfiltered_profile = await service.create_profile(
+        "Unfiltered", ["disabled"], event_filter=["security"]
+    )
+    await repo.close()
+
+    # Model Beta.7: its profile boolean and Device tri-state predate event_filter.
+    connection = sqlite3.connect(config.db_path)
+    connection.execute("ALTER TABLE devices DROP COLUMN event_filter")
+    connection.execute("ALTER TABLE capture_profiles DROP COLUMN event_filter")
+    connection.execute(
+        "ALTER TABLE devices ADD COLUMN generic_event_filter TEXT NOT NULL DEFAULT 'inherit'"
+    )
+    connection.execute(
+        "ALTER TABLE capture_profiles ADD COLUMN filter_generic_events INTEGER NOT NULL DEFAULT 0"
+    )
+    connection.execute("UPDATE devices SET generic_event_filter = 'enabled' WHERE id = 'enabled'")
+    connection.execute("UPDATE devices SET generic_event_filter = 'disabled' WHERE id = 'disabled'")
+    connection.execute(
+        "UPDATE capture_profiles SET filter_generic_events = 1 WHERE id = ?",
+        (filtered_profile.id,),
+    )
+    connection.commit()
+    connection.close()
+
+    upgraded = Repository(config)
+    await upgraded.initialize()
+    try:
+        expected_filter = ["condition", "heartbeat", "motion"]
+        enabled = await upgraded.get_device("enabled")
+        disabled = await upgraded.get_device("disabled")
+        inherit = await upgraded.get_device("inherit")
+        assert enabled is not None
+        assert enabled.event_filter == expected_filter
+        assert disabled is not None
+        assert disabled.event_filter == []
+        assert inherit is not None
+        assert inherit.event_filter is None
+
+        stored_filtered = await upgraded.get_capture_profile(filtered_profile.id)
+        stored_unfiltered = await upgraded.get_capture_profile(unfiltered_profile.id)
+        assert stored_filtered is not None
+        assert stored_filtered.event_filter == expected_filter
+        assert stored_unfiltered is not None
+        assert stored_unfiltered.event_filter == []
+
+        columns = {
+            "devices": {
+                row["name"]
+                for row in await upgraded._conn.execute_fetchall("PRAGMA table_info(devices)")
+            },
+            "capture_profiles": {
+                row["name"]
+                for row in await upgraded._conn.execute_fetchall(
+                    "PRAGMA table_info(capture_profiles)"
+                )
+            },
+        }
+        assert "event_filter" in columns["devices"]
+        assert "event_filter" in columns["capture_profiles"]
+        assert "generic_event_filter" not in columns["devices"]
+        assert "filter_generic_events" not in columns["capture_profiles"]
+    finally:
+        await upgraded.close()
+
+    reopened = Repository(config)
+    await reopened.initialize()
+    try:
+        reopened_device = await reopened.get_device("enabled")
+        reopened_profile = await reopened.get_capture_profile(filtered_profile.id)
+        assert reopened_device is not None
+        assert reopened_device.event_filter == ["condition", "heartbeat", "motion"]
+        assert reopened_profile is not None
+        assert reopened_profile.event_filter == ["condition", "heartbeat", "motion"]
+    finally:
+        await reopened.close()
 
 
 @pytest.mark.asyncio

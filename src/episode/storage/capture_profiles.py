@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
+from episode.domain.event_filter import normalize_selector
 from episode.domain.models import CaptureProfile, CaptureProfileChange
 
 ALL_DEVICES_PROFILE_ID = "all-devices"
@@ -16,6 +17,21 @@ def _utc_iso(value: datetime) -> str:
         value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
     )
     return normalized.isoformat(timespec="microseconds")
+
+
+def _filter_json(event_filter: list[str] | None) -> str:
+    """Encode a selector as a canonical JSON array so stored values compare."""
+    return json.dumps(sorted(normalize_selector(event_filter)), separators=(",", ":"))
+
+
+def _decode_profile_filter(value: object) -> list[str]:
+    """Decode a stored profile selector; a damaged value means no filtering."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+    return sorted(normalize_selector(value))
 
 
 def _parse_datetime(value: str) -> datetime:
@@ -90,14 +106,16 @@ class CaptureProfileStore:
     async def create(self, profile: CaptureProfile) -> CaptureProfile:
         await self._connection.execute(
             """INSERT INTO capture_profiles
-               (id, name, include_all_devices, device_ids, builtin, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (id, name, include_all_devices, device_ids, builtin,
+                event_filter, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 profile.id,
                 profile.name,
                 int(profile.include_all_devices),
                 json.dumps(sorted(set(profile.device_ids)), separators=(",", ":")),
                 int(profile.builtin),
+                _filter_json(profile.event_filter),
                 _utc_iso(profile.created_at),
                 _utc_iso(profile.updated_at),
             ),
@@ -108,12 +126,14 @@ class CaptureProfileStore:
     async def update(self, profile: CaptureProfile) -> CaptureProfile:
         await self._connection.execute(
             """UPDATE capture_profiles
-               SET name = ?, include_all_devices = ?, device_ids = ?, updated_at = ?
+               SET name = ?, include_all_devices = ?, device_ids = ?,
+                   event_filter = ?, updated_at = ?
                WHERE id = ?""",
             (
                 profile.name,
                 int(profile.include_all_devices),
                 json.dumps(sorted(set(profile.device_ids)), separators=(",", ":")),
+                _filter_json(profile.event_filter),
                 _utc_iso(profile.updated_at),
                 profile.id,
             ),
@@ -234,6 +254,9 @@ class CaptureProfileStore:
             include_all_devices=bool(row["include_all_devices"]),
             device_ids=[str(item) for item in device_ids],
             builtin=bool(row["builtin"]),
+            event_filter=_decode_profile_filter(
+                row["event_filter"] if "event_filter" in row.keys() else None
+            ),
             active=row["id"] == active_id,
             created_at=_parse_datetime(row["created_at"]),
             updated_at=_parse_datetime(row["updated_at"]),

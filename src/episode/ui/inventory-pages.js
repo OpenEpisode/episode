@@ -6,6 +6,7 @@ import {
   sectionHeading,
 } from "./components.js?v=4";
 import { closeDialog, confirmDialog, notify } from "./dialogs.js?v=1";
+import { describeDeviceEventFilter, deviceEventFilterBadge } from "./event-filter.js?v=3";
 import { escHtml } from "./dom.js";
 import { fmtBytes, fmtShort, plural, titleCase } from "./format.js?v=4";
 import { eventTitle } from "./timeline.js?v=6";
@@ -375,7 +376,7 @@ export async function devices() {
               <span>${escHtml(titleCase(device.device_type))} · ${escHtml([identity.manufacturer, identity.model].filter(Boolean).join(" ") || "Manufacturer not detected")}</span>
             </a>
             <div class="resource-context">${escHtml(areaNames[device.area_id] || device.area_id || "No Area")}</div>
-            <div class="resource-badges">${device.setup_state === "needs_setup"
+            <div class="resource-badges">${deviceEventFilterBadge(device.event_filter)}${device.setup_state === "needs_setup"
               ? '<span class="badge badge-warning">Needs setup</span>'
               : integrationBadges(device.integrations) || '<span class="meta">No integrations</span>'}</div>
             <div class="resource-actions">
@@ -451,6 +452,7 @@ export async function deviceView(id) {
               ? "Enabled — requests and preserves an image for each new active Event"
               : "Disabled — active Events do not request preserved images"}</dd></div>
             <div><dt>ONVIF Events</dt><dd>${item.capture_policy.onvif_events === null ? "Unavailable" : item.capture_policy.onvif_events ? "Enabled" : "Disabled"}</dd></div>
+            <div><dt>Filtered event classes</dt><dd>${escHtml(describeDeviceEventFilter(item.event_filter))}</dd></div>
           </dl>
         </section>
         <section class="review-panel device-contributions">

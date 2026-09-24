@@ -49,7 +49,12 @@ came from, and keeps the whole incident portable.
 Episode can start Area-wide multi-camera recording, stream active HLS captures,
 show current camera views, correlate snapshots and detection regions, switch
 capture participation profiles, and send an Episode-start webhook or Discord
-notification.
+notification. A profile (or a single camera) can also filter event classes —
+plain motion, device status, audio, tamper and video loss, classified detections
+and wired alarm inputs, access records — so they stop opening Episodes by
+themselves. Nothing is filtered until you name its class, every class is
+available at both levels, and a filtered Event is still preserved and attributed
+to the Episode that was already open.
 
 ## Start in five minutes
 
@@ -99,7 +104,7 @@ one integration from owning the incident model.
 
 ## Project status
 
-Episode `0.1.0-beta.7` is a working public beta for technical self-hosters using
+Episode `0.1.0-beta.8` is a working public beta for technical self-hosters using
 IP cameras and Docker. Current priorities are reliable preservation, correct
 correlation, simple operation, and an uncluttered Episode-first interface.
 

@@ -4,13 +4,23 @@ import asyncio
 import os
 import shutil
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from episode.config import EpisodeConfig
-from episode.domain.models import Area, CapabilityConfig, Device, Episode, EpisodeState
-from episode.engine.bus import EventBus
-from episode.engine.engine import EpisodeEngine
+from episode.domain.models import (
+    Area,
+    CapabilityConfig,
+    Device,
+    Episode,
+    EpisodeState,
+    Event,
+    EventState,
+    Evidence,
+)
+from episode.engine.bus import EventBus, Message
+from episode.engine.engine import CanonicalEventResult, EpisodeEngine
 from episode.recording.engine import RecordingEngine
 from episode.storage.repository import Repository
 
@@ -45,6 +55,266 @@ async def test_resume_active_episodes_requests_complete_event_history():
     await recorder.resume_active_episodes()
 
     assert repository.event_limits == [10000]
+
+
+async def _wait_until(predicate, *, timeout: float = 2.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("condition was not met before timeout")
+        await asyncio.sleep(0.005)
+
+
+def _recording_event(episode_id: str, device_id: str) -> Event:
+    return Event(
+        device_id=device_id,
+        area_id="test-area",
+        event_type="motion_detection",
+        event_state=EventState.ACTIVE,
+        source="test",
+        episode_id=episode_id,
+        eligible_recording_device_ids=[device_id],
+    )
+
+
+@pytest.mark.asyncio
+async def test_repeated_ffmpeg_failures_reconnect_into_one_episode_recording(
+    tmp_path,
+    monkeypatch,
+):
+    config = EpisodeConfig(data_dir=str(tmp_path))
+    repository = Repository(config)
+    await repository.initialize()
+    await repository.upsert_area(Area(id="test-area", name="Test area"))
+    device = Device(
+        id="camera-reconnect",
+        name="Reconnect camera",
+        device_type="camera",
+        area_id="test-area",
+        ip_address="192.0.2.10",
+        configs={
+            "video": CapabilityConfig(
+                protocol="rtsp",
+                port=554,
+                path="/stream",
+                settings={"recording_mode": "on_event"},
+            )
+        },
+    )
+    await repository.upsert_device(device)
+    episode = Episode(
+        id="reconnect-episode",
+        primary_area_id="test-area",
+        state=EpisodeState.ACTIVE,
+    )
+    await repository.create_episode(episode)
+
+    bus = EventBus()
+    recorder = RecordingEngine(repository, bus, config.data_dir)
+    recorder._retry_initial_seconds = 0.01
+    recorder._retry_max_seconds = 0.02
+    attempts: list[tuple[str, ...]] = []
+    recovery_started = asyncio.Event()
+    recovery_stopped = asyncio.Event()
+
+    class FailedProcess:
+        returncode = 1
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+        async def wait(self):
+            return self.returncode
+
+    class RecoveringProcess:
+        def __init__(self):
+            self.returncode = None
+
+        def terminate(self):
+            self.returncode = -15
+            recovery_stopped.set()
+
+        def kill(self):
+            self.returncode = -9
+            recovery_stopped.set()
+
+        async def wait(self):
+            await recovery_stopped.wait()
+            return self.returncode
+
+    async def start_ffmpeg(*args, **kwargs):
+        attempts.append(tuple(str(arg) for arg in args))
+        if len(attempts) <= 5:
+            return FailedProcess()
+
+        root = Path(kwargs["cwd"])
+        (root / "init.mp4").write_bytes(b"init")
+        (root / "segments" / "segment-000000.m4s").write_bytes(b"video-fragment")
+        (root / "index.m3u8").write_text(
+            "#EXTM3U\n"
+            '#EXT-X-MAP:URI="init.mp4"\n'
+            "#EXT-X-DISCONTINUITY\n"
+            "#EXTINF:4.0,\nsegments/segment-000000.m4s\n",
+            encoding="utf-8",
+        )
+        recovery_started.set()
+        return RecoveringProcess()
+
+    async def persist_evidence(message):
+        await repository.create_evidence(Evidence(**message.data["evidence"]))
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start_ffmpeg)
+    bus.subscribe("evidence.received", persist_evidence)
+    try:
+        await recorder.start()
+        await bus.publish(
+            Message(
+                type="event.canonicalized",
+                data={
+                    "result": CanonicalEventResult(_recording_event(episode.id, device.id), True)
+                },
+            )
+        )
+        key = (episode.id, device.id)
+        recording = recorder._recordings[key]
+        evidence_id = recording.evidence_id
+
+        await _wait_until(lambda: recorder.status()["reconnects"] >= 4)
+        assert len(attempts) == 4
+        assert recorder.status()["recordings"][0]["state"] == "reconnecting"
+        assert await repository.list_evidence(episode_id=episode.id, limit=10) == []
+
+        # A later Event during recovery must attach to the existing session, not
+        # create a second Evidence identity or HLS workspace for this camera.
+        await bus.publish(
+            Message(
+                type="event.canonicalized",
+                data={
+                    "result": CanonicalEventResult(_recording_event(episode.id, device.id), True)
+                },
+            )
+        )
+        assert recorder._recordings[key] is recording
+        assert len(list((tmp_path / "episodes" / episode.id / "recordings").iterdir())) == 1
+
+        await asyncio.wait_for(recovery_started.wait(), timeout=2)
+        recovery_flags = attempts[-1][attempts[-1].index("-hls_flags") + 1]
+        assert "append_list" in recovery_flags
+        assert "discont_start" in recovery_flags
+        assert "#EXT-X-DISCONTINUITY" in recording.bundle.playlist_path.read_text()
+
+        await recorder.finalize_episode(episode.id)
+        evidence = await repository.list_evidence(episode_id=episode.id, limit=10)
+        assert len(evidence) == 1
+        assert evidence[0].id == evidence_id
+        assert evidence[0].evidence_type == "recording"
+        assert evidence[0].file_path == str(recording.bundle.playlist_path)
+    finally:
+        await recorder.stop()
+        await repository.close()
+
+
+@pytest.mark.parametrize("action", ["finalize", "shutdown"])
+@pytest.mark.asyncio
+async def test_retry_backoff_is_interruptible_when_camera_is_offline(tmp_path, monkeypatch, action):
+    config = EpisodeConfig(data_dir=str(tmp_path))
+    repository = Repository(config)
+    await repository.initialize()
+    await repository.upsert_area(Area(id="test-area", name="Test area"))
+    device = Device(
+        id="camera-offline",
+        name="Offline camera",
+        device_type="camera",
+        area_id="test-area",
+        ip_address="192.0.2.11",
+        configs={
+            "video": CapabilityConfig(
+                protocol="rtsp",
+                port=554,
+                path="/stream",
+                settings={"recording_mode": "on_event"},
+            )
+        },
+    )
+    await repository.upsert_device(device)
+    episode = Episode(
+        id="offline-episode",
+        primary_area_id="test-area",
+        state=EpisodeState.ACTIVE,
+    )
+    await repository.create_episode(episode)
+
+    bus = EventBus()
+    recorder = RecordingEngine(repository, bus, config.data_dir)
+    recorder._retry_initial_seconds = 10
+    recorder._retry_max_seconds = 10
+    attempts = 0
+    publication_attempts = 0
+
+    class FailedProcess:
+        returncode = 1
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+        async def wait(self):
+            return self.returncode
+
+    async def start_ffmpeg(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        return FailedProcess()
+
+    async def persist_evidence(message):
+        nonlocal publication_attempts
+        publication_attempts += 1
+        if action == "finalize" and publication_attempts == 1:
+            raise RuntimeError("temporary Evidence persistence failure")
+        await repository.create_evidence(Evidence(**message.data["evidence"]))
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start_ffmpeg)
+    bus.subscribe("evidence.received", persist_evidence)
+    try:
+        await recorder.start()
+        await bus.publish(
+            Message(
+                type="event.canonicalized",
+                data={
+                    "result": CanonicalEventResult(_recording_event(episode.id, device.id), True)
+                },
+            )
+        )
+        recording = recorder._recordings[(episode.id, device.id)]
+        await _wait_until(lambda: recorder.status()["reconnects"] == 1)
+        assert attempts == 1
+        assert recorder.status()["state"] == "degraded"
+
+        if action == "finalize":
+            await repository.update_episode_state(episode.id, EpisodeState.FINALIZING)
+            await asyncio.wait_for(recorder.finalize_episode(episode.id), timeout=0.5)
+            evidence = await repository.list_evidence(episode_id=episode.id, limit=10)
+            assert len(evidence) == 1
+            assert evidence[0].id == recording.evidence_id
+            assert evidence[0].evidence_type == "incomplete_recording"
+            assert not recording.bundle.capture_state_path.exists()
+            assert publication_attempts == 2
+        else:
+            await asyncio.wait_for(recorder.stop(), timeout=0.5)
+            evidence = await repository.list_evidence(episode_id=episode.id, limit=10)
+            assert evidence == []
+            assert recording.bundle.capture_state_path.exists()
+            assert publication_attempts == 0
+
+        assert attempts == 1
+    finally:
+        await recorder.stop()
+        await repository.close()
 
 
 @pytest.mark.skipif(

@@ -6,6 +6,15 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from episode.domain.event_filter import (
+    FILTER_SOURCE_DEVICE,
+    FILTER_SOURCE_PROFILE,
+    FILTERED_REASON,
+    event_class,
+    is_filterable,
+    normalize_selector,
+    validate_selector,
+)
 from episode.domain.models import (
     CaptureProfile,
     CaptureProfileChange,
@@ -81,9 +90,14 @@ class CaptureProfileService:
         )
 
     async def create_profile(
-        self, name: str, device_ids: list[str] | None = None
+        self,
+        name: str,
+        device_ids: list[str] | None = None,
+        *,
+        event_filter: list[str] | None = None,
     ) -> CaptureProfile:
         normalized_name = self._validate_name(name)
+        normalized_filter = self._validate_event_filter(event_filter)
         async with self._lock:
             normalized_ids = await self._validate_device_ids(device_ids or [])
             existing = await self._repository.list_capture_profiles()
@@ -95,6 +109,7 @@ class CaptureProfileService:
                 include_all_devices=False,
                 device_ids=normalized_ids,
                 builtin=False,
+                event_filter=normalized_filter,
             )
             try:
                 return await self._repository.create_capture_profile(profile)
@@ -111,8 +126,15 @@ class CaptureProfileService:
         profile_id: str,
         name: str,
         device_ids: list[str] | None = None,
+        *,
+        event_filter: list[str] | None = None,
     ) -> CaptureProfile:
         normalized_name = self._validate_name(name)
+        # ``None`` means "leave the stored selector alone"; an empty list is the
+        # explicit operator choice to stop filtering.
+        normalized_filter = (
+            None if event_filter is None else self._validate_event_filter(event_filter)
+        )
         async with self._lock:
             self._validate_profile_id(profile_id)
             existing = await self._repository.get_capture_profile(profile_id)
@@ -133,6 +155,9 @@ class CaptureProfileService:
                 existing,
                 name=normalized_name,
                 device_ids=normalized_ids,
+                event_filter=(
+                    normalized_filter if normalized_filter is not None else existing.event_filter
+                ),
                 updated_at=datetime.now(tz=timezone.utc),
             )
             try:
@@ -185,7 +210,12 @@ class CaptureProfileService:
         async with self._lock:
             return await self._evaluate_event(event)
 
-    async def canonicalize_event(self, event: Event) -> tuple[Event, bool]:
+    async def canonicalize_event(
+        self,
+        event: Event,
+        *,
+        activity_window_seconds: int | None = None,
+    ) -> tuple[Event, bool]:
         """Persist an active Event and its capture decision as one row."""
         if event.event_state != EventState.ACTIVE:
             raise ValueError("Capture participation decisions apply only to active Events")
@@ -200,7 +230,10 @@ class CaptureProfileService:
             existing = await self._repository.find_event_by_dedup_key(event.dedup_key)
             if existing is not None:
                 return existing, False
-            decision, targets = await self._evaluate_event(event)
+            decision, targets = await self._evaluate_event(
+                event,
+                activity_window_seconds=activity_window_seconds,
+            )
             event.participation = decision
             event.eligible_recording_device_ids = targets
             return await self._repository.canonicalize_event(event)
@@ -208,6 +241,8 @@ class CaptureProfileService:
     async def _evaluate_event(
         self,
         event: Event,
+        *,
+        activity_window_seconds: int | None = None,
     ) -> tuple[ParticipationDecision, list[str]]:
         profile = await self._repository.get_active_capture_profile()
         if profile is None:
@@ -230,12 +265,35 @@ class CaptureProfileService:
             reason = "device_in_profile"
         else:
             reason = "device_not_in_profile"
+        filtered_event_type: str | None = None
+        filtered_event_class: str | None = None
+        filter_source: str | None = None
+        if allowed:
+            device_override = device.event_filter if device else None
+            selector = normalize_selector(
+                device_override if device_override is not None else profile.event_filter
+            )
+            if selector and is_filterable(event.event_type, selector):
+                allowed = False
+                reason = FILTERED_REASON
+                filtered_event_type = event.event_type
+                filtered_event_class = event_class(event.event_type)
+                filter_source = (
+                    FILTER_SOURCE_DEVICE if device_override is not None else FILTER_SOURCE_PROFILE
+                )
+                # ``attachment`` stays unset here: the Engine records whether it
+                # linked the Event to an open Episode or found none, so the
+                # outcome is never persisted ahead of the link itself.
         decision = ParticipationDecision(
             allowed=allowed,
             profile_id=profile.id,
             profile_name=profile.name,
             reason=reason,
             evaluated_at=datetime.now(tz=timezone.utc),
+            filtered_event_type=filtered_event_type,
+            filtered_event_class=filtered_event_class,
+            filter_source=filter_source,
+            activity_window_seconds=activity_window_seconds,
         )
         targets = await self._resolve_target_ids(event, profile) if allowed else []
         return decision, targets
@@ -260,6 +318,23 @@ class CaptureProfileService:
             if mode == "on_episode" or (mode == "on_event" and device.id == event.device_id):
                 target_ids.append(device.id)
         return sorted(set(target_ids))
+
+    @staticmethod
+    def _validate_event_filter(event_filter: list[str] | None) -> list[str]:
+        """Validate a profile-level selector.
+
+        A profile offers exactly the classes a Device offers: one selector means
+        one thing whatever it names and whoever it is applied to. Suppressing a
+        security class across a group is a costly decision, so it is made
+        legible in the profile summary and the Device list marker rather than
+        forbidden by validation. Operator errors (an unknown class name, a
+        duplicate) surface as ``CaptureProfileError`` (HTTP 400) instead of
+        silently narrowing the selector.
+        """
+        try:
+            return validate_selector(event_filter, level="profile")
+        except ValueError as error:
+            raise CaptureProfileError(str(error)) from error
 
     async def _validate_device_ids(self, device_ids: list[str]) -> list[str]:
         if not isinstance(device_ids, list):

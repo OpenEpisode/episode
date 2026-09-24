@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
+from episode.domain.event_filter import UNRECOGNIZED_EVENT_TYPE
 from episode.plugins.reolink.client import (
     aes_decrypt_cfb,
     bc_decrypt,
@@ -35,9 +36,12 @@ EVENT_MAP = {
     "pet_detection": ("pet", "animal", "dog_cat", "dog", "cat"),
     "vehicle_detection": ("vehicle", "car"),
     # Other events
-    "tampering_detection": ("vt",),
+    # ``tampering_detection`` is the spelling Episode canonicalizes tamper to;
+    # ``tamper_detection`` is kept because that is what the ONVIF adapter emits
+    # for the same physical state, and one camera's tamper must not sit in a
+    # different class from another's. ``vt`` is the vendor's own marker.
+    "tampering_detection": ("tamper", "vt"),
     "doorbell": ("doorbell", "ring", "visitor"),
-    "system": ("system",),
 }
 
 
@@ -562,7 +566,13 @@ def _map_event_type(payload: dict[str, Any]) -> str:
     if cmd:
         return str(cmd).lower().replace("-", "_").replace(" ", "_")
 
-    return "system"
+    # Nothing in this frame is recognized and it carries no command name, so the
+    # honest answer is "unrecognized": the core classifies it as ``unknown``, it
+    # is never filtered, and it stays queryable. Reporting a filterable class
+    # here (a ``system`` heartbeat, previously) would let one camera's real but
+    # unnamed signal be suppressed by a profile while an identical signal from
+    # another camera could not be.
+    return UNRECOGNIZED_EVENT_TYPE
 
 
 def _map_event_state(payload: dict[str, Any]) -> str:
