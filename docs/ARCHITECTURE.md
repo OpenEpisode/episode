@@ -210,6 +210,30 @@ frames cross the same raw-first boundary before recognized observations are
 normalized. Unsupported frames remain preserved, and the plugin remains inert
 unless a Device explicitly enables it.
 
+Within that boundary the plugin may also prepare media ahead of demand: a
+snapshot fetch can start when an Event frame arrives instead of after the Event
+becomes canonical, and an opt-in native preview pass (`cmdId=3`, stopped by
+`cmdId=6` on every exit path) can learn a camera's codec, resolution, and
+time-to-first-keyframe while warming its encoder. Both are fire-and-forget,
+serialized, bounded, and counted, and neither produces a delivery. **Recording
+ownership stays in the core**: the recorder owns the HLS/fMP4 bundle, its
+component inventory, crash recovery, and retention, so native bytes may inform
+and prime a recording but never become Video Evidence from inside the plugin.
+
+An opt-in `native_video` setting makes the on-demand `cmdId=3` burst the
+recording **source** instead of RTSP (F1). The plugin does not keep a continuous
+preview session: it issues the command when a recording starts, the camera opens
+with an I-Frame, and `cmdId=6` stops the burst on every exit path. The bytes are
+handed to the core recorder's pipe as Annex-B access units through the
+`video_handler` contract, so the bundle, manifest, Evidence, and retention remain
+core-owned — only the origin of the elementary stream changes. Because the camera
+leads with a keyframe, the acquisition delay (recording start → first access
+unit) collapses from the ~3.5 s an RTSP keyframe-wait costs toward the measured
+~0.15 s of the first native picture. A native HEVC source is written with the
+`hvc1` codec tag — WebKit (Safari), the browser with the broadest HEVC playback,
+requires it and rejects the in-band `hev1` tag; the parameter sets stay in
+`init.mp4`, so each fragment is self-contained for decoder initialization.
+
 The optional Event API is the vendor-neutral exception to plugin interpretation:
 its JSON schema is already a canonical observation contract, so a core-owned
 handler validates it after raw preservation. The referenced Device's stored Area
@@ -464,7 +488,13 @@ compatibility recovery path.
 
 The recording action copies the camera video bitstream and transcodes audio to
 AAC when present; it does not silently transcode video Evidence for browser
-compatibility. Current views prefer native HLS and use the pinned,
+compatibility. Video normally arrives over a camera URL, but a plugin may instead
+push framed access units on the recorder's behalf, in which case FFmpeg reads them
+from a pipe and is stamped by arrival time because an elementary stream carries no
+timestamps of its own. The input is the only part that changes: the recorder still
+owns the child process, the bundle, finalization, and retention, and it cancels the
+plugin's feed when it stops reading so a camera session cannot outlive the
+recording. Current views prefer native HLS and use the pinned,
 integrity-checked hls.js CDN build only as a fallback. They are live operational
 previews with standard browser video controls; Episode-specific DVR and review
 controls are intentionally not part of the current-view contract. Completed

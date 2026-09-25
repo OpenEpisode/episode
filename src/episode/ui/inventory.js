@@ -85,7 +85,7 @@ function deviceDefaults(device) {
     // operator who still needs the plugin-level lever sets it deliberately.
     isapi: { enabled: false, protocol: "http", port: 80, path: "/ISAPI/Event/notification/alertStream", ignore_events: [], ...(config.isapi || {}) },
     sdk: { enabled: false, port: 8000, ...(config.hikvision_sdk || {}) },
-    reolink: { enabled: false, host: "", port: 9000, media_enabled: false, events_enabled: false, ...(config.reolink || {}) },
+    reolink: { enabled: false, host: "", port: 9000, media_enabled: false, events_enabled: false, native_video: false, preview_variant: "main", preview_timeout: null, ...(config.reolink || {}) },
   };
 }
 
@@ -291,6 +291,9 @@ function devicePayload(data, editing, device) {
       port: numberOrNull(field(data, "reolink_port")),
       media_enabled: isChecked(data, "reolink_media_enabled"),
       events_enabled: isChecked(data, "reolink_events_enabled"),
+      native_video: isChecked(data, "reolink_native_video"),
+      preview_variant: field(data, "reolink_preview_variant") || "main",
+      preview_timeout: numberOrNull(field(data, "reolink_preview_timeout")),
     },
   };
 }
@@ -390,7 +393,15 @@ export function openDeviceEditor(device, areas, onSaved) {
           <div class="integration-group-label" data-vendor-group="reolink"><strong>Reolink</strong><span>Native binary protocol for Reolink cameras.</span></div>
           ${integrationToggle("reolink", "Reolink API", "Discovery, media, and Events over the Reolink binary protocol.", values.reolink.enabled, `
             <label class="toggle-row"><input type="checkbox" name="reolink_media_enabled"${checked(values.reolink.media_enabled)}><span><strong>Enable media (streams &amp; snapshots)</strong><small>Register the discovered RTSP stream and binary snapshots so recording and snapshot-on-event work without ONVIF.</small></span></label>
-            <label class="toggle-row"><input type="checkbox" name="reolink_events_enabled"${checked(values.reolink.events_enabled)}><span><strong>Receive Reolink events</strong><small>Listen for motion and detection events pushed over the binary protocol. Disabled by default to avoid noisy state changes.</small></span></label>`, integrationOptionAttributes("reolink")) }
+            <label class="toggle-row"><input type="checkbox" name="reolink_events_enabled"${checked(values.reolink.events_enabled)}><span><strong>Receive Reolink events</strong><small>Listen for motion and detection events pushed over the binary protocol. Disabled by default to avoid noisy state changes.</small></span></label>
+            <label class="toggle-row"><input type="checkbox" name="reolink_native_video"${checked(values.reolink.native_video)}><span><strong>Native media acquisition</strong><small>Record from the on-demand native burst instead of RTSP. The camera leads with an I-Frame, so the first access unit reaches the recorder sooner than a fresh RTSP keyframe-wait.</small></span></label>
+            <div class="form-grid">
+              <label class="field"><span>Preview variant</span><select name="reolink_preview_variant">
+                <option value="main"${selected(values.reolink.preview_variant === "main")}>main</option>
+                <option value="sub"${selected(values.reolink.preview_variant === "sub")}>sub</option>
+              </select><small>Native preview stream; also the variant used by native media acquisition.</small></label>
+              <label class="field"><span>Preview timeout (s)</span><input name="reolink_preview_timeout" type="number" min="1" max="10" step="0.5" value="${values.reolink.preview_timeout ?? ""}" placeholder="3.0"><small>Seconds to wait for the first video packet of a native preview pass.</small></label>
+            </div>`, integrationOptionAttributes("reolink")) }
         </div>
           <div class="validation-panel">
             <div class="validation-heading">

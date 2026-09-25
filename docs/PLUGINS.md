@@ -276,6 +276,35 @@ Only explicitly assigned Devices may be registered. Call
 removes media owned by the plugin during shutdown. Media registration is runtime
 state: it does not rewrite evidence or editable Device configuration.
 
+### Plugin-native snapshot and video sources
+
+A protocol that cannot serve media over plain HTTP can register callables on the
+in-tree media source instead of URIs. `snapshot_fetcher` returns
+`(content, content_type)` or raises, and is preferred over `snapshot_uri`.
+`video_handler` is its symmetric counterpart for recording: Episode calls
+`handler(push)` and the handler pushes Annex-B access units with `await
+push(chunk)` until it returns, raises, or is cancelled, and `codec_hint` names the
+elementary-stream demuxer (`h264` or `hevc`) from a real capability rather than a
+guess. Both are in-tree contracts: `plugin_api.MediaSource` exposes only URIs, so
+out-of-tree plugins cannot supply either until the contract version that does is
+agreed.
+
+The recorder keeps writing the same HLS bundle either way; only where the bytes
+come from changes. Fragmentation, the component manifest, finalization, retention,
+and the incomplete-versus-recording decision stay core-owned, and a handler never
+chooses an Episode, a deadline, or an Evidence type.
+
+The failure contract follows that ownership. A handler that raises, or one whose
+bytes the recorder's FFmpeg cannot decode, ends the recording and its bundle is
+published as an incomplete capture rather than a plausible-looking recording. A
+handler that returns while the Episode is still recording is also an incomplete
+capture; normal recording shutdown cancels the handler. If a handler is blocked
+handing over one chunk for longer than the recorder's write timeout
+(`PIPE_WRITE_TIMEOUT_SECONDS`, 10 seconds) is treated as a stalled source, which
+ends the attempt the way a dead connection does. A handler is always cancelled when
+its recording stops, so a plugin cannot leak a camera session past the recording it
+fed.
+
 ## Working example
 
 [`examples/plugins/udp-sensor`](../examples/plugins/udp-sensor) is a complete,

@@ -166,12 +166,24 @@ recording portable.
 (four seconds by default). Camera keyframe intervals can make fragments longer.
 This controls playback latency and file granularity, not Episode duration.
 
+By default each recording is pulled over the camera's RTSP stream. A Reolink
+device can instead record from an on-demand native `cmdId=3` burst
+(`configs.reolink.settings.native_video: true`): the camera opens the burst
+with an I-Frame, so the first access unit reaches the recorder ~157 ms after the
+command rather than after a fresh RTSP keyframe-wait (~1.4–3.8 s). The bundle,
+manifest, Evidence, and retention are unchanged — only the bytes' origin differs.
+Native recording is off by default; enable it after confirming the camera
+streams the chosen `preview_variant` natively.
+
 For ongoing recordings, the UI uses the browser's native HLS support when
 available. Browsers without native HLS use the pinned hls.js light build from
 jsDelivr as a fallback; those browsers require Internet access to load it.
 H.264 with AAC has the broadest compatibility; HEVC/H.265 is preserved without
 transcoding and plays only when the browser and operating system provide a
-decoder.
+decoder. HEVC recording is written with the `hvc1` codec tag (Safari/WebKit, the
+main HEVC-capable browser, requires it and rejects the in-band `hev1` tag); the
+parameter sets live in `init.mp4`, so every fragment is self-contained for
+decoder initialization.
 
 While an Episode is active, **Ongoing recordings** are treated as live
 operational previews. They use the browser's standard muted video controls and
@@ -182,6 +194,15 @@ available through the normal Evidence player for review.
 
 Current camera views are operational previews. They become Evidence only
 through an explicit preservation action.
+
+A camera URL capture is bounded: FFmpeg gives up on a camera that accepts the
+connection and then stops answering after 15 seconds of silent socket I/O, and
+that attempt reconnects like any other ended capture. Failed and reconnecting
+recordings report FFmpeg's own last message as part of their reason, in
+`System → Recordings` and the logs. That message is truncated and stripped of
+the camera username and password, because FFmpeg prints the full stream URL,
+credentials included, whenever it cannot open it. Host and port are kept so the
+failing camera is still identifiable.
 
 ## Shutdown and recovery
 

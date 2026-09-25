@@ -1,0 +1,29 @@
+{
+  "audio_count": 45,
+  "bytes_in": 1593594,
+  "codec": "h264",
+  "continuation_frames": 0,
+  "duration_ms": 3001.3,
+  "error": "",
+  "first_iframe_ms": 157.0332320407033,
+  "first_packet_ms": 157.0332320407033,
+  "height": 1920,
+  "iframe_count": 3,
+  "info_seen": true,
+  "keyframed": true,
+  "media_bytes": 1553438,
+  "nal_counts": {
+    "IDR": 3,
+    "PPS": 3,
+    "SPS": 3,
+    "non-IDR": 27
+  },
+  "packet_start_frames": 136,
+  "padding_bytes": 106,
+  "pframe_count": 27,
+  "resyncs": 0,
+  "rows_dropped": false,
+  "stream_bytes": 1570672,
+  "truncated": 0,
+  "width": 2560
+}

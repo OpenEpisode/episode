@@ -8,6 +8,17 @@ import httpx
 
 # A plugin-native snapshot fetcher: returns (jpeg_bytes, content_type) or raises.
 SnapshotFetcher = Callable[[], Awaitable[tuple[bytes, str]]]
+# An event-bound snapshot fetcher. The token is opaque to the core and binds a
+# pre-armed result to the delivery that requested it.
+EventSnapshotFetcher = Callable[[str], Awaitable[tuple[bytes, str]]]
+
+# A plugin-native video source: ``handler(push)`` streams Annex-B access units to the
+# recorder until it returns, raises, or is cancelled. The recorder owns the encoder
+# process and calls ``push``; bytes are never stored by the handler.
+VideoStreamHandler = Callable[[Callable[[bytes], Awaitable[None]]], Awaitable[None]]
+
+#: Elementary-stream demuxer names the recorder can pipe a handler's bytes into.
+VIDEO_CODEC_HINTS = ("h264", "hevc")
 
 
 @dataclass(frozen=True)
@@ -23,6 +34,16 @@ class CameraMedia:
     # plain HTTP (e.g. Reolink binary protocol). Takes precedence over
     # snapshot_uri when set.
     snapshot_fetcher: SnapshotFetcher | None = field(default=None, compare=False)
+    # Optional event-bound fetcher used only when an Event carries an opaque
+    # snapshot token. Ordinary snapshots and current views never call this.
+    event_snapshot_fetcher: EventSnapshotFetcher | None = field(default=None, compare=False)
+    # Optional plugin-native video source: Annex-B access units pushed to the recorder,
+    # which keeps writing the same HLS bundle it would from stream_uri. Takes precedence
+    # over stream_uri when set. In-tree plugins only: not exposed on plugin_api.MediaSource.
+    video_handler: VideoStreamHandler | None = field(default=None, compare=False)
+    # Elementary-stream demuxer for the handler's bytes ("h264" | "hevc"); "" lets the
+    # recorder's child guess. Set it from a real capability (e.g. cmdId=146), never a guess.
+    codec_hint: str = ""
 
     def authenticated_stream_uri(self) -> str:
         if not self.stream_uri or not self.username:
@@ -53,10 +74,19 @@ class MediaRegistry:
         if current is not None and (source is None or current.source == source):
             self._sources.pop(device_id, None)
 
-    async def fetch_snapshot(self, device_id: str) -> tuple[bytes, str]:
+    async def fetch_snapshot(
+        self, device_id: str, *, snapshot_token: str | None = None
+    ) -> tuple[bytes, str]:
         source = self.get(device_id)
         if not source:
             raise LookupError(f"No snapshot endpoint for device {device_id}")
+        if snapshot_token is not None and source.event_snapshot_fetcher is not None:
+            data, content_type = await source.event_snapshot_fetcher(snapshot_token)
+            if not content_type.startswith("image/"):
+                raise ValueError(f"Snapshot fetcher returned {content_type}")
+            if len(data) > 25 * 1024 * 1024:
+                raise ValueError("Snapshot exceeds the 25 MiB safety limit")
+            return data, content_type
         # Plugin-native fetcher (e.g. Reolink binary protocol) takes precedence.
         if source.snapshot_fetcher is not None:
             data, content_type = await source.snapshot_fetcher()

@@ -70,7 +70,13 @@ class SnapshotEngine:
             media = self._media.get(device_id)
             provider = re.sub(r"[^a-z0-9_-]+", "-", media.source.lower()) if media else "media"
             origin = f"{provider or 'media'}:snapshot"
-            data, content_type = await self._media.fetch_snapshot(device_id)
+            snapshot_token = event.metadata.get("snapshot_fetch_token")
+            if isinstance(snapshot_token, str):
+                data, content_type = await self._media.fetch_snapshot(
+                    device_id, snapshot_token=snapshot_token
+                )
+            else:
+                data, content_type = await self._media.fetch_snapshot(device_id)
             extension = ".png" if content_type == "image/png" else ".jpg"
             path = await asyncio.to_thread(
                 save_bytes,

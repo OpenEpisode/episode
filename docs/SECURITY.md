@@ -82,6 +82,14 @@ settings API; it is
 operator-supplied rather than inferred from an untrusted request host and is
 validated without credentials, queries, or fragments.
 
+Recording diagnostics are credential-free for the same reason. FFmpeg prints
+the input stream URL verbatim when it cannot open it, and that URL contains the
+camera username and password, so the recorder strips the `user:password` part
+before it keeps any of FFmpeg's output. Only the redacted tail reaches a log
+line, a recording's reported reason, or **System → Recordings**; host and port
+survive because they identify which camera failed. Raw FFmpeg output is never
+persisted.
+
 SHA-256 checksums detect accidental or later byte changes; they are not a
 signature, trusted timestamp, or legal chain of custody. Signed manifests and
 external timestamping remain future hardening work.

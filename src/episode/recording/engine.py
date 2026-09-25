@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from episode.domain.models import Device, EpisodeState, EventState, Evidence
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import CanonicalEventResult
+from episode.media.registry import VIDEO_CODEC_HINTS, VideoStreamHandler
 from episode.recording.hls import (
     CAPTURE_STATE_NAME,
     HLS_MIME_TYPE,
@@ -28,6 +29,12 @@ if TYPE_CHECKING:
     from episode.storage.repository import Repository
 
 logger = logging.getLogger(__name__)
+
+# WebKit (Safari), the only browser with broad HEVC playback, requires ``hvc1`` in
+# MP4/fMP4 and rejects ``hev1``. ``hvc1`` keeps SPS/PPS/VPS in the init.mp4 sample entry
+# (hvcc box) so every fragment is self-contained for decoder init. When the input codec is
+# known to be HEVC we retag the output stream so the browser UI can play the bundle.
+HEVC_CODEC_TAG = "hvc1"
 
 RecordingEvidenceSink = Callable[[Evidence], Awaitable[Evidence]]
 
@@ -45,6 +52,36 @@ _RECORDING_PART = re.compile(
 )
 
 
+#: Seconds a handler may block writing one chunk before the recorder treats the
+#: source as stalled. Bounds "a plugin stall stalls a recording" (see docs/PLUGINS.md).
+PIPE_WRITE_TIMEOUT_SECONDS = 10.0
+
+
+class PipeClosedError(RuntimeError):
+    """Raised into a video handler when its recorder child has already gone."""
+
+
+#: Floor for the recorder's socket timeout on a camera URL, in seconds.
+#: RTSP's own option is ``-timeout`` and is measured in **microseconds**; the
+#: plan's ``-rw_timeout`` is silently ignored by the RTSP demuxer, so a camera
+#: that accepts TCP and then never replies leaves ffmpeg blocked forever without
+#: it (measured: still running after 20 s against a silent camera, both with and
+#: without ``-rw_timeout``; ``-timeout`` ends it in 3.2 s / 15.2 s at 3 s/15 s).
+#: A half-open stream then reaches the existing no-progress watchdog as a normal
+#: ffmpeg exit and reconnects, instead of hanging as a live child.
+RTSP_SOCKET_TIMEOUT_SECONDS = 15
+
+
+#: How much redacted ffmpeg stderr a failed attempt keeps for one log line.
+FFMPEG_STDERR_TAIL_CHARS = 400
+
+
+#: ffmpeg prints the input URL verbatim when it fails, including
+#: ``rtsp://user:password@host``. Credential-bearing stderr can therefore never
+#: be stored or logged before the URL's userinfo has been taken out of it.
+_URL_USERINFO = re.compile(r"://[^/@\s]*@")
+
+
 @dataclass
 class _EpisodeRecording:
     episode_id: str
@@ -54,6 +91,21 @@ class _EpisodeRecording:
     bundle: HLSRecordingBundle
     start_time: datetime
     rtsp_url: str = ""
+    #: Optional plugin-native video source. When set, the recorder still writes the
+    #: bundle; only the bytes' origin changes (piped elementary stream instead of RTSP).
+    video_handler: VideoStreamHandler | None = None
+    codec_hint: str = ""
+    #: The recorder's own task driving ``video_handler``; always stopped with the attempt.
+    handler_task: asyncio.Task | None = None
+    #: Why the plugin source stopped feeding, when it did. It must not be mistaken for a
+    #: healthy stream, so it also keeps a source that made progress from retrying forever.
+    handler_error: str | None = None
+    #: A handler that returned cleanly ended its own source; it must not be retried.
+    handler_ended: bool = False
+    #: Journal/metadata reason for a recording ended by its plugin source.
+    handler_reason: str | None = None
+    #: Redacted tail of this attempt's ffmpeg stderr, kept to explain a failed attempt.
+    ffmpeg_stderr: str = ""
     proc: asyncio.subprocess.Process | None = None
     task: asyncio.Task | None = None
     stop_reason: str | None = None
@@ -111,6 +163,12 @@ class RecordingEngine:
         self._recoverable: dict[tuple[str, str], _EpisodeRecording] = {}
         self._running = False
         self._stall_seconds = max(60, fragment_seconds * 6)
+        # A camera socket that stops answering must fail its ffmpeg before the no-progress
+        # watchdog would otherwise notice, so the reconnect reason is ffmpeg's own, and the
+        # child never sits attached to a dead camera indefinitely.
+        self._socket_timeout_seconds = float(
+            min(RTSP_SOCKET_TIMEOUT_SECONDS, self._stall_seconds - 1)
+        )
         self._retry_initial_seconds = 2.0
         self._retry_max_seconds = 30.0
         self._completed_count = 0
@@ -296,8 +354,8 @@ class RecordingEngine:
                 for device in await self._target_resolver.resolve(event):
                     targets[device.id] = device
             for device in targets.values():
-                stream_url = self._stream_url(device)
-                if not stream_url:
+                stream_url, video_handler, codec_hint = self._video_source(device)
+                if not stream_url and video_handler is None:
                     logger.warning(
                         "Could not resume recording for episode %s camera %s: no stream URL",
                         episode.id[:8],
@@ -308,6 +366,8 @@ class RecordingEngine:
                     episode.id,
                     replace(device, area_id=episode.primary_area_id),
                     stream_url,
+                    video_handler=video_handler,
+                    codec_hint=codec_hint,
                 )
                 recording = self._recordings[self._rec_key(episode.id, device.id)]
                 await self._repo.append_episode_journal(
@@ -321,11 +381,11 @@ class RecordingEngine:
                     },
                 )
         for key, recording in list(self._recoverable.items()):
+            self._recoverable.pop(key, None)
             await self._finalize_bundle(
                 recording,
                 reason="active_target_not_reconstructed",
             )
-            self._recoverable.pop(key, None)
 
     async def _episode_within_capture_horizon(self, episode, now: datetime) -> bool:
         """Keep recovery aligned with the engine's persisted settling policy."""
@@ -348,12 +408,14 @@ class RecordingEngine:
             if key in self._recordings:
                 continue
             try:
-                url = self._stream_url(device)
-                if url:
+                stream_url, video_handler, codec_hint = self._video_source(device)
+                if stream_url or video_handler is not None:
                     await self._start_recording(
                         event.episode_id,
                         replace(device, area_id=event.area_id),
-                        url,
+                        stream_url,
+                        video_handler=video_handler,
+                        codec_hint=codec_hint,
                     )
                 else:
                     logger.warning(
@@ -375,7 +437,30 @@ class RecordingEngine:
         video = device.get_config("video")
         return video.build_url(device.ip_address, device.username, device.password) if video else ""
 
-    async def _start_recording(self, episode_id: str, device: Device, rtsp_url: str) -> None:
+    def _video_source(self, device: Device) -> tuple[str, VideoStreamHandler | None, str]:
+        """Where this Device's video comes from: a URL, or a plugin handler plus its codec.
+
+        A handler takes precedence over a URL because the plugin already holds a session
+        that delivers framed video, and acquiring it that way is what removes the keyframe
+        wait a second connection pays. Everything after the recorder's input argument stays
+        the same either way, so bundle layout, manifest, retention, and finalization remain
+        core-owned.
+        """
+        discovered = self._media.get(device.id) if self._media else None
+        if discovered is None or discovered.video_handler is None:
+            return self._stream_url(device), None, ""
+        codec = discovered.codec_hint if discovered.codec_hint in VIDEO_CODEC_HINTS else ""
+        return discovered.authenticated_stream_uri(), discovered.video_handler, codec
+
+    async def _start_recording(
+        self,
+        episode_id: str,
+        device: Device,
+        rtsp_url: str,
+        *,
+        video_handler: VideoStreamHandler | None = None,
+        codec_hint: str = "",
+    ) -> None:
         key = self._rec_key(episode_id, device.id)
         if key in self._recordings:
             return
@@ -405,6 +490,8 @@ class RecordingEngine:
                 start_time=started_at,
             )
         rec.rtsp_url = rtsp_url
+        rec.video_handler = video_handler
+        rec.codec_hint = codec_hint if video_handler is not None and codec_hint else ""
         self._observe_progress(rec)
         if rec.continued:
             rec.state = "reconnecting"
@@ -447,10 +534,8 @@ class RecordingEngine:
             recordings,
             raise_on_error=True,
         )
-        # A background task can discover that its Episode became immutable
-        # while it was retrying, and its first publication attempt may fail.
-        # Re-read this map after stopping active tasks so such work remains
-        # part of the finalization barrier instead of being lost in the gap.
+        # A retry task may move its recording into the recoverable map while
+        # the active tasks are being stopped. Include that work in the barrier.
         recoverable = [
             recording
             for recording in self._recoverable.values()
@@ -479,7 +564,10 @@ class RecordingEngine:
             self._recordings.pop(self._rec_key(rec.episode_id, rec.device_id), None)
             rec.stop_reason = reason
             rec.retry_wakeup.set()
-            self._signal_process(rec)
+            # A piped source is stopped gracefully: closing stdin lets ffmpeg flush its
+            # final fragment and exit 0, instead of truncating the last segment with a
+            # SIGTERM. URL sources keep the terminate-and-reconnect behavior.
+            self._graceful_signal_process(rec)
         if reason:
             await asyncio.gather(
                 *(self._journal_interruption(rec, reason) for rec in recordings),
@@ -503,14 +591,60 @@ class RecordingEngine:
             ) from errors[0]
 
     @staticmethod
-    def _signal_process(rec: _EpisodeRecording) -> None:
+    def _signal_child_process(rec: _EpisodeRecording) -> None:
         if rec.proc and rec.proc.returncode is None:
             try:
                 rec.proc.terminate()
             except ProcessLookupError:
                 pass
 
+    @staticmethod
+    def _graceful_signal_process(rec: _EpisodeRecording) -> None:
+        """Stop a piped source without truncating its final fragment.
+
+        A plugin-fed recorder feeds ffmpeg through stdin, and ffmpeg only flushes its
+        last fragment once stdin hits EOF. Terminating the child (``_signal_process``)
+        cuts that final segment off, which is why a 4 s fixture records as ~2.8 s. For a
+        piped source the graceful stop is to close stdin first and let ffmpeg flush and
+        exit 0; the handler task is cancelled so the plugin's session does not outlive
+        the recording, and the child is terminated only if it refuses to exit.
+        """
+        if rec.video_handler is None:
+            # URL sources cannot be told to flush: keep the terminate-and-reconnect path.
+            RecordingEngine._signal_process(rec)
+            return
+        if rec.handler_task is not None and not rec.handler_task.done():
+            rec.handler_task.cancel()
+        # Closing stdin signals EOF, which is what lets ffmpeg finalize the bundle.
+        if rec.proc and rec.proc.stdin is not None and rec.proc.returncode is None:
+            try:
+                rec.proc.stdin.close()
+            except Exception:
+                pass
+        else:
+            RecordingEngine._signal_child_process(rec)
+
+    @staticmethod
+    def _signal_process(rec: _EpisodeRecording) -> None:
+        RecordingEngine._signal_child_process(rec)
+        # A plugin-fed source must stop too, or its camera session outlives the
+        # recording it was feeding.
+        if rec.handler_task is not None and not rec.handler_task.done():
+            rec.handler_task.cancel()
+
+    @staticmethod
+    async def _await_handler_stop(rec: _EpisodeRecording) -> None:
+        """Stop feeding and wait, so no handler outlives the attempt it was feeding."""
+        task = rec.handler_task
+        rec.handler_task = None
+        if task is None or task is asyncio.current_task():
+            return
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
     async def _finish_stop(self, rec: _EpisodeRecording) -> None:
+        await self._await_handler_stop(rec)
         await self._await_process_stop(rec)
         if rec.task and rec.task is not asyncio.current_task():
             results = await asyncio.gather(rec.task, return_exceptions=True)
@@ -530,7 +664,121 @@ class RecordingEngine:
 
     async def _terminate_process(self, rec: _EpisodeRecording) -> None:
         self._signal_process(rec)
+        await self._await_handler_stop(rec)
         await self._await_process_stop(rec)
+
+    @staticmethod
+    def _output_codec_tag(rec: _EpisodeRecording) -> list[str]:
+        """Retag HEVC output as ``hvc1`` so WebKit can play the fMP4 bundle.
+
+        A native source (F1) declares its codec through ``codec_hint``; when that hint is
+        HEVC, ffmpeg would otherwise write the stream's own (in-band, ``hev1``) tag, which
+        Safari rejects. ``hvc1`` stores parameter sets in init.mp4 and is what the browser
+        UI needs. Returns an empty list for H.264 or unknown codecs so the copy keeps its
+        natural tag.
+        """
+        if rec.codec_hint == "hevc":
+            return ["-tag:v", HEVC_CODEC_TAG]
+        return []
+
+    def _piped_command(self, rec: _EpisodeRecording, flags: str) -> list[str]:
+        """FFmpeg reading an elementary stream on stdin instead of a network URL.
+
+        Only the input side differs from :meth:`_rtsp_command`; everything from ``-i``
+        onwards is the same command, so the bundle a handler produces is the same bundle
+        shape the recorder has always written. An elementary stream carries no timestamps,
+        so ``-use_wallclock_as_timestamps`` is what keeps ``EXTINF`` real; without it ffmpeg
+        emits ``EXTINF:0`` segments that no player can lay out.
+        """
+        command = ["ffmpeg", "-y"]
+        if rec.codec_hint:
+            command += ["-f", rec.codec_hint]
+        command += [
+            # An elementary stream carries no timestamps of its own, so arrival time is the
+            # only truth available and it is what the playlist must reflect.
+            "-use_wallclock_as_timestamps",
+            "1",
+            "-i",
+            "pipe:0",
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "copy",
+            *self._output_codec_tag(rec),
+            "-f",
+            "hls",
+            "-hls_time",
+            str(self._fragment_seconds),
+            "-hls_list_size",
+            "0",
+            "-hls_playlist_type",
+            "event",
+            "-hls_segment_type",
+            "fmp4",
+            "-hls_fmp4_init_filename",
+            "init.mp4",
+            "-hls_segment_filename",
+            "segments/segment-%06d.m4s",
+            "-hls_base_url",
+            "segments/",
+            "-start_number",
+            str(rec.bundle.next_segment_index()),
+            "-hls_flags",
+            flags,
+            "index.m3u8",
+        ]
+        return command
+
+    def _rtsp_command(self, rec: _EpisodeRecording, rtsp_url: str, flags: str) -> list[str]:
+        """FFmpeg pulling a camera URL, exactly as before handler support existed.
+
+        ``-timeout`` is the RTSP demuxer's socket I/O timeout, in microseconds, and is
+        what keeps a camera that answers nothing from holding an ffmpeg child open
+        forever. It must stay under ``_stall_seconds`` so a half-open stream becomes a
+        normal ffmpeg exit and reconnects, rather than a live process that never reports
+        progress. ``-rw_timeout`` looks like the right option and is ignored here.
+        """
+        return [
+            "ffmpeg",
+            "-y",
+            "-rtsp_transport",
+            "tcp",
+            "-timeout",
+            str(int(self._socket_timeout_seconds * 1_000_000)),
+            "-i",
+            rtsp_url,
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-f",
+            "hls",
+            "-hls_time",
+            str(self._fragment_seconds),
+            "-hls_list_size",
+            "0",
+            "-hls_playlist_type",
+            "event",
+            "-hls_segment_type",
+            "fmp4",
+            "-hls_fmp4_init_filename",
+            "init.mp4",
+            "-hls_segment_filename",
+            "segments/segment-%06d.m4s",
+            "-hls_base_url",
+            "segments/",
+            "-start_number",
+            str(rec.bundle.next_segment_index()),
+            "-hls_flags",
+            flags,
+            "index.m3u8",
+        ]
 
     @staticmethod
     async def _await_process_stop(rec: _EpisodeRecording) -> None:
@@ -541,6 +789,118 @@ class RecordingEngine:
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
+
+    def _start_handler(self, rec: _EpisodeRecording, proc: asyncio.subprocess.Process) -> None:
+        """Drive the plugin's video handler, feeding this attempt's ffmpeg stdin.
+
+        The handler is a plugin callback, so it runs on a task the recorder owns and can
+        cancel: a plugin that never returns must not keep a camera session open past the
+        recording. One chunk in flight keeps memory bounded, and a handler that blocks the
+        write longer than ``PIPE_WRITE_TIMEOUT_SECONDS`` is treated as stalled, which ends
+        the attempt through the same path a dead network takes.
+        """
+        handler = rec.video_handler
+        stdin = proc.stdin
+        rec.handler_error = None
+        rec.handler_ended = False
+        rec.handler_reason = None
+
+        async def _push(chunk: bytes) -> None:
+            if stdin is None or proc.returncode is not None:
+                raise PipeClosedError("recorder child process is no longer reading")
+            stdin.write(chunk)
+            await asyncio.wait_for(stdin.drain(), timeout=PIPE_WRITE_TIMEOUT_SECONDS)
+
+        async def _pump() -> None:
+            cancelled = False
+            try:
+                try:
+                    await handler(_push)
+                except asyncio.CancelledError:
+                    cancelled = True
+                    raise
+                except asyncio.TimeoutError:
+                    # The plugin could not hand over a chunk, so ffmpeg is not keeping up.
+                    # Deliberately not a handler failure: this ends the attempt the way a
+                    # dead connection does, so the existing reconnect + discont_start path
+                    # still applies to a slow source.
+                    rec.last_error = (
+                        "Video handler blocked writing for "
+                        f"{PIPE_WRITE_TIMEOUT_SECONDS:.0f} seconds"
+                    )
+                    self._stalled_count += 1
+                    self._last_error = rec.last_error
+                except Exception as error:
+                    # A raising handler, or one writing to a child that already died (a
+                    # corrupted elementary stream), is a source failure: the bundle it made
+                    # is kept and reported incomplete, never published as a recording.
+                    rec.handler_error = f"{type(error).__name__}: {str(error)[:180]}"
+                    rec.handler_reason = "video_handler_failed"
+                    logger.warning(
+                        "Video handler for episode %s camera %s failed: %s",
+                        rec.episode_id[:8],
+                        rec.device_id,
+                        rec.handler_error,
+                    )
+                else:
+                    # Returning means the plugin has nothing more to send: a source that
+                    # ended, not a recording that finished. Recorded so the attempt is not
+                    # replayed against a plugin that would only say so again.
+                    rec.handler_ended = True
+                    rec.handler_reason = "video_handler_ended"
+            finally:
+                # Nothing more can arrive either way. Closing stdin is what lets ffmpeg
+                # flush its final fragment and exit 0, so a source that ran out is not
+                # punished into a truncated bundle. A child that ignores EOF is still
+                # caught by the recorder's own no-progress watchdog. A cancelled attempt
+                # is left to the recorder's teardown, which terminates the child on purpose.
+                if not cancelled and stdin is not None:
+                    try:
+                        stdin.close()
+                    except Exception:
+                        pass
+
+        rec.handler_task = asyncio.create_task(_pump())
+
+    @staticmethod
+    def _redact_url_credentials(text: str) -> str:
+        """Strip ``scheme://user:password@`` from FFmpeg output before any of it is kept.
+
+        FFmpeg prints the input URL verbatim when it cannot open it, and the recorder's
+        URL carries the camera username and password, so a raw stderr tail is a credential
+        leak wherever it is written. Only the userinfo part goes: host and port survive,
+        which is what actually identifies the camera to the operator.
+        """
+        return _URL_USERINFO.sub("://[redacted]@", text)
+
+    @staticmethod
+    async def _drain_stderr(rec: _EpisodeRecording, proc: asyncio.subprocess.Process) -> None:
+        """Keep ffmpeg's stderr pipe empty and keep a bounded, redacted tail.
+
+        Unread stderr deadlocks ffmpeg once the OS pipe fills, so it is consumed on both
+        the URL and the piped path; only the tail is kept, and only in redacted form,
+        because a stream URL with credentials can appear in it.
+        """
+        tail = ""
+        stream = getattr(proc, "stderr", None)
+        if stream is not None:
+            while True:
+                try:
+                    line = await stream.readline()
+                except Exception:
+                    break
+                if not line:
+                    break
+                tail = (tail + line.decode("utf-8", "replace"))[-FFMPEG_STDERR_TAIL_CHARS * 4 :]
+        rec.ffmpeg_stderr = RecordingEngine._redact_url_credentials(tail).strip()[
+            -FFMPEG_STDERR_TAIL_CHARS:
+        ]
+
+    @staticmethod
+    def _stderr_note(rec: _EpisodeRecording) -> str:
+        """One bounded ffmpeg-stderr clause for a log line; never empty enough to mislead."""
+        tail = rec.ffmpeg_stderr.strip().replace("\n", " | ")
+        return f" ffmpeg: {tail[-180:]}" if tail else ""
 
     async def _journal_interruption(self, rec: _EpisodeRecording, reason: str) -> None:
         try:
@@ -577,56 +937,40 @@ class RecordingEngine:
             observed_segments = segments_before
             last_progress = asyncio.get_running_loop().time()
             rec.state = "reconnecting" if rec.continued or retry_attempt else "starting"
-            flags = "independent_segments+program_date_time+temp_file+append_list"
-            if rec.continued:
+            piped = rec.video_handler is not None
+            continuing = rec.continued
+            flags = "independent_segments+program_date_time+temp_file"
+            # Do not start a fresh playlist with an unnecessary discontinuity. Once
+            # a process has appended to this bundle, explicitly mark the reconnect.
+            if not piped or continuing:
+                flags += "+append_list"
+            if continuing:
                 flags += "+discont_start"
+
             returncode = -1
             wait_task: asyncio.Task | None = None
+            stderr_task: asyncio.Task | None = None
             stall_signaled = False
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    "ffmpeg",
-                    "-y",
-                    "-rtsp_transport",
-                    "tcp",
-                    "-i",
-                    rtsp_url,
-                    "-map",
-                    "0:v:0",
-                    "-map",
-                    "0:a?",
-                    "-c:v",
-                    "copy",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "128k",
-                    "-f",
-                    "hls",
-                    "-hls_time",
-                    str(self._fragment_seconds),
-                    "-hls_list_size",
-                    "0",
-                    "-hls_playlist_type",
-                    "event",
-                    "-hls_segment_type",
-                    "fmp4",
-                    "-hls_fmp4_init_filename",
-                    "init.mp4",
-                    "-hls_segment_filename",
-                    "segments/segment-%06d.m4s",
-                    "-hls_base_url",
-                    "segments/",
-                    "-start_number",
-                    str(rec.bundle.next_segment_index()),
-                    "-hls_flags",
-                    flags,
-                    "index.m3u8",
-                    cwd=str(rec.bundle.root),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                if piped:
+                    proc = await asyncio.create_subprocess_exec(
+                        *self._piped_command(rec, flags),
+                        cwd=str(rec.bundle.root),
+                        stdin=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                else:
+                    proc = await asyncio.create_subprocess_exec(
+                        *self._rtsp_command(rec, rtsp_url, flags),
+                        cwd=str(rec.bundle.root),
+                        stdout=subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
                 rec.proc = proc
+                rec.ffmpeg_stderr = ""
+                stderr_task = asyncio.create_task(self._drain_stderr(rec, proc))
+                if piped:
+                    self._start_handler(rec, proc)
                 wait_task = asyncio.create_task(proc.wait())
                 while not wait_task.done():
                     await asyncio.wait({wait_task}, timeout=1)
@@ -653,8 +997,11 @@ class RecordingEngine:
                             rec.episode_id[:8],
                             rec.device_id,
                         )
-                        self._signal_process(rec)
+                        self._signal_child_process(rec)
                 returncode = await wait_task
+                if stderr_task is not None:
+                    await stderr_task
+                    stderr_task = None
             except asyncio.CancelledError:
                 await self._terminate_process(rec)
                 if wait_task:
@@ -673,6 +1020,16 @@ class RecordingEngine:
                 )
             finally:
                 rec.proc = None
+                if stderr_task is not None:
+                    # Always drain and join stderr: an unconsumed child pipe can block
+                    # FFmpeg; only a bounded, credential-redacted tail is retained.
+                    try:
+                        await asyncio.wait_for(stderr_task, timeout=5)
+                    except asyncio.TimeoutError:
+                        stderr_task.cancel()
+                        await asyncio.gather(stderr_task, return_exceptions=True)
+                    except Exception:
+                        pass
 
             if rec.stop_reason == "application_shutdown" or not self._running:
                 rec.bundle.preserve_temporary_components()
@@ -693,22 +1050,63 @@ class RecordingEngine:
 
             segments_after = rec.bundle.next_segment_index()
             retry_attempt = 0 if segments_after > segments_before else retry_attempt + 1
-            retry_delay = self._retry_delay_seconds(retry_attempt)
             rec.last_exit_code = returncode
             rec.reconnect_count += 1
             self._reconnect_count += 1
+            stderr_note = "" if segments_after > segments_before else self._stderr_note(rec)
+
+            if piped and (
+                rec.handler_error or rec.handler_ended or segments_after == segments_before
+            ):
+                # Plugin sources are not retried indefinitely after ending or failing.
+                # Preserve partial fragments, but never call a truncated source complete.
+                source_failed = bool(rec.handler_error or rec.handler_ended) or segments_after == 0
+                if source_failed and rec.last_error is None:
+                    rec.last_error = rec.handler_error or (
+                        "Video handler ended before Episode capture stopped"
+                        if rec.handler_ended
+                        else "Video source produced no decodable frames"
+                    )
+                self._recordings.pop(key, None)
+                rec.state = "failed" if source_failed else rec.state
+                if source_failed:
+                    self._failure_count += 1
+                self._last_error = rec.last_error
+                logger.warning(
+                    "Plugin video source ended for episode %s camera %s (ffmpeg exit %s): %s%s",
+                    rec.episode_id[:8],
+                    rec.device_id,
+                    returncode,
+                    rec.handler_error or rec.last_error or "handler returned",
+                    self._stderr_note(rec),
+                )
+                await self._await_handler_stop(rec)
+                await self._finalize_from_retry_task(
+                    rec,
+                    incomplete=source_failed,
+                    reason=rec.handler_reason or "video_handler_failed",
+                )
+                return
+
+            if piped:
+                # Never let a previous feeder overlap the next FFmpeg attempt.
+                await self._await_handler_stop(rec)
+
+            retry_delay = self._retry_delay_seconds(retry_attempt)
             rec.state = "reconnecting"
             if not stall_signaled:
-                rec.last_error = f"FFmpeg exited with code {returncode}; reconnecting"
+                rec.last_error = f"FFmpeg exited with code {returncode}; reconnecting{stderr_note}"
             self._last_error = rec.last_error
             logger.warning(
                 "Recording process ended for episode %s camera %s "
-                "(ffmpeg exit %s), reconnecting after %.1f seconds",
+                "(ffmpeg exit %s), reconnecting after %.1f seconds%s",
                 rec.episode_id[:8],
                 rec.device_id,
                 returncode,
                 retry_delay,
+                stderr_note,
             )
+
             stopped = await self._wait_for_retry(rec, retry_delay)
             if stopped:
                 if rec.stop_reason == "application_shutdown" or not self._running:

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import pytest
 
 from episode.domain.models import CapabilityConfig, Device
-from episode.media.registry import CameraMedia
+from episode.media.registry import CameraMedia, MediaRegistry
 from episode.plugins.models import (
     PluginContext,
     PluginInstanceState,
@@ -31,6 +31,8 @@ from episode.plugins.reolink.client import (
     derive_aes_key,
 )
 from episode.plugins.reolink.device import (
+    DEFAULT_DEDUP_WINDOW,
+    DEFAULT_SNAPSHOT_TIMEOUT,
     ReolinkDeviceConfig,
     ReolinkDeviceConnection,
     device_config,
@@ -41,6 +43,12 @@ from episode.plugins.reolink.events import (
     parse_battery_status_frame,
 )
 from episode.plugins.reolink.plugin import ReolinkPlugin
+from episode.plugins.reolink.preview import (
+    DEFAULT_PREVIEW_TIMEOUT,
+    PreviewSettings,
+    PreviewStats,
+)
+from episode.plugins.reolink.snapshot_slot import SnapshotPrearmSettings, SnapshotSlot
 
 # ---------------------------------------------------------------------------
 # Crypto round-trips
@@ -450,6 +458,11 @@ class FakeBaichuanClient:
         self._snapshot = snapshot
         self.authenticated = True
         self.closed = False
+        #: How many full picture captures the caller actually paid for.
+        self.snapshot_fetches = 0
+        self.snapshot_timeouts: list[float | None] = []
+        #: Timeouts the ack-only probe was asked to honour.
+        self.probe_calls: list[float] = []
 
     async def get_stream_url(self, channel=0):
         from episode.plugins.reolink.client import StreamUrlInfo
@@ -458,8 +471,19 @@ class FakeBaichuanClient:
             raise ReolinkError("no stream")
         return StreamUrlInfo(success=True, main_stream_url="rtsp://192.168.1.10/1")
 
-    async def get_snapshot(self, channel=0):
+    async def get_snapshot(self, channel=0, timeout=None):
+        self.snapshot_fetches += 1
+        self.snapshot_timeouts.append(timeout)
         return self._snapshot
+
+    async def snapshot_probe(self, channel=0, timeout=3.0):
+        """Ack-only probe: reports support without receiving a picture."""
+        from episode.plugins.reolink.client import SnapshotAck
+
+        self.probe_calls.append(timeout)
+        if self._snapshot is None:
+            return None
+        return SnapshotAck(response_code=0, declared_bytes=len(self._snapshot))
 
     async def login(self):
         return None
@@ -508,10 +532,90 @@ async def test_connection_registers_media_when_enabled():
     assert source.stream_uri == "rtsp://192.168.1.10/1"
     assert source.source == "reolink"
     assert source.snapshot_fetcher is not None
+    assert source.event_snapshot_fetcher is not None
     # Snapshot fetcher returns JPEG via the Reolink-native path
     data, content_type = await source.snapshot_fetcher()
     assert data[:2] == b"\xff\xd8"
     assert content_type == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_media_registry_routes_event_snapshot_tokens_separately():
+    ordinary_calls = 0
+    event_tokens: list[str] = []
+
+    async def ordinary_fetch():
+        nonlocal ordinary_calls
+        ordinary_calls += 1
+        return b"ordinary", "image/jpeg"
+
+    async def event_fetch(token: str):
+        event_tokens.append(token)
+        return b"event-bound", "image/jpeg"
+
+    registry = MediaRegistry()
+    registry.register(
+        CameraMedia(
+            device_id="cam-1",
+            source="reolink",
+            snapshot_fetcher=ordinary_fetch,
+            event_snapshot_fetcher=event_fetch,
+        )
+    )
+
+    assert await registry.fetch_snapshot("cam-1") == (b"ordinary", "image/jpeg")
+    assert await registry.fetch_snapshot("cam-1", snapshot_token="event-1") == (
+        b"event-bound",
+        "image/jpeg",
+    )
+    assert ordinary_calls == 1
+    assert event_tokens == ["event-1"]
+
+
+@pytest.mark.asyncio
+async def test_connection_registers_native_video_handler_when_enabled():
+    """``native_video`` (F1) registers the on-demand cmdId=3 handler, not just RTSP.
+
+    The recorder must be able to choose the native source: the registered ``CameraMedia``
+    carries a ``video_handler`` and a ``codec_hint`` derived from a real preview, so the
+    engine's pipe branch feeds the camera's leading I-Frame to ffmpeg without a fresh RTSP
+    keyframe-wait. The handler runs one on-demand burst and hands Annex-B access units to
+    its consumer.
+    """
+    registry = FakeMediaRegistry()
+    client = FakeBaichuanClient()
+    config = _make_media_config(media_enabled=True)
+    config = dataclasses.replace(config, preview=PreviewSettings(native_video=True, variant="main"))
+    connection = ReolinkDeviceConnection(
+        config,
+        async_noop,
+        async_noop,
+        media_registry=registry,
+        client_factory=lambda _config: client,
+    )
+    await connection._discover_stream()
+    source = registry.get("cam-1")
+    assert source is not None
+    assert source.video_handler is not None, "native_video must register a video handler"
+    assert source.codec_hint in ("h264", "hevc") or source.codec_hint == ""
+
+
+@pytest.mark.asyncio
+async def test_connection_does_not_register_video_handler_by_default():
+    """Without ``native_video`` the media source stays RTSP-only (no handler)."""
+    registry = FakeMediaRegistry()
+    client = FakeBaichuanClient()
+    connection = ReolinkDeviceConnection(
+        _make_media_config(media_enabled=True),
+        async_noop,
+        async_noop,
+        media_registry=registry,
+        client_factory=lambda _config: client,
+    )
+    await connection._discover_stream()
+    source = registry.get("cam-1")
+    assert source is not None
+    assert source.video_handler is None, "default source must remain RTSP, not native"
 
 
 @pytest.mark.asyncio
@@ -579,6 +683,109 @@ async def test_status_capabilities_include_media_and_snapshots_after_discovery()
     assert "discovery" in connection.status().capabilities
     assert "media" in connection.status().capabilities
     assert "snapshots" in connection.status().capabilities
+
+
+@pytest.mark.asyncio
+async def test_startup_probe_learns_snapshot_support_without_a_capture():
+    """Gap G6: connecting must not pay for a picture the probe then throws away.
+
+    The ack-only probe answers the capability question, so a connect costs tens of
+    milliseconds instead of the 0.27-1.03 s the real captures measured, and the
+    ``snapshots`` capability is still reported (it existed precisely so validation and
+    runtime status agree).
+    """
+    client = FakeBaichuanClient()
+    connection = ReolinkDeviceConnection(
+        _make_media_config(media_enabled=True),
+        async_noop,
+        async_noop,
+        client_factory=lambda _config: client,
+    )
+    connection._discovered = object()
+    await connection._discover_stream()
+    assert client.snapshot_fetches == 0, "a startup probe must not receive a picture"
+    assert client.probe_calls and client.probe_calls[0] <= 3.0
+    assert connection._snapshot_supported is True
+    assert "snapshots" in connection.status().capabilities
+    assert connection.status().details["snapshot_probe"] == {
+        "declared_bytes": len(client._snapshot)
+    }
+
+
+@pytest.mark.asyncio
+async def test_snapshot_support_is_not_re_probed_on_re_discovery():
+    """A mid-life re-discovery must not pay for another probe or lose what it learned."""
+    client = FakeBaichuanClient()
+    connection = ReolinkDeviceConnection(
+        _make_media_config(media_enabled=True),
+        async_noop,
+        async_noop,
+        client_factory=lambda _config: client,
+    )
+    connection._discovered = object()
+    await connection._discover_stream()
+    assert client.probe_calls == [pytest.approx(3.0)]
+
+    await connection._discover_stream()
+    assert client.probe_calls == [pytest.approx(3.0)], "support was re-asked"
+    assert "snapshots" in connection.status().capabilities
+
+
+@pytest.mark.asyncio
+async def test_snapshot_capability_survives_a_failed_capture():
+    """Capability comes from the probe, so one failed capture cannot lose it.
+
+    The probe is the capability source; a stalled camera later costs only that request.
+    """
+    client = FakeBaichuanClient()
+    connection = ReolinkDeviceConnection(
+        _make_media_config(media_enabled=True),
+        async_noop,
+        async_noop,
+        client_factory=lambda _config: client,
+    )
+    connection._discovered = object()
+    await connection._discover_stream()
+    assert "snapshots" in connection.status().capabilities
+
+    # A stalled or truncated capture: the camera answered once, then never again.
+    client._snapshot = None
+    with pytest.raises(LookupError):
+        await connection._snapshot_fetcher()
+    assert connection._snapshot_supported is True
+    assert "snapshots" in connection.status().capabilities
+
+    # The next request still works, and carries the configured capture timeout.
+    client._snapshot = b"\xff\xd8\xff\xe0" + b"\x00" * 8 + b"\xff\xd9"
+    data, content_type = await connection._snapshot_fetcher()
+    assert data[:2] == b"\xff\xd8"
+    assert content_type == "image/jpeg"
+    assert client.snapshot_timeouts[-1] == DEFAULT_SNAPSHOT_TIMEOUT
+
+
+def test_device_config_snapshot_timeout_is_bounded():
+    """The setting is wired at its documented default, and an out-of-range value falls back."""
+    config, error = device_config(
+        _valid_device_mapping(
+            configs={"reolink": {"port": 9000, "settings": {"snapshot_timeout": 2.5}}}
+        )
+    )
+    assert error is None
+    assert config is not None
+    assert config.snapshot_timeout == 2.5
+
+    fallback, error = device_config(
+        _valid_device_mapping(
+            configs={"reolink": {"port": 9000, "settings": {"snapshot_timeout": 999}}}
+        )
+    )
+    assert error is None
+    assert fallback is not None
+    assert fallback.snapshot_timeout == DEFAULT_SNAPSHOT_TIMEOUT
+
+    default, _ = device_config(_valid_device_mapping())
+    assert default is not None
+    assert default.snapshot_timeout == DEFAULT_SNAPSHOT_TIMEOUT
 
 
 @pytest.mark.asyncio
@@ -706,8 +913,191 @@ async def test_connection_preserves_original_frame_bytes():
         assert delivery.artifact_type == "event_frame"
         assert delivery.metadata["kind"] == "raw_event_frame"
         assert delivery.metadata["command_id"] == 33
+
+        # Non-event telemetry frames share this ingress method but do not arm an
+        # Event-bound snapshot or need a token.
+        await connection._process_event_frame(252, b"telemetry", 250)
+        assert len(received) == 2
+        assert received[1].metadata["command_id"] == 252
+        assert "snapshot_fetch_token" not in received[1].metadata
     finally:
         await connection.stop()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_prearm_overlaps_the_ingestion_pipeline():
+    """Pre-arm fires before the delivery sink unblocks, not after it.
+
+    The delivery sink persists the raw frame and then drives the engine synchronously
+    through canonicalization and video start, which takes long enough that a pre-arm
+    scheduled only afterward lands the snapshot ~0.8s behind the first video frame. The
+    camera's JPEG encode must instead overlap that ingestion work, so the pre-arm is armed
+    before ``_delivery_sink`` is awaited — and the fetch runs while the sink is still busy.
+    """
+    sink_unblocked = asyncio.Event()
+    prearmed_seen = asyncio.Event()
+
+    class OrderingClient(FakeBaichuanClient):
+        def __init__(self):
+            super().__init__()
+            self._prearm_started = False
+
+        async def get_snapshot(self, channel: int = 0, timeout=None):
+            self._prearm_started = True
+            prearmed_seen.set()
+            return b"\xff\xd8jpeg"
+
+    client = OrderingClient()
+
+    async def blocking_sink(delivery):
+        # Wait until the pre-arm fetch has started before letting the pipeline return.
+        await asyncio.wait_for(prearmed_seen.wait(), timeout=1.0)
+        sink_unblocked.set()
+
+    connection = ReolinkDeviceConnection(
+        _make_event_config(events_enabled=True),
+        blocking_sink,
+        async_noop,
+        client_factory=lambda _config: client,
+    )
+    connection._snapshot_supported = True
+    await connection.start()
+    try:
+        await connection._process_event_frame(33, b"frame", 0)
+        assert await asyncio.wait_for(sink_unblocked.wait(), timeout=1.0)
+        # The pre-arm started while the delivery sink was still blocked, so the JPEG
+        # encode overlaps ingestion rather than waiting for it to finish.
+        assert client._prearm_started is True
+    finally:
+        await connection.stop()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_prearm_arms_on_event_frame_and_serves_fetcher():
+    """cmdId=33 binds a pre-armed snapshot to the derived event token."""
+    received = []
+
+    async def capture_sink(delivery):
+        received.append(delivery)
+
+    client = FakeBaichuanClient()
+    connection = ReolinkDeviceConnection(
+        _make_event_config(events_enabled=True),
+        capture_sink,
+        async_noop,
+        client_factory=lambda _config: client,
+    )
+    connection._snapshot_supported = True
+    await connection.start()
+    try:
+        await connection._process_event_frame(33, b"frame", 0)
+        await asyncio.sleep(0)  # let the pre-arm fetch run
+        assert connection._snapshot_slot.counters["armed"] == 1
+        held = connection._snapshot_slot._content
+        assert held is not None
+        token = received[0].metadata["snapshot_fetch_token"]
+        assert held[0] == token
+
+        # Ordinary/current-view fetches must not consume an Event's pre-arm.
+        fresh, fresh_type = await connection._snapshot_fetcher()
+        assert fresh_type == "image/jpeg"
+        assert fresh[:2] == b"\xff\xd8"
+        assert connection._snapshot_slot.counters["hits"] == 0
+        assert client.snapshot_fetches == 2  # pre-arm plus the ordinary fresh fetch
+
+        data, content_type = await connection._snapshot_fetcher(token)
+        assert content_type == "image/jpeg"
+        # The served bytes are the pre-armed object itself: exactly one
+        # cmdId=109 for the matching Event, so no second Event-bound fetch.
+        assert data is held[1]
+        assert data[:2] == b"\xff\xd8"
+        assert connection._snapshot_slot.counters["hits"] == 1
+        assert client.snapshot_fetches == 2  # matching Event consumes the pre-arm
+        assert len(received) == 1  # pre-arm produced no delivery
+    finally:
+        await connection.stop()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_prearm_requires_snapshot_capability():
+    """Without a confirmed snapshot capability, no pre-arm may happen."""
+    client = FakeBaichuanClient()
+    connection = ReolinkDeviceConnection(
+        _make_event_config(events_enabled=True),
+        async_noop,
+        async_noop,
+        client_factory=lambda _config: client,
+    )
+    assert connection._snapshot_supported is False
+    await connection.start()
+    try:
+        await connection._process_event_frame(33, b"frame", 0)
+        await asyncio.sleep(0)
+        assert connection._snapshot_slot.counters["armed"] == 0
+    finally:
+        await connection.stop()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_prearm_disabled_by_setting():
+    client = FakeBaichuanClient()
+    config = _make_event_config(events_enabled=True)
+    config = dataclasses.replace(config, snapshot_prearm=SnapshotPrearmSettings(enabled=False))
+    connection = ReolinkDeviceConnection(
+        config, async_noop, async_noop, client_factory=lambda _config: client
+    )
+    connection._snapshot_supported = True
+    await connection.start()
+    try:
+        await connection._process_event_frame(33, b"frame", 0)
+        await asyncio.sleep(0)
+        assert connection._snapshot_slot.counters["armed"] == 0
+        # The ordinary live fetch still works.
+        data, _ = await connection._snapshot_fetcher()
+        assert data[:2] == b"\xff\xd8"
+    finally:
+        await connection.stop()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_prearm_expiry_falls_back_to_live_fetch():
+    client = FakeBaichuanClient()
+    connection = ReolinkDeviceConnection(
+        _make_event_config(events_enabled=True),
+        async_noop,
+        async_noop,
+        client_factory=lambda _config: client,
+    )
+    connection._snapshot_supported = True
+    connection._snapshot_slot = SnapshotSlot(
+        connection._fetch_snapshot,
+        settings=SnapshotPrearmSettings(ttl=0.5),
+    )
+    token = connection._snapshot_slot.arm()
+    assert token is not None
+    await asyncio.sleep(0)
+    assert connection._snapshot_slot.counters["armed"] == 1
+
+    await asyncio.sleep(0.6)
+    data, _ = await connection._snapshot_fetcher(token)
+    assert data[:2] == b"\xff\xd8"
+    assert connection._snapshot_slot.counters["expired"] == 1
+
+
+@pytest.mark.asyncio
+async def test_snapshot_prearm_task_is_cancelled_on_stop():
+    client = FakeBaichuanClient()
+    connection = ReolinkDeviceConnection(
+        _make_event_config(events_enabled=True),
+        async_noop,
+        async_noop,
+        client_factory=lambda _config: client,
+    )
+    connection._snapshot_supported = True
+    connection._snapshot_slot.arm()
+    assert connection._snapshot_slot._task is not None
+    await connection.stop()
+    assert connection._snapshot_slot._task is None
 
 
 @pytest.mark.asyncio
@@ -765,6 +1155,344 @@ async def test_monitor_loop_is_paced_when_events_enabled():
     # The periodic device-info refresh was removed: get_device_info should
     # never be called by the monitor loop.
     assert calls == 0, f"monitor loop still polling device info ({calls} calls)"
+
+
+# ---------------------------------------------------------------------------
+# Native preview priming (cmdId=3 / cmdId=6)
+# ---------------------------------------------------------------------------
+
+
+class PreviewCapableClient(FakeBaichuanClient):
+    """A fake client that records every native preview pass it is asked to make."""
+
+    def __init__(self, *, preview_error: Exception | None = None, stats=None):
+        super().__init__()
+        self.preview_calls: list[dict] = []
+        self._preview_error = preview_error
+        self._preview_stats = stats if stats is not None else PreviewStats(codec="h265")
+
+    async def subscribe_events(self, channel=0):
+        return True
+
+    @property
+    def event_frame_iterator(self):
+        async def _empty():
+            if False:  # pragma: no cover - an empty async iterator has no body to run
+                yield None
+
+        return _empty()
+
+    async def observe_preview_first_packet(self, channel=0, *, variant="main", timeout=None):
+        self.preview_calls.append({"channel": channel, "variant": variant, "timeout": timeout})
+        if self._preview_error is not None:
+            raise self._preview_error
+        return self._preview_stats
+
+
+def _make_preview_config(
+    *, priming: bool, variant: str = "main", timeout: float = 3.0, media_enabled: bool = True
+):
+    """Events on (the push priming reacts to) and media on (the reason to prime at all)."""
+    config = _make_event_config(events_enabled=True)
+    return dataclasses.replace(
+        config,
+        media_enabled=media_enabled,
+        preview=PreviewSettings(priming=priming, variant=variant, timeout=timeout),
+    )
+
+
+@pytest.mark.asyncio
+async def test_preview_priming_is_opt_in():
+    """No ``cmdId=3`` traffic may happen unless the operator asked for it.
+
+    Priming costs a real camera encode on the same socket the alarm pushes arrived on, and the
+    plan's abort rule keeps it off until enough measured events show the first HLS fragment
+    arriving sooner. So the default must be silent, and only the opt-in may produce traffic.
+    """
+    quiet = FakeBaichuanClient()
+    silent_config = _make_preview_config(priming=False)
+    assert silent_config.preview.priming is False
+    silent = ReolinkDeviceConnection(
+        silent_config, async_noop, async_noop, client_factory=lambda _config: quiet
+    )
+    silent._snapshot_supported = True
+    await silent.start()
+    try:
+        # ``FakeBaichuanClient`` has no preview method at all, so any attempt to prime would have
+        # raised inside the event loop instead of quietly doing nothing.
+        await silent._process_event_frame(33, b"frame", 0)
+        await asyncio.sleep(0)
+    finally:
+        await silent.stop()
+
+    priming_client = PreviewCapableClient()
+    priming = ReolinkDeviceConnection(
+        _make_preview_config(priming=True, variant="sub", timeout=1.75),
+        async_noop,
+        async_noop,
+        client_factory=lambda _config: priming_client,
+    )
+    await priming.start()
+    try:
+        await priming._process_event_frame(33, b"frame", 0)
+        await asyncio.sleep(0)
+    finally:
+        await priming.stop()
+
+    assert len(priming_client.preview_calls) == 1
+    call = priming_client.preview_calls[0]
+    assert call["variant"] == "sub" and call["timeout"] == 1.75
+
+
+@pytest.mark.asyncio
+async def test_preview_priming_requires_media_enabled():
+    """Priming exists to speed up a recording, so without media there is nothing to prime.
+
+    A camera encode on the event socket for a device that will never record is a pure cost, and
+    the snapshot capability deliberately does not gate it: a camera that refuses ``cmdId=109`` can
+    still stream ``cmdId=3``, and the pass reports its own failure either way.
+    """
+    client = PreviewCapableClient()
+    connection = ReolinkDeviceConnection(
+        _make_preview_config(priming=True, media_enabled=False),
+        async_noop,
+        async_noop,
+        client_factory=lambda _config: client,
+    )
+    assert connection._snapshot_supported is False
+    await connection.start()
+    try:
+        await connection._process_event_frame(33, b"frame", 0)
+        await asyncio.sleep(0)
+    finally:
+        await connection.stop()
+    assert client.preview_calls == []
+
+
+@pytest.mark.asyncio
+async def test_preview_priming_is_serialized_per_device():
+    """A second event cannot open a second media session while the first is still running.
+
+    Two ``cmdId=3`` passes on one socket interleave their frames into a single reassembly and pay
+    the camera twice, so the connection serializes them rather than letting the camera decide.
+    """
+    release = asyncio.Event()
+
+    class BlockingClient(PreviewCapableClient):
+        async def observe_preview_first_packet(self, channel=0, *, variant="main", timeout=None):
+            self.preview_calls.append({"channel": channel, "variant": variant})
+            await release.wait()
+            return PreviewStats(codec="h265")
+
+    client = BlockingClient()
+    connection = ReolinkDeviceConnection(
+        _make_preview_config(priming=True), async_noop, async_noop, client_factory=lambda _c: client
+    )
+    await connection.start()
+    try:
+        for _ in range(3):
+            await connection._process_event_frame(33, b"frame", 0)
+            await asyncio.sleep(0)
+        assert len(client.preview_calls) == 1, "a running pass is not joined by another"
+        release.set()
+        await asyncio.sleep(0)
+        await connection._process_event_frame(33, b"frame", 0)
+        await asyncio.sleep(0)
+        assert len(client.preview_calls) == 2, "a finished pass does not block the next event"
+    finally:
+        await connection.stop()
+
+
+@pytest.mark.asyncio
+async def test_preview_failure_does_not_break_recording_or_snapshot():
+    """A priming pass that raises is a counter and nothing else.
+
+    Priming exists to help the *next* recording start sooner; it must never be the reason this
+    event, this snapshot, or this recording fails. The pass is scheduled before the delivery
+    sink so the camera warm-ups overlap ingestion, and it is never awaited, so what this test
+    guards is that no exception escapes into the event loop.
+    """
+    client = PreviewCapableClient(preview_error=ReolinkError("camera refused preview"))
+    received: list[object] = []
+
+    async def capture_sink(delivery):
+        received.append(delivery)
+
+    connection = ReolinkDeviceConnection(
+        _make_preview_config(priming=True),
+        capture_sink,
+        async_noop,
+        client_factory=lambda _config: client,
+    )
+    connection._snapshot_supported = True
+    await connection.start()
+    try:
+        await connection._process_event_frame(33, b"frame", 0)
+        await asyncio.sleep(0)
+        details = connection.status().details
+        assert details["preview_failed_total"] == 1
+        assert details["preview_observed"] == 0
+        # The event itself is untouched, and the snapshot path still works.
+        assert len(received) == 1
+        data, content_type = await connection._snapshot_fetcher()
+        assert data[:2] == b"\xff\xd8"
+        assert content_type == "image/jpeg"
+    finally:
+        await connection.stop()
+
+
+@pytest.mark.asyncio
+async def test_preview_priming_counters_and_last_measurement_are_reported():
+    """The numbers the plan's abort rule is settled with are reported flat and named as such.
+
+    ``preview_timeout_total`` is the counter that decides whether priming stays: a pass that asked
+    for a keyframe and got nothing is exactly one increment of it, distinct from a pass that
+    raised. Reporting them under other names would make the abort rule unauditable.
+    """
+    # Timings are reported rounded to a tenth of a millisecond: a status payload that reproduced
+    # every digit of a loop timer would suggest a precision it does not have.
+    observed = PreviewStats(
+        codec="h265",
+        width=3840,
+        height=2160,
+        info_seen=True,
+        iframe_count=1,
+        sps=1,
+        pps=1,
+        irap=1,
+        first_packet_ms=12.5,
+        first_iframe_ms=20.256,
+    )
+    empty = PreviewStats()
+
+    class TwoPassClient(PreviewCapableClient):
+        def __init__(self):
+            super().__init__()
+            self._results = [observed, empty]
+
+        async def observe_preview_first_packet(self, channel=0, *, variant="main", timeout=None):
+            self.preview_calls.append({"channel": channel, "variant": variant})
+            return self._results[len(self.preview_calls) - 1]
+
+    client = TwoPassClient()
+    connection = ReolinkDeviceConnection(
+        _make_preview_config(priming=True), async_noop, async_noop, client_factory=lambda _c: client
+    )
+    await connection.start()
+    try:
+        for _ in range(2):
+            await connection._process_event_frame(33, b"frame", 0)
+            await asyncio.sleep(0)
+        details = connection.status().details
+        assert details["preview_attempted"] == 2
+        assert details["preview_observed"] == 2
+        assert details["preview_failed_total"] == 0
+        assert details["preview_timeout_total"] == 1, "one pass asked for a keyframe and got none"
+        assert details["preview_codec"] == "" and details["preview_first_packet_ms"] is None
+    finally:
+        await connection.stop()
+
+    client2 = PreviewCapableClient(stats=observed)
+    connection2 = ReolinkDeviceConnection(
+        _make_preview_config(priming=True),
+        async_noop,
+        async_noop,
+        client_factory=lambda _c: client2,
+    )
+    await connection2.start()
+    try:
+        await connection2._process_event_frame(33, b"frame", 0)
+        await asyncio.sleep(0)
+        details = connection2.status().details
+        assert details["preview_codec"] == "h265"
+        assert details["preview_first_packet_ms"] == 12.5
+        assert details["preview_first_iframe_ms"] == 20.3
+    finally:
+        await connection2.stop()
+
+
+@pytest.mark.asyncio
+async def test_preview_priming_task_is_cancelled_on_stop():
+    """No priming pass may outlive the connection it was started for."""
+    release = asyncio.Event()
+
+    class BlockingClient(PreviewCapableClient):
+        async def observe_preview_first_packet(self, channel=0, *, variant="main", timeout=None):
+            self.preview_calls.append({"channel": channel, "variant": variant})
+            await release.wait()
+            return PreviewStats()
+
+    client = BlockingClient()
+    connection = ReolinkDeviceConnection(
+        _make_preview_config(priming=True), async_noop, async_noop, client_factory=lambda _c: client
+    )
+    await connection.start()
+    await connection._process_event_frame(33, b"frame", 0)
+    await asyncio.sleep(0)
+    assert connection._preview_task is not None
+    await asyncio.wait_for(connection.stop(), 2.0)
+    assert connection._preview_task is None
+
+
+def test_device_config_preview_settings_are_wired_at_their_defaults():
+    """``media_priming`` / ``preview_variant`` / ``preview_timeout`` reach the device config.
+
+    Parsing them and dropping them on the way into ``ReolinkDeviceConfig`` is a bug no socket test
+    can see, because the socket tests pass their settings explicitly.
+    """
+    config, error = device_config(_valid_device_mapping())
+    assert error is None
+    assert config is not None
+    assert config.preview.priming is False, "priming is off until an operator opts in"
+    assert config.preview.variant == "main"
+    assert config.preview.timeout == DEFAULT_PREVIEW_TIMEOUT
+
+    config, error = device_config(
+        _valid_device_mapping(
+            configs={
+                "reolink": {
+                    "port": 9000,
+                    "settings": {
+                        "media_priming": "true",
+                        "preview_variant": "sub",
+                        "preview_timeout": 2.5,
+                    },
+                }
+            }
+        )
+    )
+    assert error is None
+    assert config is not None
+    assert config.preview.priming is True
+    assert config.preview.variant == "sub"
+    assert config.preview.timeout == 2.5
+
+
+def test_device_config_preview_settings_fall_back_without_failing():
+    """A bad preview value warns and defaults; it must not stop a device from connecting."""
+    config, error = device_config(
+        _valid_device_mapping(
+            configs={
+                "reolink": {
+                    "port": 9000,
+                    "settings": {"media_priming": "maybe", "preview_variant": "third"},
+                }
+            }
+        )
+    )
+    assert error is None
+    assert config is not None
+    assert config.preview.priming is False
+    assert config.preview.variant == "main"
+
+    config, error = device_config(
+        _valid_device_mapping(
+            configs={"reolink": {"port": 9000, "settings": {"preview_timeout": 999}}}
+        )
+    )
+    assert error is None
+    assert config is not None
+    assert config.preview.timeout == DEFAULT_PREVIEW_TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -914,6 +1642,7 @@ async def test_handler_preserves_then_expands_raw_frame():
             "channel": 0,
             "nonce": "",
             "use_aes": False,
+            "snapshot_fetch_token": "event-token",
         },
     )
 
@@ -924,6 +1653,7 @@ async def test_handler_preserves_then_expands_raw_frame():
     assert len(derived) == 1
     assert derived[0].artifact_type == "derived_event_notification"
     assert derived[0].metadata["parent_receipt_id"] == "raw-receipt"
+    assert derived[0].metadata["snapshot_fetch_token"] == "event-token"
 
     notification = dataclasses.replace(
         raw,
@@ -936,6 +1666,7 @@ async def test_handler_preserves_then_expands_raw_frame():
     interpreted = await plugin._handle(notification)
     assert interpreted.event is not None
     assert interpreted.event.event_type == "human_detection"
+    assert interpreted.event.metadata["snapshot_fetch_token"] == "event-token"
 
 
 @pytest.mark.asyncio
@@ -1020,6 +1751,40 @@ async def test_handler_registers_same_state_after_window():
     second = await plugin._handle(env)
     assert second.event is not None
     assert second.event.event_state == "active"
+
+
+@pytest.mark.asyncio
+async def test_handler_honours_configured_dedup_window():
+    """The configured dedup_window must be the effective suppression window."""
+    from datetime import timedelta
+
+    device = _valid_device_mapping()
+    device["configs"]["reolink"]["settings"]["dedup_window"] = 8.0
+    context = PluginContext(
+        plugins_dir="plugins",
+        configured_devices=(device,),
+        ingress_router=FakeRouter(),
+        raw_delivery_sink=async_noop,
+        device_update_sink=async_noop,
+    )
+    plugin = ReolinkPlugin(context, connection_factory=_stub_factory)
+    assert plugin._dedup_windows == {"cam-1": 8.0}
+
+    first = await plugin._handle(_envelope(event_type="motion_detection", event_state="active"))
+    assert first.event is not None
+
+    mid = _envelope(event_type="motion_detection", event_state="active")
+    mid = dataclasses.replace(mid, received_at=mid.received_at + timedelta(seconds=4))
+    assert (await plugin._handle(mid)).event is None  # inside the configured 8 s window
+
+    later = _envelope(event_type="motion_detection", event_state="active")
+    later = dataclasses.replace(later, received_at=later.received_at + timedelta(seconds=12))
+    assert (await plugin._handle(later)).event is not None
+
+
+def test_handler_dedup_window_defaults_to_documented_value():
+    """The documented default must equal the effective default."""
+    assert _make_plugin()._dedup_windows == {"cam-1": DEFAULT_DEDUP_WINDOW}
 
 
 @pytest.mark.asyncio
@@ -1267,8 +2032,13 @@ class FakeStreamUrlInfo:
 
 
 def test_validate_device_reports_full_capabilities(monkeypatch):
-    """Validation should probe and report media, events and snapshots."""
+    """Validation should probe and report media, events and snapshots.
+
+    Snapshot support is decided by the ``cmdId=109`` acknowledgment alone, so validation
+    never receives a picture it would throw away (gap G6).
+    """
     from episode.plugins.reolink import validation as validation_module
+    from episode.plugins.reolink.client import SnapshotAck
 
     async def fake_login(_self):
         return FakeDeviceInfo()
@@ -1279,15 +2049,18 @@ def test_validate_device_reports_full_capabilities(monkeypatch):
     async def fake_subscribe_events(_self):
         return True
 
-    async def fake_get_snapshot(_self, channel=0):
-        # Minimal valid JPEG header
-        return b"\xff\xd8\xff\xe0" + b"\x00" * 16 + b"\xff\xd9"
+    async def fake_snapshot_probe(_self, channel=0, timeout=3.0):
+        return SnapshotAck(response_code=0, declared_bytes=3791559)
+
+    async def fake_get_snapshot(_self, channel=0, timeout=None):
+        raise AssertionError("validation must not capture a snapshot")
 
     monkeypatch.setattr(validation_module.BaichuanApiClient, "login", fake_login)
     monkeypatch.setattr(validation_module.BaichuanApiClient, "get_stream_url", fake_get_stream_url)
     monkeypatch.setattr(
         validation_module.BaichuanApiClient, "subscribe_events", fake_subscribe_events
     )
+    monkeypatch.setattr(validation_module.BaichuanApiClient, "snapshot_probe", fake_snapshot_probe)
     monkeypatch.setattr(validation_module.BaichuanApiClient, "get_snapshot", fake_get_snapshot)
 
     async def run():
@@ -1305,7 +2078,7 @@ def test_validate_device_reports_full_capabilities(monkeypatch):
     assert result["details"]["streams"] == 1
     assert result["details"]["stream_supported"] is True
     assert result["details"]["events_supported"] is True
-    assert result["details"]["snapshot_bytes"] > 0
+    assert result["details"]["snapshot_declared_bytes"] == 3791559
 
 
 def test_validate_device_probe_failures_keep_discovery(monkeypatch):
@@ -1322,7 +2095,7 @@ def test_validate_device_probe_failures_keep_discovery(monkeypatch):
     async def fake_subscribe_events(_self):
         raise ReolinkError("event subscription probe failed")
 
-    async def fake_get_snapshot(_self, channel=0):
+    async def fake_snapshot_probe(_self, channel=0, timeout=3.0):
         raise ReolinkError("snapshot probe failed")
 
     monkeypatch.setattr(validation_module.BaichuanApiClient, "login", fake_login)
@@ -1330,7 +2103,7 @@ def test_validate_device_probe_failures_keep_discovery(monkeypatch):
     monkeypatch.setattr(
         validation_module.BaichuanApiClient, "subscribe_events", fake_subscribe_events
     )
-    monkeypatch.setattr(validation_module.BaichuanApiClient, "get_snapshot", fake_get_snapshot)
+    monkeypatch.setattr(validation_module.BaichuanApiClient, "snapshot_probe", fake_snapshot_probe)
 
     async def run():
         return await validation_module.validate_device(
@@ -1341,7 +2114,7 @@ def test_validate_device_probe_failures_keep_discovery(monkeypatch):
     assert result["status"] == "supported"
     assert result["capabilities"] == ["discovery"]
     assert result["details"]["events_supported"] is False
-    assert result["details"]["snapshot_bytes"] == 0
+    assert result["details"]["snapshot_declared_bytes"] is None
 
 
 def test_validate_device_reports_media_without_events_or_snapshots(monkeypatch):
@@ -1357,15 +2130,15 @@ def test_validate_device_reports_media_without_events_or_snapshots(monkeypatch):
     async def fake_subscribe_events(_self):
         return False
 
-    async def fake_get_snapshot(_self, channel=0):
-        return None  # no JPEG
+    async def fake_snapshot_probe(_self, channel=0, timeout=3.0):
+        return None  # camera never acknowledged the snapshot request
 
     monkeypatch.setattr(validation_module.BaichuanApiClient, "login", fake_login)
     monkeypatch.setattr(validation_module.BaichuanApiClient, "get_stream_url", fake_get_stream_url)
     monkeypatch.setattr(
         validation_module.BaichuanApiClient, "subscribe_events", fake_subscribe_events
     )
-    monkeypatch.setattr(validation_module.BaichuanApiClient, "get_snapshot", fake_get_snapshot)
+    monkeypatch.setattr(validation_module.BaichuanApiClient, "snapshot_probe", fake_snapshot_probe)
 
     async def run():
         return await validation_module.validate_device(

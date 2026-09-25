@@ -244,6 +244,10 @@ test("Reolink settings are explicit and included in the Device payload", async (
   assert.match(dialog.content, /name="reolink_enabled"/);
   assert.match(dialog.content, /name="reolink_media_enabled"/);
   assert.match(dialog.content, /name="reolink_events_enabled"/);
+  assert.match(dialog.content, /name="reolink_native_video"/);
+  assert.doesNotMatch(dialog.content, /name="reolink_media_priming"/);
+  assert.match(dialog.content, /name="reolink_preview_variant"/);
+  assert.match(dialog.content, /name="reolink_preview_timeout"/);
 
   const data = new Map([
     ["name", "Driveway camera"],
@@ -259,6 +263,9 @@ test("Reolink settings are explicit and included in the Device payload", async (
     ["reolink_port", "9000"],
     ["reolink_media_enabled", "on"],
     ["reolink_events_enabled", "on"],
+    ["reolink_native_video", "on"],
+    ["reolink_preview_variant", "sub"],
+    ["reolink_preview_timeout", "4"],
   ]);
   await dialog.onSubmit(data);
 
@@ -268,6 +275,9 @@ test("Reolink settings are explicit and included in the Device payload", async (
     port: 9000,
     media_enabled: true,
     events_enabled: true,
+    native_video: true,
+    preview_variant: "sub",
+    preview_timeout: 4,
   });
 });
 

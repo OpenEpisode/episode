@@ -47,6 +47,37 @@ class FakeSnapshots:
         return f"preview:{device_id}".encode(), "image/jpeg"
 
 
+class FetcherOnlySnapshots:
+    """A device with no snapshot URI but a plugin-provided fetcher (Reolink)."""
+
+    def __init__(self) -> None:
+        self.fetches = 0
+
+    def get(self, device_id: str):
+        return SimpleNamespace(
+            snapshot_uri="", snapshot_fetcher=self._fetch if device_id == "camera-bc" else None
+        )
+
+    async def _fetch(self) -> tuple[bytes, str]:
+        self.fetches += 1
+        return b"native-jpeg", "image/jpeg"
+
+    async def fetch_snapshot(self, device_id: str) -> tuple[bytes, str]:
+        return await self._fetch()
+
+
+@pytest.mark.asyncio
+async def test_plugin_snapshot_fetcher_counts_as_snapshot_capable():
+    snapshots = FetcherOnlySnapshots()
+    recordings = FakeRecordings({"episode-a": ("camera-bc",)})
+    previews = CurrentViewService(snapshots, recordings)
+
+    assert [(v.device_id, v.mode) for v in previews.describe("episode-a")] == [
+        ("camera-bc", "snapshot")
+    ]
+    assert await previews.fetch("episode-a", "camera-bc") == (b"native-jpeg", "image/jpeg")
+
+
 @pytest.mark.asyncio
 async def test_current_views_are_scoped_cached_and_report_unavailable_devices():
     snapshots = FakeSnapshots({"camera-a"})

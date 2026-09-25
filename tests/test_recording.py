@@ -51,7 +51,7 @@ def _replace_recording_processes(recorder: RecordingEngine):
     started = []
     stopped = []
 
-    async def start_recording(episode_id, device, rtsp_url):
+    async def start_recording(episode_id, device, rtsp_url, *, video_handler=None, codec_hint=""):
         started.append((episode_id, device.id, rtsp_url))
         recorder._recordings[(episode_id, device.id)] = SimpleNamespace(
             episode_id=episode_id,
@@ -890,7 +890,7 @@ async def test_persisted_active_episode_resumes_all_reconstructed_targets(repo, 
     recorder = RecordingEngine(repo, bus, config.data_dir)
     resumed = []
 
-    async def start_recording(episode_id, device, stream_url):
+    async def start_recording(episode_id, device, stream_url, *, video_handler=None, codec_hint=""):
         resumed.append((episode_id, device.id, stream_url))
         recorder._recordings[(episode_id, device.id)] = SimpleNamespace(
             episode_id=episode_id,
@@ -956,7 +956,7 @@ async def test_persisted_quiescent_episode_resumes_only_within_grace(repo, bus, 
     recorder = RecordingEngine(repo, bus, config.data_dir)
     resumed = []
 
-    async def start_recording(episode_id, device, stream_url):
+    async def start_recording(episode_id, device, stream_url, *, video_handler=None, codec_hint=""):
         resumed.append(episode_id)
         recorder._recordings[(episode_id, device.id)] = SimpleNamespace(
             episode_id=episode_id,

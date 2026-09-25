@@ -471,6 +471,9 @@ async def test_reolink_events_and_media_roundtrip(inventory_api):
                 "enabled": True,
                 "media_enabled": True,
                 "events_enabled": True,
+                "native_video": True,
+                "preview_variant": "sub",
+                "preview_timeout": 4.0,
             },
         },
     )
@@ -480,11 +483,17 @@ async def test_reolink_events_and_media_roundtrip(inventory_api):
     assert reolink is not None
     assert reolink.settings["media_enabled"] is True
     assert reolink.settings["events_enabled"] is True
+    assert reolink.settings["native_video"] is True
+    assert reolink.settings["preview_variant"] == "sub"
+    assert reolink.settings["preview_timeout"] == 4.0
 
     # Round-trip back through editable configuration
     body = device_response.json()
     assert body["configuration"]["reolink"]["media_enabled"] is True
     assert body["configuration"]["reolink"]["events_enabled"] is True
+    assert body["configuration"]["reolink"]["native_video"] is True
+    assert body["configuration"]["reolink"]["preview_variant"] == "sub"
+    assert body["configuration"]["reolink"]["preview_timeout"] == 4.0
 
     # Disable events on update
     update = await client.put(

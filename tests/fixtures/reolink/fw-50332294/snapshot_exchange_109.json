@@ -1,0 +1,33 @@
+{
+  "bytes_after_eoi": 0,
+  "bytes_received": 563835,
+  "channel": 0,
+  "chunk_sizes": [
+    38000,
+    38000,
+    38000,
+    38000,
+    38000,
+    38000,
+    38000,
+    38000,
+    38000,
+    38000,
+    38000,
+    38000,
+    38000,
+    38000,
+    31835
+  ],
+  "chunk_sizes_capped": false,
+  "chunks": 15,
+  "complete": true,
+  "declared_picture_size": 563835,
+  "duration_ms": 273.3,
+  "eoi_mid_chunk": false,
+  "eoi_seen": true,
+  "error": "",
+  "first_chunk_head": "ffd8ffdb00840010",
+  "frames_seen": 16,
+  "payload_offset_zero_binary": 0
+}

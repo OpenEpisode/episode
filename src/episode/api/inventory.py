@@ -82,6 +82,9 @@ class ReolinkConfigurationRequest(BaseModel):
     port: int | None = Field(default=9000, ge=1, le=65535)
     media_enabled: bool = False
     events_enabled: bool = False
+    native_video: bool = False
+    preview_variant: str = Field(default="main", max_length=16)
+    preview_timeout: float | None = Field(default=None, ge=1.0, le=10.0)
 
     @field_validator("host")
     @classmethod
@@ -275,6 +278,13 @@ def editable_device_configuration(device: Device) -> dict:
             events_enabled=bool(reolink.settings.get("events_enabled", False))
             if reolink
             else False,
+            native_video=bool(reolink.settings.get("native_video", False)) if reolink else False,
+            preview_variant=reolink.settings.get("preview_variant", "main") if reolink else "main",
+            preview_timeout=(
+                float(reolink.settings.get("preview_timeout"))
+                if reolink and reolink.settings.get("preview_timeout") is not None
+                else None
+            ),
         ),
     ).model_dump()
 
@@ -333,6 +343,10 @@ def device_from_request(
         settings["host"] = request.reolink.host
         settings["media_enabled"] = request.reolink.media_enabled
         settings["events_enabled"] = request.reolink.events_enabled
+        settings["native_video"] = request.reolink.native_video
+        settings["preview_variant"] = request.reolink.preview_variant
+        if request.reolink.preview_timeout is not None:
+            settings["preview_timeout"] = request.reolink.preview_timeout
         configs["reolink"] = CapabilityConfig(
             port=request.reolink.port,
             settings=settings,
@@ -420,6 +434,10 @@ def validation_device_from_request(
             "host": request.reolink.host,
             "media_enabled": request.reolink.media_enabled,
             "events_enabled": request.reolink.events_enabled,
+            "native_video": request.reolink.native_video,
+            "preview_variant": request.reolink.preview_variant,
         },
     )
+    if request.reolink.preview_timeout is not None:
+        device.configs["reolink"].settings["preview_timeout"] = request.reolink.preview_timeout
     return device
