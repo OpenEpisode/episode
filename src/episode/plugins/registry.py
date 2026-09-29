@@ -117,6 +117,14 @@ def builtin_plugin_registry() -> PluginRegistry:
                 activation_config_type="onvif",
                 factory=module_plugin_factory("episode.plugins.onvif"),
                 validation_capability="onvif",
+                inventory_fields=(
+                    "id",
+                    "area_id",
+                    "ip_address",
+                    "username",
+                    "password",
+                    "configs.onvif",
+                ),
                 validator=module_plugin_validator("episode.plugins.onvif.validation"),
                 integration=PluginIntegration(
                     type="onvif",
@@ -134,14 +142,23 @@ def builtin_plugin_registry() -> PluginRegistry:
                 activation_config_type="hikvision_sdk",
                 factory=module_plugin_factory("episode.plugins.hikvision.sdk"),
                 validation_capability="hikvision_sdk",
+                inventory_fields=(
+                    "id",
+                    "device_type",
+                    "area_id",
+                    "ip_address",
+                    "username",
+                    "password",
+                    "configs.hikvision_sdk",
+                ),
                 integration=PluginIntegration(
                     type="hikvision_sdk",
                     name="Hikvision HCNetSDK",
                     device_scoped=True,
-                    capabilities=("events", "device-information"),
+                    capabilities=("events", "media", "device-information"),
                     manufacturer_scope=("hikvision",),
                     manufacturer_scope_kind="targeted",
-                    device_types=("doorbell",),
+                    device_types=("camera", "doorbell"),
                 ),
             ),
             PluginRegistration(
@@ -151,6 +168,14 @@ def builtin_plugin_registry() -> PluginRegistry:
                 activation_config_type="isapi",
                 factory=module_plugin_factory("episode.plugins.hikvision.isapi"),
                 validation_capability="isapi",
+                inventory_fields=(
+                    "id",
+                    "area_id",
+                    "ip_address",
+                    "username",
+                    "password",
+                    "configs.isapi",
+                ),
                 validator=module_plugin_validator("episode.plugins.hikvision.isapi.validation"),
                 integration=PluginIntegration(
                     type="isapi",
@@ -169,6 +194,8 @@ def builtin_plugin_registry() -> PluginRegistry:
                 activation_config_type="",
                 activation_connector_type="alarm_server",
                 factory=module_plugin_factory("episode.plugins.hikvision.alarm_server"),
+                inventory_scope="none",
+                inventory_fields=(),
                 integration=PluginIntegration(
                     type="hikvision_alarm_server",
                     name="Hikvision Alarm Server",
@@ -182,6 +209,8 @@ def builtin_plugin_registry() -> PluginRegistry:
                 activation_config_type="",
                 activation_connector_type="ftp",
                 factory=module_plugin_factory("episode.plugins.hikvision.ftp"),
+                inventory_scope="all",
+                inventory_fields=("id", "ip_address", "device_type"),
                 integration=PluginIntegration(
                     type="hikvision_ftp",
                     name="Hikvision FTP snapshots",
@@ -195,6 +224,14 @@ def builtin_plugin_registry() -> PluginRegistry:
                 activation_config_type="reolink",
                 factory=module_plugin_factory("episode.plugins.reolink"),
                 validation_capability="reolink",
+                inventory_fields=(
+                    "id",
+                    "area_id",
+                    "ip_address",
+                    "username",
+                    "password",
+                    "configs.reolink",
+                ),
                 validator=module_plugin_validator("episode.plugins.reolink.validation"),
                 integration=PluginIntegration(
                     type="reolink",

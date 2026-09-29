@@ -84,6 +84,26 @@ RTSP/RTSPS endpoint with a bounded probe. It does not save a Device, create
 Evidence, or retain stream bytes. The response reports only a safe status,
 summary, and basic stream details such as a codec when available.
 
+Device detail responses include runtime `video_sources` discovered by the
+configured media integrations, plus the configured manual RTSP endpoint when
+present. Each item exposes a stable source ID, display name, provider, protocol,
+and dimensions/FPS/codec when the integration can report them; stream URLs and
+credentials are never returned. `metadata_kind`
+distinguishes configured profile values, advertised camera capabilities,
+observed stream properties, and unknown values. Advertised choices are not a
+claim about the camera's currently selected encode settings.
+Devices may be configured for video before a plugin has completed discovery;
+while no usable source is registered or configured, recording cannot start.
+
+`configuration.video.recording_source_id` is empty for **Automatic**, which
+preserves the integration's current preferred source. Otherwise it pins future
+recordings to a discovered source ID (or `manual` when a manual RTSP endpoint is
+configured). If an explicitly pinned source is not available at recording time,
+Episode reports that and does not silently fall back to another stream. A source
+change affects recordings that start after the configuration is saved; it does
+not switch an active recording. Plugins learn or refresh candidates when they
+start or reconnect.
+
 Devices also expose a separate `setup_state`: `ready` or `needs_setup`.
 `needs_setup` is an intentional draft state for inventory onboarding and is
 independent from the operator-controlled `enabled` flag. Draft Devices are

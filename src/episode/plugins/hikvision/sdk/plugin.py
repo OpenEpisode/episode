@@ -19,10 +19,12 @@ from episode.ingestion.models import (
 from episode.ingestion.router import IngressHandlerRegistration
 from episode.plugins.hikvision.sdk.events import interpret_event
 from episode.plugins.hikvision.sdk.runtime import SDKDeviceConfig, SDKDeviceWorker
+from episode.plugins.hikvision.sdk.video_runtime import HikvisionSDKVideoWorker
 from episode.plugins.models import (
     PluginContext,
     PluginInstanceState,
     PluginInstanceStatus,
+    PluginMediaRegistry,
     PluginState,
     PluginStatus,
     RawPluginDeliverySink,
@@ -46,6 +48,9 @@ _REQUIRED_SDK_DIRECTORIES = ("HCNetSDKCom",)
 
 ProbeCommand = Callable[[Path], Sequence[str]]
 WorkerFactory = Callable[[Path, SDKDeviceConfig, RawPluginDeliverySink], SDKDeviceWorker]
+VideoWorkerFactory = Callable[
+    [Path, SDKDeviceConfig, PluginMediaRegistry | None], HikvisionSDKVideoWorker
+]
 
 
 def normalize_architecture(machine: str) -> str | None:
@@ -155,6 +160,14 @@ def _default_worker_factory(
     return SDKDeviceWorker(plugin_path, config, sink)
 
 
+def _default_video_worker_factory(
+    plugin_path: Path,
+    config: SDKDeviceConfig,
+    media_registry,
+) -> HikvisionSDKVideoWorker:
+    return HikvisionSDKVideoWorker(plugin_path, config, media_registry)
+
+
 def _configured_sdk_devices(
     devices: tuple[Mapping[str, object], ...],
 ) -> list[Mapping[str, object]]:
@@ -223,6 +236,7 @@ class HikvisionSDKPlugin:
         runner: SubprocessProbeRunner | None = None,
         probe_command: ProbeCommand | None = None,
         worker_factory: WorkerFactory | None = None,
+        video_worker_factory: VideoWorkerFactory | None = None,
         host_machine: str | None = None,
     ):
         self._path = context.plugins_dir / PLUGIN_ID
@@ -233,8 +247,11 @@ class HikvisionSDKPlugin:
         self._runner = runner or SubprocessProbeRunner()
         self._probe_command = probe_command or _default_probe_command
         self._worker_factory = worker_factory or _default_worker_factory
+        self._video_worker_factory = video_worker_factory or _default_video_worker_factory
+        self._media_registry = context.media_registry
         self._host_machine = host_machine
         self._workers: list[SDKDeviceWorker] = []
+        self._video_workers: list[HikvisionSDKVideoWorker] = []
         self._invalid_instances: list[PluginInstanceStatus] = []
         self._status = PluginStatus(
             id=PLUGIN_ID,
@@ -292,6 +309,7 @@ class HikvisionSDKPlugin:
         instances = (
             *self._invalid_instances,
             *(worker.status() for worker in self._workers),
+            *(worker.status() for worker in self._video_workers),
         )
         if not instances or self._status.state != PluginState.READY:
             return PluginStatus(
@@ -371,19 +389,19 @@ class HikvisionSDKPlugin:
             self._handler_registered = True
         if not self._configured_devices:
             return
-        if self._delivery_sink is None:
-            self._invalid_instances = [
-                PluginInstanceStatus(
-                    id=str(device.get("id") or "unknown-device"),
-                    name=str(device.get("name") or device.get("id") or "Unknown device"),
-                    state=PluginInstanceState.FAILED,
-                    error="Raw plugin delivery storage is unavailable.",
-                )
-                for device in self._configured_devices
-            ]
-            return
-
         for device in self._configured_devices:
+            device_type = device.get("device_type", "doorbell")
+            if device_type not in {"camera", "doorbell"}:
+                device_id = str(device.get("id") or "unknown-device")
+                self._invalid_instances.append(
+                    PluginInstanceStatus(
+                        id=device_id,
+                        name=str(device.get("name") or device_id),
+                        state=PluginInstanceState.FAILED,
+                        error="HCNetSDK supports camera video and doorbell events only.",
+                    )
+                )
+                continue
             config, error = _device_config(device)
             if config is None:
                 device_id = str(device.get("id") or "unknown-device")
@@ -396,13 +414,28 @@ class HikvisionSDKPlugin:
                     )
                 )
                 continue
-            self._workers.append(self._worker_factory(self._path, config, self._delivery_sink))
+            if device_type == "camera":
+                self._video_workers.append(
+                    self._video_worker_factory(self._path, config, self._media_registry)
+                )
+            elif self._delivery_sink is None:
+                self._invalid_instances.append(
+                    PluginInstanceStatus(
+                        id=config.id,
+                        name=config.name,
+                        state=PluginInstanceState.FAILED,
+                        error="Raw plugin delivery storage is unavailable.",
+                    )
+                )
+            else:
+                self._workers.append(self._worker_factory(self._path, config, self._delivery_sink))
 
+        all_workers = (*self._workers, *self._video_workers)
         results = await asyncio.gather(
-            *(worker.start() for worker in self._workers),
+            *(worker.start() for worker in all_workers),
             return_exceptions=True,
         )
-        for worker, result in zip(self._workers, results, strict=True):
+        for worker, result in zip(all_workers, results, strict=True):
             if isinstance(result, BaseException):
                 logger.error(
                     "HCNetSDK worker for device %s failed during startup",
@@ -412,10 +445,14 @@ class HikvisionSDKPlugin:
 
     async def stop(self) -> None:
         await asyncio.gather(
-            *(worker.stop() for worker in reversed(self._workers)),
+            *(
+                worker.stop()
+                for worker in (*reversed(self._video_workers), *reversed(self._workers))
+            ),
             return_exceptions=True,
         )
         self._workers.clear()
+        self._video_workers.clear()
         if self._handler_registered and self._ingress_router is not None:
             self._ingress_router.unregister("hikvision-sdk-events")
             self._handler_registered = False

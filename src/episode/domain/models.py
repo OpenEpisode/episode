@@ -194,6 +194,24 @@ class Device:
         return self.enabled and self.setup_state == "ready"
 
 
+@dataclass(frozen=True)
+class DeviceDiscoveryUpdate:
+    """Narrow, vendor-neutral result of one integration discovery pass.
+
+    Discovery may learn capabilities and integration metadata, but it must not
+    write back the operator-owned Device configuration it started with.  The
+    inventory layer merges this update into the latest row, which prevents a
+    slow discovery result from restoring stale credentials, addresses, or
+    recording settings.
+    """
+
+    device_id: str
+    integration_type: str
+    capabilities: tuple[str, ...] = ()
+    metadata: dict = field(default_factory=dict)
+    video_if_unconfigured: CapabilityConfig | None = None
+
+
 @dataclass
 class Event:
     id: str = field(default_factory=lambda: str(uuid4()))

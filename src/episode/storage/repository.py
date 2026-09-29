@@ -22,6 +22,7 @@ from episode.domain.models import (
     CaptureProfile,
     CaptureProfileChange,
     Device,
+    DeviceDiscoveryUpdate,
     Episode,
     EpisodeState,
     Event,
@@ -557,6 +558,9 @@ class Repository:
 
     async def upsert_device(self, device: Device) -> Device:
         return await self._inventory_store().upsert_device(device)
+
+    async def apply_device_discovery(self, update: DeviceDiscoveryUpdate) -> Device | None:
+        return await self._inventory_store().apply_device_discovery(update)
 
     async def get_device(self, device_id: str) -> Device | None:
         return await self._inventory_store().get_device(device_id)

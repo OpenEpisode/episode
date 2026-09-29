@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from fastapi import APIRouter, HTTPException, Query, Response
 
 from episode.api.context import ApiContext
@@ -129,6 +131,34 @@ def inventory_router(context: ApiContext) -> APIRouter:
                 },
             )
         result["integration_support"] = support
+        source_options = []
+        if context.media:
+            source_options = [asdict(source) for source in context.media.video_sources(device.id)]
+        video = device.get_config("video")
+        video_origin = video.settings.get("origin") if video else None
+        if (
+            video
+            and video.protocol
+            and video.path
+            and video.settings.get("manual_endpoint") is not False
+            and video_origin not in {"onvif", "reolink"}
+        ):
+            source_options.append(
+                {
+                    "id": "manual",
+                    "name": "Manual RTSP endpoint",
+                    "provider": "Manual",
+                    "protocol": video.protocol,
+                    "metadata_kind": "unknown",
+                    "width": None,
+                    "height": None,
+                    "frame_rate": None,
+                    "codec": "",
+                    "modes": [],
+                    "default": not source_options,
+                }
+            )
+        result["video_sources"] = source_options
         usage = await repo.device_usage(device.id)
         result["can_delete"] = not any(usage.values())
         return result

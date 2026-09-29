@@ -5,14 +5,126 @@ import json
 import httpx
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 
+from episode.api.inventory import DeviceWriteRequest, device_from_request
 from episode.api.routes import create_api
 from episode.config import EpisodeConfig
-from episode.domain.models import Event
+from episode.domain.models import CapabilityConfig, Device, Event
 from episode.inventory import InventoryService
 from episode.inventory.validation import DeviceValidationService
+from episode.media import CameraMedia, MediaRegistry, VideoMode, VideoSourceDescriptor
 from episode.plugins.registry import builtin_plugin_registry
 from episode.storage.repository import Repository
+
+
+def test_manual_recording_source_requires_manual_endpoint():
+    with pytest.raises(ValidationError, match="Select a discovered source"):
+        DeviceWriteRequest(
+            name="Camera",
+            area_id="entrance",
+            ip_address="192.0.2.10",
+            video={"enabled": True, "recording_source_id": "manual"},
+            onvif={"enabled": True},
+        )
+
+
+def test_video_can_be_enabled_before_plugin_media_discovery():
+    request = DeviceWriteRequest(
+        name="Reolink camera",
+        area_id="entrance",
+        ip_address="192.0.2.10",
+        video={"enabled": True},
+        onvif={"enabled": False},
+        reolink={"enabled": True, "media_enabled": True},
+    )
+
+    assert request.video.enabled is True
+    assert request.reolink.media_enabled is True
+
+
+def test_device_configuration_persists_a_pinned_recording_source():
+    request = DeviceWriteRequest(
+        id="camera-1",
+        name="Reolink camera",
+        area_id="entrance",
+        ip_address="192.0.2.10",
+        video={"enabled": True, "recording_source_id": "  reolink:native:sub  "},
+        onvif={"enabled": False},
+        reolink={"enabled": True, "media_enabled": True},
+    )
+
+    device = device_from_request(request.id, request)
+
+    assert device.get_config("video").settings["recording_source_id"] == "reolink:native:sub"
+
+
+@pytest.mark.asyncio
+async def test_device_detail_projects_safe_runtime_video_sources(tmp_path):
+    device = Device(
+        id="camera-1",
+        name="Front camera",
+        device_type="camera",
+        area_id="entrance",
+        ip_address="192.0.2.10",
+        username="viewer",
+        password="secret",
+        capabilities=["video"],
+        configs={
+            "video": CapabilityConfig(
+                protocol="",
+                port=None,
+                path="",
+                settings={"origin": "onvif"},
+            )
+        },
+    )
+
+    class InMemoryRepository:
+        async def get_device(self, device_id):
+            return device if device_id == device.id else None
+
+        async def device_usage(self, _device_id):
+            return {"episodes": 0, "events": 0, "evidence": 0}
+
+    media = MediaRegistry()
+    media.register(
+        CameraMedia(
+            device_id=device.id,
+            stream_uri="rtsp://viewer:secret@192.0.2.10/private/main",
+            source="onvif",
+            video_source=VideoSourceDescriptor(
+                id="onvif:profile-main",
+                name="Main profile",
+                provider="ONVIF",
+                protocol="rtsp",
+                metadata_kind="configured",
+                width=1920,
+                height=1080,
+                frame_rate=25,
+                codec="H264",
+                default=True,
+            ),
+        )
+    )
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(
+            app=create_api(InMemoryRepository(), str(tmp_path), media=media)
+        ),
+        base_url="http://test",
+    )
+    try:
+        response = await client.get("/api/v1/devices/camera-1")
+    finally:
+        await client.aclose()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["video_sources"][0]["id"] == "onvif:profile-main"
+    assert body["video_sources"][0]["width"] == 1920
+    assert body["configuration"]["video"]["recording_source_id"] == ""
+    assert "secret" not in response.text
+    assert "rtsp://" not in response.text
 
 
 @pytest_asyncio.fixture
@@ -136,6 +248,74 @@ async def test_area_and_device_crud_keeps_credentials_write_only(inventory_api):
 
 
 @pytest.mark.asyncio
+async def test_device_api_lists_safe_video_choices_and_persists_selection(tmp_path):
+    repository = Repository(EpisodeConfig(data_dir=str(tmp_path)))
+    await repository.initialize()
+    media = MediaRegistry()
+    media.register(
+        CameraMedia(
+            device_id="camera-1",
+            stream_uri="rtsp://user:secret@192.0.2.10/private/main",
+            source="onvif",
+            video_source=VideoSourceDescriptor(
+                id="onvif:profile-main",
+                name="Main profile",
+                provider="ONVIF",
+                protocol="rtsp",
+                metadata_kind="configured",
+                width=1920,
+                height=1080,
+                frame_rate=25,
+                codec="H264",
+                modes=(VideoMode(width=1920, height=1080, frame_rates=(25,), codec="H264"),),
+                default=True,
+            ),
+        )
+    )
+    app = create_api(repository, str(tmp_path), inventory=InventoryService(repository), media=media)
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    )
+    try:
+        area = await client.post("/api/v1/areas", json={"id": "entrance", "name": "Entrance"})
+        assert area.status_code == 201
+        created = await client.post(
+            "/api/v1/devices",
+            json={
+                "id": "camera-1",
+                "name": "Front camera",
+                "area_id": "entrance",
+                "ip_address": "192.0.2.10",
+                "username": "user",
+                "password": "secret",
+                "video": {
+                    "enabled": True,
+                    "manual_endpoint": True,
+                    "protocol": "rtsp",
+                    "port": 554,
+                    "path": "/manual",
+                    "recording_source_id": "onvif:profile-main",
+                },
+                "onvif": {"enabled": False},
+            },
+        )
+
+        assert created.status_code == 201
+        body = created.json()
+        assert body["configuration"]["video"]["recording_source_id"] == "onvif:profile-main"
+        assert body["video_sources"][0]["width"] == 1920
+        assert body["video_sources"][0]["frame_rate"] == 25
+        assert "private/main" not in json.dumps(body)
+        assert "secret" not in json.dumps(body)
+        stored = await repository.get_device("camera-1")
+        assert stored.get_config("video").settings["recording_source_id"] == "onvif:profile-main"
+    finally:
+        await client.aclose()
+        await repository.close()
+
+
+@pytest.mark.asyncio
 async def test_device_catalog_and_validation_selection_are_bounded(tmp_path):
     repository = Repository(EpisodeConfig(data_dir=str(tmp_path)))
     await repository.initialize()
@@ -165,7 +345,11 @@ async def test_device_catalog_and_validation_selection_are_bounded(tmp_path):
                 params={"manufacturer": "Hikvision", "device_type": "camera"},
             )
             assert catalog.status_code == 200
-            assert {entry["id"] for entry in catalog.json()} == {"onvif", "hikvision-isapi"}
+            assert {entry["id"] for entry in catalog.json()} == {
+                "onvif",
+                "hikvision-isapi",
+                "hikvision-sdk",
+            }
 
             await client.post("/api/v1/areas", json={"id": "yard", "name": "Yard"})
             created = await client.post(
@@ -289,11 +473,10 @@ async def test_manual_video_validation_does_not_persist_device(tmp_path, monkeyp
 async def test_device_writes_reconcile_runtime_integrations_automatically(tmp_path):
     repository = Repository(EpisodeConfig(data_dir=str(tmp_path)))
     await repository.initialize()
-    reconciliations = 0
+    reconciliations: list[str] = []
 
-    async def reconcile_device_integrations():
-        nonlocal reconciliations
-        reconciliations += 1
+    async def reconcile_device_integrations(device_id: str):
+        reconciliations.append(device_id)
 
     inventory = InventoryService(
         repository,
@@ -316,7 +499,7 @@ async def test_device_writes_reconcile_runtime_integrations_automatically(tmp_pa
                 },
             )
             assert created.status_code == 201
-            assert reconciliations == 1
+            assert reconciliations == ["sensor"]
 
             updated = await client.put(
                 "/api/v1/devices/sensor",
@@ -329,11 +512,11 @@ async def test_device_writes_reconcile_runtime_integrations_automatically(tmp_pa
                 },
             )
             assert updated.status_code == 200
-            assert reconciliations == 2
+            assert reconciliations == ["sensor", "sensor"]
 
             deleted = await client.delete("/api/v1/devices/sensor")
             assert deleted.status_code == 204
-            assert reconciliations == 3
+            assert reconciliations == ["sensor", "sensor", "sensor"]
     finally:
         await repository.close()
 
@@ -429,7 +612,7 @@ async def test_device_type_controls_doorbell_capability_and_rejects_vendor_as_ty
 
 
 @pytest.mark.asyncio
-async def test_video_without_onvif_requires_a_manual_rtsp_endpoint(inventory_api):
+async def test_video_can_wait_for_a_discovered_plugin_source_without_onvif(inventory_api):
     _repository, _inventory, client = inventory_api
     await client.post("/api/v1/areas", json={"id": "yard", "name": "Yard"})
 
@@ -441,11 +624,13 @@ async def test_video_without_onvif_requires_a_manual_rtsp_endpoint(inventory_api
             "ip_address": "192.0.2.40",
             "onvif": {"enabled": False},
             "video": {"enabled": True, "manual_endpoint": False},
+            "reolink": {"enabled": True, "media_enabled": True},
         },
     )
 
-    assert response.status_code == 422
-    assert "manual RTSP endpoint" in response.text
+    assert response.status_code == 201
+    assert response.json()["configuration"]["video"]["enabled"] is True
+    assert response.json()["configuration"]["reolink"]["media_enabled"] is True
 
 
 @pytest.mark.asyncio

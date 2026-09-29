@@ -77,6 +77,19 @@ setting and can be changed under **System → Recordings**. Lifecycle correlatio
 uses the Event's ingress reception time captured before database processing so
 queue or database latency does not create an artificial split.
 
+The Episode engine retains the persisted activity deadline in memory and sends
+the resulting capture lease (`minimum_end_at` plus settling grace) with Episode
+updates. The recorder converts it to a monotonic local deadline, advances it
+only when a newer persisted Event extends the lease, and enforces it without a
+database read. A newer grace-setting revision can replace the lease. If
+SQLite prevents lifecycle writes, the timeout loop retries with capped
+exponential backoff and notifies the recorder when a cached lease expires. The
+recorder then stops capture and parks the HLS workspace as recoverable. It does
+not publish Evidence until the Episode reaches `FINALIZING`; once storage
+recovers, that barrier retries the workspace before the Episode can close. A
+failed Evidence write leaves the workspace recoverable and the recorder
+degraded, with no complete Evidence row published.
+
 An inactive Event is paired with the latest preceding active Event only while
 that Episode is still mutable (`ACTIVE` or `QUIESCENT`). After the grace period,
 late inactive Events and Evidence remain preserved and unassigned. They never
@@ -199,9 +212,13 @@ HTTP transport preserves the complete Alarm Server request body, while the
 configured Hikvision handler extracts `EventNotificationAlert` and emits a
 normalized observation. The core FTP transport preserves each uploaded file;
 the Hikvision FTP handler recognizes supported filenames and emits snapshot
-Evidence. Unknown files remain visible raw deliveries. HCNetSDK callbacks
-follow the same raw-first route; native decoding remains isolated in the SDK
-plugin.
+Evidence. Unknown files remain visible raw deliveries. HCNetSDK Doorbell
+callbacks follow the same raw-first route; native decoding remains isolated in
+the SDK plugin. For explicitly configured Hikvision Cameras, a separate
+supervised worker reads current stream settings and registers selectable
+main/sub video handlers; it does not subscribe to camera alarm Events. Video
+is streamed only on recording demand, while the core recorder remains
+responsible for HLS packaging, manifests, Evidence, and retention.
 
 The Reolink plugin owns its Baichuan TCP connection, authentication, capability
 discovery, snapshot requests, RTSP media registration, subscription lifecycle,
@@ -217,11 +234,13 @@ becomes canonical, and an opt-in native preview pass (`cmdId=3`, stopped by
 time-to-first-keyframe while warming its encoder. Both are fire-and-forget,
 serialized, bounded, and counted, and neither produces a delivery. **Recording
 ownership stays in the core**: the recorder owns the HLS/fMP4 bundle, its
-component inventory, crash recovery, and retention, so native bytes may inform
-and prime a recording but never become Video Evidence from inside the plugin.
+component inventory, crash recovery, and retention. A native preview can inform
+and prime capture; when selected as a recording source, its bytes enter the
+core recorder rather than becoming Evidence inside the plugin.
 
 An opt-in `native_video` setting makes the on-demand `cmdId=3` burst the
-recording **source** instead of RTSP (F1). The plugin does not keep a continuous
+Automatic recording **source** instead of RTSP. Operators can also pin a
+discovered recording source per Device. The plugin does not keep a continuous
 preview session: it issues the command when a recording starts, the camera opens
 with an I-Frame, and `cmdId=6` stops the burst on every exit path. The bytes are
 handed to the core recorder's pipe as Annex-B access units through the
@@ -233,6 +252,11 @@ unit) collapses from the ~3.5 s an RTSP keyframe-wait costs toward the measured
 `hvc1` codec tag — WebKit (Safari), the browser with the broadest HEVC playback,
 requires it and rejects the in-band `hev1` tag; the parameter sets stay in
 `init.mp4`, so each fragment is self-contained for decoder initialization.
+
+Recording-source choice does not determine snapshot delivery. The media
+registry prefers an event-bound snapshot fetcher for tokenized requests and
+otherwise uses a snapshot-capable source, even when another connector supplies
+the selected video stream.
 
 The optional Event API is the vendor-neutral exception to plugin interpretation:
 its JSON schema is already a canonical observation contract, so a core-owned
@@ -365,10 +389,18 @@ physical role, never vendor. Vendor identity is discovered when possible, while
 optional vendor integrations remain separate configurations. A Device's
 `configs` determine which integrations are enabled; `capabilities` describe
 what the Device has actually advertised or demonstrated. Saving or deleting a
-Device immediately reloads the running plugin set from the authoritative
-inventory. Existing recording processes remain owned by the
-recording engine and continue until their Episode closes; newly added Devices
-participate in later qualifying Events.
+Device reconciles the running plugin set from the authoritative inventory.
+Only integrations whose runtime inputs changed are restarted; built-in camera
+integrations do not reconnect for edits to recording policy, a selected video
+source, event filtering, or display name. Shared ingress handlers and
+out-of-tree plugins compare the inventory fields they actually receive. Other
+plugin instances keep their connections and registered media sources. ONVIF
+and Reolink discovery merge only their own capability and metadata updates into
+the latest stored Device, so a running plugin cannot overwrite an operator's
+unrelated edit with an old Device snapshot. An already-running recording is
+not retargeted by a Device edit, but changing the integration that supplies
+its native video may interrupt that capture. Newly added Devices participate
+in later qualifying Events.
 
 A Device can be saved as `needs_setup` without claiming it is operational. This
 is distinct from an intentionally disabled Device. It remains visible in
@@ -566,6 +598,19 @@ before submission when the integration is explicitly configured to ignore that
 Event type. The first observed state and every transition are still preserved;
 non-ignored Events always cross the raw-first boundary unchanged.
 
+Device integrations may register multiple runtime video-source candidates per
+Device. Each candidate keeps its URI and credentials inside the media registry
+and supplies a bounded, vendor-neutral descriptor for the API and UI. Automatic
+recording uses the integration's designated default. An operator may pin a
+stable source ID for future recordings; a missing pinned source is unavailable,
+not a request to fall back. Source discovery is runtime state and is refreshed
+by the integration, while the selected ID is ordinary Device configuration.
+Changing that ID does not switch an active recording. The registry and recorder
+remain core-owned, and plugins continue to own protocol discovery and media
+acquisition. The active HLS workspace also retains the resolved source ID so
+startup recovery resumes the same source; legacy workspaces without that field
+continue using the configured Automatic or pinned choice.
+
 New actions should consume canonical domain messages or target-resolution
 decisions. They must not subscribe directly to vendor-specific connector
 payloads. Recording targets are currently resolved from the Event source and
@@ -607,9 +652,12 @@ write-only credentials, and active-Area constraints. Integration support,
 configured selection, and runtime health are separate states: safe validation
 probes provide evidence without activating connectors, and transient failures
 are never presented as proof of unsupported hardware. Device changes are durable
-immediately and reconcile the running Device integrations before the mutation
-request completes. Recording processes already in progress remain independent
-of that integration lifecycle.
+immediately and reconcile affected Device integrations before the mutation
+request completes. Core-only policy edits leave built-in Device connections
+running; endpoint, credential, Area, or integration-specific changes refresh
+the affected integration. Unaffected integrations stay running. Recordings retain
+their resolved source, but a changed integration may interrupt a capture that
+uses its native video handler; interruption is recorded explicitly.
 
 Receipt collection queries support deterministic offset pagination and filters
 for source, outcome status, Episode, Event, and Evidence. A single-receipt route

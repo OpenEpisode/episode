@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from episode.media.registry import MediaRegistry
@@ -120,8 +122,10 @@ async def test_onvif_discovery_keeps_manual_rtsp_fallback_separate():
     video = config.device.get_config("video")
     assert video.build_url("192.0.2.10") == "rtsp://192.0.2.10:8554/manual"
     assert video.settings == {"recording_mode": "on_episode"}
-    assert config.device.metadata["onvif"]["profile_token"] == "auto-main"
-    assert saved == [config.device]
+    assert saved[0].integration_type == "onvif"
+    assert saved[0].device_id == "camera-test"
+    assert saved[0].metadata["profile_token"] == "auto-main"
+    assert saved[0].video_if_unconfigured is None
     assert media.get("camera-test").stream_uri == "rtsp://192.0.2.10/discovered"
 
 
@@ -172,3 +176,70 @@ async def test_onvif_discovery_does_not_enable_disabled_recording():
 
     assert config.device.get_config("video") is None
     assert "video" in config.device.capabilities
+
+
+@pytest.mark.asyncio
+async def test_onvif_registers_each_profile_as_a_selectable_source():
+    config, error = device_config(_device())
+    assert error is None
+    discovered = ONVIFDevice(
+        profiles=[
+            ONVIFProfile(
+                token="main-profile",
+                name="Main stream",
+                encoding="H264",
+                width=1920,
+                height=1080,
+                frame_rate=25,
+                stream_uri="rtsp://192.0.2.10/main",
+            ),
+            ONVIFProfile(
+                token="sub-profile",
+                name="Sub stream",
+                encoding="H264",
+                width=640,
+                height=360,
+                frame_rate=15,
+                stream_uri="rtsp://192.0.2.10/sub",
+            ),
+        ]
+    )
+
+    class Client:
+        async def discover(self):
+            return discovered
+
+        async def close(self):
+            pass
+
+        async def unsubscribe(self, _url):
+            pass
+
+    async def sink(_delivery):
+        pass
+
+    async def save(_device):
+        pass
+
+    media = MediaRegistry()
+    connection = ONVIFDeviceConnection(
+        config,
+        sink,
+        media,
+        save,
+        client_factory=lambda _config: Client(),
+    )
+
+    await connection._discover()
+
+    sources = media.video_sources("camera-test")
+    assert len(sources) == 2
+    assert sources[0].default is True
+    assert sources[0].width == 1920
+    assert sources[0].height == 1080
+    assert sources[0].frame_rate == 25
+    assert sources[0].metadata_kind == "configured"
+    selected_id = f"onvif:{hashlib.sha256(b'main-profile').hexdigest()[:16]}"
+    assert sources[0].id == selected_id
+    assert media.get("camera-test", source_id=selected_id).stream_uri.endswith("/main")
+    assert "main-profile" not in selected_id

@@ -15,7 +15,7 @@ import {
   confirmDeviceDelete,
   openAreaEditor,
   openDeviceEditor,
-} from "./inventory.js?v=7";
+} from "./inventory.js?v=10";
 import { refreshRetentionPolicy } from "./retention-policy.js?v=1";
 import { showContent, showError, showLoading } from "./view.js?v=1";
 
@@ -42,6 +42,29 @@ export function operationalIndicator(state) {
 
 export function operationalBadge(state) {
   return `<span class="badge badge-${state}">${titleCase(state)}</span>`;
+}
+
+function videoSourceFacts(source) {
+  const modes = source.modes || [];
+  const sizes = [...new Set(modes
+    .filter(mode => mode.width && mode.height)
+    .map(mode => `${mode.width} × ${mode.height}`))];
+  const facts = [];
+  if (source.width && source.height) facts.push(`${source.width} × ${source.height}`);
+  else if (sizes.length) facts.push(sizes.slice(0, 3).join(", ") + (sizes.length > 3 ? ` +${sizes.length - 3} modes` : ""));
+  if (source.frame_rate) facts.push(`${source.frame_rate} fps`);
+  else {
+    const rates = [...new Set(modes.flatMap(mode => mode.frame_rates || []))].sort((a, b) => b - a);
+    if (rates.length) facts.push(`${rates.at(-1)}–${rates[0]} fps advertised`);
+  }
+  if (source.codec) facts.push(source.codec);
+  const certainty = {
+    configured: "Configured profile values",
+    capabilities: "Camera-advertised options; active settings may differ",
+    observed: "Observed from a stream",
+    unknown: "Technical details not reported",
+  }[source.metadata_kind] || "Technical details not reported";
+  return [...facts, certainty].join(" · ");
 }
 
 function capabilityBadges(capabilities) {
@@ -409,6 +432,13 @@ export async function deviceView(id) {
     const profiles = onvif?.details?.profiles || [];
     const selectedProfile = onvif?.details?.selected_profile || "";
     const topics = onvif?.details?.event_topics || [];
+    const videoSources = item.video_sources || [];
+    const selectedSourceId = item.configuration?.video?.recording_source_id || "";
+    const selectedSource = videoSources.find(source => source.id === selectedSourceId);
+    const defaultSource = videoSources.find(source => source.default);
+    const recordingSourceLabel = selectedSourceId
+      ? selectedSource?.name || "Saved source unavailable"
+      : defaultSource ? `Automatic · ${defaultSource.name}` : "Automatic · waiting for discovery";
     const deviceName = item.name || item.id;
     const areaName = area?.name || item.area_id || "Not assigned";
     const manufacturerModel = [identity.manufacturer, identity.model].filter(Boolean).join(" ")
@@ -447,6 +477,7 @@ export async function deviceView(id) {
             <div><dt>Manufacturer</dt><dd>${escHtml(identity.manufacturer || "Not detected")}</dd></div>
             <div><dt>Model</dt><dd>${escHtml(identity.model || "Not detected")}</dd></div>
             <div><dt>Firmware</dt><dd>${escHtml(identity.firmware_version || "Not reported")}</dd></div>
+            <div><dt>Recording source</dt><dd>${escHtml(recordingSourceLabel)}</dd></div>
             <div><dt>Episode activity window</dt><dd>${item.capture_policy.activity_window_seconds} seconds</dd></div>
             <div><dt>Event-triggered snapshots</dt><dd>${item.capture_policy.automatic_snapshots
               ? "Enabled — requests and preserves an image for each new active Event"
@@ -465,11 +496,26 @@ export async function deviceView(id) {
         ${sectionHeading("system", "Integrations", "Configured connections and current runtime health", `<span class="review-section-count">${item.integrations.length}</span>`)}
         ${renderIntegrationRows(item.integrations)}
       </section>
+      ${(videoSources.length || item.configuration?.video?.enabled) ? `<section class="review-panel section">
+        ${sectionHeading("devices", "Recording sources", "Discovered choices for future recordings", `<span class="review-section-count">${videoSources.length}</span>`)}
+        ${videoSources.length ? `<div class="resource-list">${videoSources.map(source => {
+          const isSelected = selectedSourceId ? source.id === selectedSourceId : source.default;
+          const badges = [
+            source.default ? '<span class="badge badge-neutral">Automatic default</span>' : "",
+            selectedSourceId && source.id === selectedSourceId ? '<span class="badge badge-active">Selected</span>' : "",
+          ].filter(Boolean).join("");
+          return `<div class="resource-row recording-source-row">
+            <div class="resource-main"><strong>${escHtml(source.name)}</strong><span>${escHtml(source.provider)} · ${escHtml(source.protocol)} · ${escHtml(videoSourceFacts(source))}</span></div>
+            <div class="resource-badges">${badges || (isSelected ? '<span class="badge badge-active">Selected</span>' : "")}</div>
+          </div>`;
+        }).join("")}</div>` : '<div class="empty-state">No recording source is currently discovered. Check the Device integrations or configure a manual RTSP endpoint.</div>'}
+        <p class="meta">Stream characteristics are reported as configured, advertised capabilities, observed values, or unknown. Choosing a source pins future recordings; it does not change the camera’s own encoding settings.</p>
+      </section>` : ""}
       ${profiles.length ? `<section class="review-panel section">
-        ${sectionHeading("devices", "ONVIF media", "Discovered media profiles · read-only", `<span class="review-section-count">${profiles.length}</span>`)}
+        ${sectionHeading("devices", "ONVIF media", "Discovered profiles · read-only · recording choice is set above", `<span class="review-section-count">${profiles.length}</span>`)}
         <div class="resource-list">${profiles.map(profile => `<div class="resource-row">
-          <div class="resource-main"><strong>${escHtml(profile.name || profile.token)}</strong><span>${profile.width} × ${profile.height} · ${escHtml(profile.encoding || "Unknown codec")} · Snapshot ${profile.snapshot ? "available" : "unavailable"}</span></div>
-          <span class="badge ${profile.token === selectedProfile ? "badge-active" : "badge-neutral"}">${profile.token === selectedProfile ? "Selected" : "Discovered"} · read-only</span>
+          <div class="resource-main"><strong>${escHtml(profile.name || profile.token)}</strong><span>${profile.width} × ${profile.height}${profile.frame_rate ? ` · ${profile.frame_rate} fps` : ""} · ${escHtml(profile.encoding || "Unknown codec")} · Snapshot ${profile.snapshot ? "available" : "unavailable"}</span></div>
+          <span class="badge ${profile.token === selectedProfile ? "badge-active" : "badge-neutral"}">${profile.token === selectedProfile ? "Integration default" : "Available"} · read-only</span>
         </div>`).join("")}</div>
       </section>` : ""}
       <section class="review-panel section">

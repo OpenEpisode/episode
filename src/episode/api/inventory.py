@@ -43,6 +43,12 @@ class VideoConfigurationRequest(BaseModel):
     port: int | None = Field(default=554, ge=1, le=65535)
     path: str = Field(default="/Streaming/Channels/101", max_length=500)
     recording_mode: RecordingMode = "on_event"
+    recording_source_id: str = Field(default="", max_length=256)
+
+    @field_validator("recording_source_id")
+    @classmethod
+    def strip_recording_source_id(cls, value: str) -> str:
+        return value.strip()
 
 
 class ONVIFConfigurationRequest(BaseModel):
@@ -178,12 +184,14 @@ class DeviceWriteRequest(BaseModel):
         for value in (self.video, self.onvif, self.isapi):
             if value.enabled and value.path and not value.path.startswith("/"):
                 raise ValueError("Integration paths must start with '/'")
-        if self.video.enabled and not self.onvif.enabled and not self.video.manual_endpoint:
-            raise ValueError(
-                "Enable a manual RTSP endpoint when video recording is used without ONVIF"
-            )
         if self.video.manual_endpoint and (not self.video.protocol or not self.video.path):
             raise ValueError("A manual RTSP endpoint requires a protocol and path")
+        if (
+            self.video.enabled
+            and self.video.recording_source_id == "manual"
+            and not self.video.manual_endpoint
+        ):
+            raise ValueError("Select a discovered source or enable the manual endpoint")
         return self
 
 
@@ -229,7 +237,7 @@ def editable_device_configuration(device: Device) -> dict:
     isapi = device.get_config("isapi")
     sdk = device.get_config("hikvision_sdk")
     reolink = device.get_config("reolink")
-    discovered_video = bool(video and video.settings.get("origin") == "onvif")
+    discovered_video = bool(video and video.settings.get("origin") in {"onvif", "reolink"})
     manual_video = bool(video and video.protocol and video.path and not discovered_video)
     return DeviceConfigurationResponse(
         setup_state=getattr(device, "setup_state", "ready"),
@@ -248,6 +256,9 @@ def editable_device_configuration(device: Device) -> dict:
             path=video.path if manual_video else "/Streaming/Channels/101",
             recording_mode=(
                 video.settings.get("recording_mode", "on_event") if video else "disabled"
+            ),
+            recording_source_id=(
+                str(video.settings.get("recording_source_id", "")) if video else ""
             ),
         ),
         onvif=ONVIFConfigurationRequest(
@@ -308,6 +319,9 @@ def device_from_request(
         settings.pop("origin", None)
         settings.pop("profile_token", None)
         settings["recording_mode"] = request.video.recording_mode
+        settings["recording_source_id"] = request.video.recording_source_id
+        if request.video.manual_endpoint:
+            settings["origin"] = "manual"
         configs["video"] = CapabilityConfig(
             protocol=request.video.protocol if request.video.manual_endpoint else "",
             port=request.video.port if request.video.manual_endpoint else None,

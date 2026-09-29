@@ -120,3 +120,88 @@ async def test_plugin_starts_one_worker_per_explicit_sdk_device(tmp_path):
     assert "secret-one" not in repr(status)
     assert "secret-two" not in repr(status)
     await plugin.stop()
+
+
+@pytest.mark.asyncio
+async def test_camera_uses_video_worker_without_subscribing_to_sdk_events(tmp_path):
+    _install_sdk_layout(tmp_path)
+    payload = json.dumps({"ok": True, "version": "6.1.9.48"})
+    event_workers = []
+    video_workers = []
+
+    class FakeWorker:
+        def __init__(self, config):
+            self.config = config
+
+        def status(self):
+            return PluginInstanceStatus(
+                id=self.config.id,
+                name=self.config.name,
+                state=PluginInstanceState.RUNNING,
+            )
+
+        async def start(self):
+            return True
+
+        async def stop(self):
+            pass
+
+    def event_factory(_path, config, _sink):
+        worker = FakeWorker(config)
+        event_workers.append(worker)
+        return worker
+
+    def video_factory(_path, config, media_registry):
+        worker = FakeWorker(config)
+        worker.media_registry = media_registry
+        video_workers.append(worker)
+        return worker
+
+    async def preserve(_delivery):
+        pass
+
+    devices = (
+        {
+            "id": "garage-camera",
+            "name": "Garage Camera",
+            "device_type": "camera",
+            "area_id": "garage",
+            "ip_address": "192.0.2.20",
+            "username": "user",
+            "password": "camera-secret",
+            "configs": {"hikvision_sdk": {}},
+        },
+        {
+            "id": "front-doorbell",
+            "name": "Front Doorbell",
+            "device_type": "doorbell",
+            "area_id": "front",
+            "ip_address": "192.0.2.21",
+            "username": "user",
+            "password": "doorbell-secret",
+            "configs": {"hikvision_sdk": {}},
+        },
+    )
+    media_registry = object()
+    plugin = HikvisionSDKPlugin(
+        PluginContext(tmp_path, devices, preserve, media_registry=media_registry),
+        host_machine="x86_64",
+        probe_command=lambda _path: [
+            sys.executable,
+            "-c",
+            f"print({PROBE_RESULT_PREFIX + payload!r})",
+        ],
+        worker_factory=event_factory,
+        video_worker_factory=video_factory,
+    )
+
+    await plugin.start()
+
+    assert [worker.config.id for worker in event_workers] == ["front-doorbell"]
+    assert [worker.config.id for worker in video_workers] == ["garage-camera"]
+    assert video_workers[0].media_registry is media_registry
+    status = plugin.status()
+    assert status.state == PluginState.READY
+    assert "camera-secret" not in repr(status)
+    assert "doorbell-secret" not in repr(status)
+    await plugin.stop()

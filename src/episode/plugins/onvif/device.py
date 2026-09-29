@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -9,8 +10,8 @@ from time import monotonic
 
 import httpx
 
-from episode.domain.models import CapabilityConfig, Device
-from episode.media.registry import CameraMedia
+from episode.domain.models import Device, DeviceDiscoveryUpdate
+from episode.media.registry import CameraMedia, VideoSourceDescriptor
 from episode.plugins.models import (
     PluginDeviceInfo,
     PluginDeviceUpdateSink,
@@ -82,6 +83,7 @@ class ONVIFDeviceConnection:
         self._running = False
         self._subscribed = False
         self._subscription_url: str | None = None
+        self._selected_profile_token = ""
         self._status = PluginInstanceStatus(
             id=config.device.id,
             name=config.device.name,
@@ -121,19 +123,72 @@ class ONVIFDeviceConnection:
         discovered = await self._client.discover()
         self._discovered = discovered
         profile = self._select_profile(discovered)
+        self._selected_profile_token = profile.token if profile else ""
+        self._media.unregister(self.config.device.id, source="onvif")
         if profile:
             device = self.config.device
-            self._media.register(
-                CameraMedia(
-                    device_id=device.id,
-                    stream_uri=profile.stream_uri,
-                    snapshot_uri=profile.snapshot_uri,
-                    username=device.username,
-                    password=device.password,
-                    profile_token=profile.token,
-                    source="onvif",
+            for index, candidate in enumerate(discovered.profiles, start=1):
+                # Tokens are useful inside ONVIF, but the stable public choice uses
+                # a digest so the API need not expose protocol identifiers.
+                token_digest = hashlib.sha256(candidate.token.encode("utf-8")).hexdigest()[:16]
+                profile_name = candidate.name
+                if (
+                    not isinstance(profile_name, str)
+                    or not profile_name
+                    or len(profile_name) > 120
+                    or "://" in profile_name
+                    or any(ord(character) < 32 for character in profile_name)
+                ):
+                    profile_name = f"Profile {index}"
+                encoding = candidate.encoding
+                if (
+                    not isinstance(encoding, str)
+                    or len(encoding) > 32
+                    or "://" in encoding
+                    or any(ord(character) < 32 for character in encoding)
+                ):
+                    encoding = ""
+                self._media.register(
+                    CameraMedia(
+                        device_id=device.id,
+                        stream_uri=candidate.stream_uri,
+                        snapshot_uri=candidate.snapshot_uri,
+                        username=device.username,
+                        password=device.password,
+                        profile_token=candidate.token,
+                        source="onvif",
+                        video_source=VideoSourceDescriptor(
+                            id=f"onvif:{token_digest}",
+                            name=profile_name,
+                            provider="ONVIF",
+                            protocol="rtsp",
+                            metadata_kind="configured",
+                            width=(
+                                candidate.width
+                                if isinstance(candidate.width, int)
+                                and not isinstance(candidate.width, bool)
+                                and 0 < candidate.width <= 16384
+                                else None
+                            ),
+                            height=(
+                                candidate.height
+                                if isinstance(candidate.height, int)
+                                and not isinstance(candidate.height, bool)
+                                and 0 < candidate.height <= 16384
+                                else None
+                            ),
+                            frame_rate=(
+                                candidate.frame_rate
+                                if isinstance(candidate.frame_rate, (int, float))
+                                and not isinstance(candidate.frame_rate, bool)
+                                and 0 < candidate.frame_rate <= 240
+                                else None
+                            ),
+                            codec=encoding,
+                            default=candidate.token == profile.token,
+                        ),
+                    )
                 )
-            )
             await self._apply_discovery(profile)
         self._refresh_status()
         logger.info(
@@ -149,7 +204,11 @@ class ONVIFDeviceConnection:
         requested = self.config.profile_token
         if requested:
             match = next(
-                (profile for profile in discovered.profiles if profile.token == requested),
+                (
+                    profile
+                    for profile in discovered.profiles
+                    if profile.token == requested and profile.stream_uri
+                ),
                 None,
             )
             if match:
@@ -160,42 +219,36 @@ class ONVIFDeviceConnection:
                 requested,
             )
         return max(
-            discovered.profiles,
+            (profile for profile in discovered.profiles if profile.stream_uri),
             key=lambda profile: profile.width * profile.height,
             default=None,
         )
 
     async def _apply_discovery(self, profile) -> None:
         device = self.config.device
-        for capability in ("video", "events"):
-            if capability not in device.capabilities:
-                device.capabilities.append(capability)
+        capabilities = ["video", "events"]
         if profile.snapshot_uri and "snapshot" not in device.capabilities:
-            device.capabilities.append("snapshot")
+            capabilities.append("snapshot")
         if self._discovered and "Tamper" in self._discovered.event_topics:
-            if "tamper" not in device.capabilities:
-                device.capabilities.append("tamper")
-
-        existing = device.get_config("video")
-        if existing:
-            recording_mode = existing.settings.get("recording_mode", "on_event")
-            device.configs["video"] = CapabilityConfig(
-                protocol=existing.protocol,
-                port=existing.port,
-                path=existing.path,
-                settings={**existing.settings, "recording_mode": recording_mode},
+            capabilities.append("tamper")
+        if self._device_update_sink is not None:
+            await self._device_update_sink(
+                DeviceDiscoveryUpdate(
+                    device_id=device.id,
+                    integration_type="onvif",
+                    capabilities=tuple(capabilities),
+                    metadata={
+                        "manufacturer": self._discovered.manufacturer,
+                        "model": self._discovered.model,
+                        "firmware_version": self._discovered.firmware_version,
+                        "profile_token": profile.token,
+                        "profiles": len(self._discovered.profiles),
+                        "events": TEV in self._discovered.services,
+                        "events_enabled": self.config.events_enabled,
+                        "snapshot": bool(profile.snapshot_uri),
+                    },
+                )
             )
-        device.metadata["onvif"] = {
-            "manufacturer": self._discovered.manufacturer,
-            "model": self._discovered.model,
-            "firmware_version": self._discovered.firmware_version,
-            "profile_token": profile.token,
-            "profiles": len(self._discovered.profiles),
-            "events": TEV in self._discovered.services,
-            "events_enabled": self.config.events_enabled,
-            "snapshot": bool(profile.snapshot_uri),
-        }
-        await self._device_update_sink(device)
 
     async def _monitor(self) -> None:
         backoff = 5.0
@@ -296,6 +349,7 @@ class ONVIFDeviceConnection:
                 "encoding": profile.encoding,
                 "width": profile.width,
                 "height": profile.height,
+                "frame_rate": profile.frame_rate,
                 "snapshot": bool(profile.snapshot_uri),
             }
             for profile in discovered.profiles
@@ -326,9 +380,7 @@ class ONVIFDeviceConnection:
                 "subscribed": self._subscribed,
                 "events_enabled": self.config.events_enabled,
                 "profiles": profiles,
-                "selected_profile": self.config.device.metadata.get("onvif", {}).get(
-                    "profile_token", ""
-                ),
+                "selected_profile": self._selected_profile_token,
                 "event_topics": discovered.event_topics,
             },
         )

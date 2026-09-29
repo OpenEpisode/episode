@@ -106,6 +106,8 @@ class _EpisodeRecording:
     handler_reason: str | None = None
     #: Redacted tail of this attempt's ffmpeg stderr, kept to explain a failed attempt.
     ffmpeg_stderr: str = ""
+    capture_lease_deadline: float | None = None
+    finalize_reason: str | None = None
     proc: asyncio.subprocess.Process | None = None
     task: asyncio.Task | None = None
     stop_reason: str | None = None
@@ -148,19 +150,24 @@ class RecordingEngine:
         media=None,
         target_resolver: RecordingTargetResolver | None = None,
         evidence_sink: RecordingEvidenceSink | None = None,
+        episode_timeout_seconds: int = 30,
     ):
         if fragment_seconds <= 0:
             raise ValueError("fragment_seconds must be greater than zero")
+        if episode_timeout_seconds <= 0:
+            raise ValueError("episode_timeout_seconds must be greater than zero")
         self._repo = repo
         self._bus = bus
         self._data_dir = data_dir
         self._fragment_seconds = fragment_seconds
+        self._episode_timeout_seconds = episode_timeout_seconds
         self._media = media
         self._target_resolver = target_resolver or AreaRecordingTargetResolver(repo)
         self._evidence_sink = evidence_sink
         self._active_tasks: set[asyncio.Task] = set()
         self._recordings: dict[tuple[str, str], _EpisodeRecording] = {}
         self._recoverable: dict[tuple[str, str], _EpisodeRecording] = {}
+        self._episode_capture_leases: dict[str, tuple[int, float]] = {}
         self._running = False
         self._stall_seconds = max(60, fragment_seconds * 6)
         # A camera socket that stops answering must fail its ffmpeg before the no-progress
@@ -261,11 +268,13 @@ class RecordingEngine:
         self._running = True
         self._bus.subscribe("event.canonicalized", self._on_event)
         self._bus.subscribe("episode.updated", self._on_episode_updated)
+        self._bus.subscribe("episode.capture_lease_expired", self._on_capture_lease_expired)
 
     async def stop(self) -> None:
         self._running = False
         self._bus.unsubscribe("event.canonicalized", self._on_event)
         self._bus.unsubscribe("episode.updated", self._on_episode_updated)
+        self._bus.unsubscribe("episode.capture_lease_expired", self._on_capture_lease_expired)
         await self._stop_recordings(list(self._recordings.values()), reason="application_shutdown")
         if self._active_tasks:
             _, pending = await asyncio.wait(self._active_tasks, timeout=10)
@@ -339,11 +348,17 @@ class RecordingEngine:
 
     async def resume_active_episodes(self) -> None:
         now = datetime.now(tz=timezone.utc)
+        grace = await self._repo.get_quiescent_grace_seconds()
         episodes = [
             *await self._repo.list_episodes(state=EpisodeState.ACTIVE, limit=10000),
             *await self._repo.list_episodes(state=EpisodeState.QUIESCENT, limit=10000),
         ]
         for episode in episodes:
+            capture_deadline = self._episode_capture_deadline(episode)
+            self._set_episode_capture_lease(
+                episode.id,
+                (capture_deadline + timedelta(seconds=grace)).isoformat(),
+            )
             if not await self._episode_within_capture_horizon(episode, now):
                 continue
             events = await self._repo.list_events(episode_id=episode.id, limit=10000)
@@ -354,12 +369,28 @@ class RecordingEngine:
                 for device in await self._target_resolver.resolve(event):
                     targets[device.id] = device
             for device in targets.values():
-                stream_url, video_handler, codec_hint = self._video_source(device)
+                recoverable = self._recoverable.get(self._rec_key(episode.id, device.id))
+                recovered_source_id = (
+                    recoverable.bundle.state.video_source_id if recoverable else ""
+                )
+                stream_url, video_handler, codec_hint = self._video_source(
+                    device,
+                    source_id_override=recovered_source_id or None,
+                )
                 if not stream_url and video_handler is None:
+                    selected_source = recovered_source_id or self._configured_video_source_id(
+                        device
+                    )
+                    message = (
+                        f"selected recording source {selected_source!r} is unavailable"
+                        if selected_source and selected_source != "manual"
+                        else "no stream URL"
+                    )
                     logger.warning(
-                        "Could not resume recording for episode %s camera %s: no stream URL",
+                        "Could not resume recording for episode %s camera %s: %s",
                         episode.id[:8],
                         device.id,
+                        message,
                     )
                     continue
                 await self._start_recording(
@@ -377,7 +408,7 @@ class RecordingEngine:
                         "device_id": device.id,
                         "recording_session_id": recording.session_id,
                         "evidence_id": recording.evidence_id,
-                        "minimum_end_at": episode.minimum_end_at.isoformat(),
+                        "minimum_end_at": capture_deadline.isoformat(),
                     },
                 )
         for key, recording in list(self._recoverable.items()):
@@ -389,10 +420,15 @@ class RecordingEngine:
 
     async def _episode_within_capture_horizon(self, episode, now: datetime) -> bool:
         """Keep recovery aligned with the engine's persisted settling policy."""
-        if episode.minimum_end_at is None:
-            return True
+        deadline = self._episode_capture_deadline(episode)
         grace = await self._repo.get_quiescent_grace_seconds()
-        return episode.minimum_end_at + timedelta(seconds=grace) >= now
+        return deadline + timedelta(seconds=grace) >= now
+
+    def _episode_capture_deadline(self, episode) -> datetime:
+        if episode.minimum_end_at is not None:
+            return episode.minimum_end_at
+        baseline = episode.last_activity_at or episode.last_event_time or episode.start_time
+        return baseline + timedelta(seconds=self._episode_timeout_seconds)
 
     async def _on_event(self, msg: Message) -> None:
         result = msg.data.get("result")
@@ -418,10 +454,17 @@ class RecordingEngine:
                         codec_hint=codec_hint,
                     )
                 else:
+                    selected_source = self._configured_video_source_id(device)
+                    message = (
+                        f"selected recording source {selected_source!r} is unavailable"
+                        if selected_source and selected_source != "manual"
+                        else "no stream URL"
+                    )
                     logger.warning(
-                        "Skipping recording for episode %s camera %s: no stream URL",
+                        "Skipping recording for episode %s camera %s: %s",
                         event.episode_id[:8],
                         device.id,
+                        message,
                     )
             except Exception:
                 logger.exception(
@@ -437,7 +480,12 @@ class RecordingEngine:
         video = device.get_config("video")
         return video.build_url(device.ip_address, device.username, device.password) if video else ""
 
-    def _video_source(self, device: Device) -> tuple[str, VideoStreamHandler | None, str]:
+    def _video_source(
+        self,
+        device: Device,
+        *,
+        source_id_override: str | None = None,
+    ) -> tuple[str, VideoStreamHandler | None, str]:
         """Where this Device's video comes from: a URL, or a plugin handler plus its codec.
 
         A handler takes precedence over a URL because the plugin already holds a session
@@ -446,11 +494,73 @@ class RecordingEngine:
         the same either way, so bundle layout, manifest, retention, and finalization remain
         core-owned.
         """
-        discovered = self._media.get(device.id) if self._media else None
-        if discovered is None or discovered.video_handler is None:
+        video = device.get_config("video")
+        selected_source_id = (
+            self._configured_video_source_id(device)
+            if source_id_override is None
+            else source_id_override
+        )
+        if selected_source_id == "manual":
+            if (
+                video is None
+                or not video.protocol
+                or not video.path
+                or video.settings.get("origin") in {"onvif", "reolink"}
+                or video.settings.get("manual_endpoint") is False
+            ):
+                return "", None, ""
+            return (
+                video.build_url(device.ip_address, device.username, device.password),
+                None,
+                "",
+            )
+
+        discovered = (
+            self._media.get(device.id, source_id=selected_source_id or None)
+            if self._media
+            else None
+        )
+        # An explicit selection is a contract, not a hint. If discovery has not
+        # produced it (or it disappeared), do not silently record another source.
+        if selected_source_id and discovered is None:
+            return "", None, ""
+        if discovered is None:
             return self._stream_url(device), None, ""
-        codec = discovered.codec_hint if discovered.codec_hint in VIDEO_CODEC_HINTS else ""
-        return discovered.authenticated_stream_uri(), discovered.video_handler, codec
+        if discovered.video_handler is not None:
+            codec = discovered.codec_hint if discovered.codec_hint in VIDEO_CODEC_HINTS else ""
+            return discovered.authenticated_stream_uri(), discovered.video_handler, codec
+        if discovered.stream_uri:
+            return discovered.authenticated_stream_uri(), None, ""
+        if selected_source_id:
+            return "", None, ""
+        return (
+            video.build_url(device.ip_address, device.username, device.password) if video else "",
+            None,
+            "",
+        )
+
+    @staticmethod
+    def _configured_video_source_id(device: Device) -> str:
+        video = device.get_config("video")
+        return str(video.settings.get("recording_source_id", "")).strip() if video else ""
+
+    def _recording_source_id(self, device: Device) -> str:
+        configured = self._configured_video_source_id(device)
+        if configured:
+            return configured
+        if self._media:
+            selected = self._media.source_id(device.id)
+            if selected:
+                return selected
+        video = device.get_config("video")
+        if (
+            video
+            and video.protocol
+            and video.path
+            and video.settings.get("origin") not in {"onvif", "reolink"}
+        ):
+            return "manual"
+        return ""
 
     async def _start_recording(
         self,
@@ -479,6 +589,7 @@ class RecordingEngine:
                     area_id=device.area_id,
                     session_id=session_id,
                     started_at=started_at,
+                    video_source_id=self._recording_source_id(device),
                 ),
             )
             rec = _EpisodeRecording(
@@ -489,9 +600,22 @@ class RecordingEngine:
                 bundle=bundle,
                 start_time=started_at,
             )
+        elif not rec.bundle.state.video_source_id:
+            # Older interrupted workspaces have no source identity. Pin whichever
+            # source resumed them so a second restart cannot change their stream.
+            rec.bundle.state = replace(
+                rec.bundle.state,
+                video_source_id=self._recording_source_id(device),
+            )
+            rec.bundle.write_capture_state()
         rec.rtsp_url = rtsp_url
         rec.video_handler = video_handler
         rec.codec_hint = codec_hint if video_handler is not None and codec_hint else ""
+        rec.finalize_reason = None
+        rec.stop_reason = None
+        lease = self._episode_capture_leases.get(episode_id)
+        if lease:
+            rec.capture_lease_deadline = lease[1]
         self._observe_progress(rec)
         if rec.continued:
             rec.state = "reconnecting"
@@ -508,15 +632,85 @@ class RecordingEngine:
         )
 
     async def _on_episode_updated(self, msg: Message) -> None:
-        if msg.data.get("state") != "closed":
+        episode_id = str(msg.data.get("episode_id", ""))
+        lease_until = msg.data.get("capture_lease_until")
+        if lease_until:
+            self._set_episode_capture_lease(
+                episode_id,
+                str(lease_until),
+                revision=msg.data.get("capture_lease_revision", 0),
+            )
+        if msg.data.get("state") == EpisodeState.CLOSED.value:
+            self._episode_capture_leases.pop(episode_id, None)
+        if msg.data.get("state") != EpisodeState.CLOSED.value:
             return
-        episode_id = msg.data.get("episode_id", "")
         recordings = [
             recording
             for recording in self._recordings.values()
             if recording.episode_id == episode_id
         ]
         await asyncio.gather(*(self._stop_recording(recording) for recording in recordings))
+
+    def _set_episode_capture_lease(
+        self,
+        episode_id: str,
+        lease_until: str,
+        *,
+        revision: int = 0,
+    ) -> None:
+        if not episode_id:
+            return
+        try:
+            deadline = datetime.fromisoformat(lease_until)
+        except ValueError:
+            logger.warning("Ignoring invalid capture lease for episode %s", episode_id)
+            return
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        if not isinstance(revision, int) or isinstance(revision, bool):
+            revision = 0
+        loop = asyncio.get_running_loop()
+        local_deadline = loop.time() + max(
+            0.0,
+            (deadline.astimezone(timezone.utc) - datetime.now(tz=timezone.utc)).total_seconds(),
+        )
+        previous = self._episode_capture_leases.get(episode_id)
+        if previous and revision < previous[0]:
+            return
+        if previous and revision == previous[0]:
+            local_deadline = max(previous[1], local_deadline)
+        self._episode_capture_leases[episode_id] = (revision, local_deadline)
+        for recording in self._recordings.values():
+            if recording.episode_id == episode_id:
+                previous_deadline = recording.capture_lease_deadline
+                recording.capture_lease_deadline = local_deadline
+                if recording.finalize_reason == "capture_lease_expired" and (
+                    previous_deadline is None or local_deadline > previous_deadline
+                ):
+                    recording.finalize_reason = None
+                    recording.retry_wakeup.clear()
+
+    async def _on_capture_lease_expired(self, msg: Message) -> None:
+        episode_ids = msg.data.get("episode_ids", [])
+        if not isinstance(episode_ids, list):
+            return
+        for episode_id in episode_ids:
+            recordings = [
+                recording
+                for recording in self._recordings.values()
+                if recording.episode_id == episode_id
+                and (
+                    recording.capture_lease_deadline is None
+                    or self._capture_lease_expired(recording)
+                )
+            ]
+            for recording in recordings:
+                recording.finalize_reason = "capture_lease_expired"
+                recording.retry_wakeup.set()
+                self._signal_process(recording)
+            # Keep the records visible until their capture tasks atomically
+            # move the HLS workspaces to _recoverable. The Episode finalizer
+            # can then either await those tasks or retry the workspace.
 
     async def finalize_episode(self, episode_id: str) -> None:
         """Stop and publish all recorder output for an Episode.
@@ -930,7 +1124,11 @@ class RecordingEngine:
                 rec.bundle.refresh_manifest(state="interrupted", reason="application_shutdown")
                 return
             if self._recordings.get(key) is not rec:
-                await self._finalize_from_retry_task(rec)
+                await self._finalize_from_retry_task(rec, reason=rec.finalize_reason)
+                return
+            if self._capture_lease_expired(rec):
+                rec.finalize_reason = "capture_lease_expired"
+                await self._finalize_from_retry_task(rec, reason=rec.finalize_reason)
                 return
 
             segments_before = rec.bundle.next_segment_index()
@@ -973,6 +1171,15 @@ class RecordingEngine:
                     self._start_handler(rec, proc)
                 wait_task = asyncio.create_task(proc.wait())
                 while not wait_task.done():
+                    if self._capture_lease_expired(rec):
+                        rec.finalize_reason = "capture_lease_expired"
+                        self._signal_process(rec)
+                        try:
+                            await asyncio.wait_for(asyncio.shield(wait_task), timeout=5)
+                        except asyncio.TimeoutError:
+                            proc.kill()
+                            await wait_task
+                        break
                     await asyncio.wait({wait_task}, timeout=1)
                     await asyncio.to_thread(rec.bundle.refresh_manifest, state="recording")
                     current_segments = rec.bundle.next_segment_index()
@@ -1031,15 +1238,28 @@ class RecordingEngine:
                     except Exception:
                         pass
 
+            if rec.finalize_reason == "capture_lease_expired":
+                await self._finalize_from_retry_task(rec, reason=rec.finalize_reason)
+                return
+
             if rec.stop_reason == "application_shutdown" or not self._running:
                 rec.bundle.preserve_temporary_components()
                 rec.bundle.refresh_manifest(state="interrupted", reason="application_shutdown")
                 return
             if self._recordings.get(key) is not rec:
-                await self._finalize_from_retry_task(rec)
+                await self._finalize_from_retry_task(rec, reason=rec.finalize_reason)
+                return
+
+            if self._capture_lease_expired(rec):
+                rec.finalize_reason = "capture_lease_expired"
+                await self._finalize_from_retry_task(rec, reason=rec.finalize_reason)
                 return
 
             episode = await self._repo.get_episode(rec.episode_id)
+            if self._capture_lease_expired(rec):
+                rec.finalize_reason = "capture_lease_expired"
+                await self._finalize_from_retry_task(rec, reason=rec.finalize_reason)
+                return
             if not episode or episode.state not in {
                 EpisodeState.ACTIVE,
                 EpisodeState.QUIESCENT,
@@ -1093,6 +1313,12 @@ class RecordingEngine:
                 await self._await_handler_stop(rec)
 
             retry_delay = self._retry_delay_seconds(retry_attempt)
+            if rec.capture_lease_deadline is not None:
+                remaining_lease = max(
+                    0.0,
+                    rec.capture_lease_deadline - asyncio.get_running_loop().time(),
+                )
+                retry_delay = min(retry_delay, remaining_lease)
             rec.state = "reconnecting"
             if not stall_signaled:
                 rec.last_error = f"FFmpeg exited with code {returncode}; reconnecting{stderr_note}"
@@ -1114,10 +1340,23 @@ class RecordingEngine:
                     rec.bundle.refresh_manifest(state="interrupted", reason="application_shutdown")
                     return
                 if self._recordings.get(key) is not rec:
-                    await self._finalize_from_retry_task(rec)
+                    await self._finalize_from_retry_task(rec, reason=rec.finalize_reason)
                     return
 
+            if rec.finalize_reason == "capture_lease_expired":
+                await self._finalize_from_retry_task(rec, reason=rec.finalize_reason)
+                return
+
+            if self._capture_lease_expired(rec):
+                rec.finalize_reason = "capture_lease_expired"
+                await self._finalize_from_retry_task(rec, reason=rec.finalize_reason)
+                return
+
             episode = await self._repo.get_episode(rec.episode_id)
+            if self._capture_lease_expired(rec):
+                rec.finalize_reason = "capture_lease_expired"
+                await self._finalize_from_retry_task(rec, reason=rec.finalize_reason)
+                return
             if not episode or episode.state not in {
                 EpisodeState.ACTIVE,
                 EpisodeState.QUIESCENT,
@@ -1155,6 +1394,13 @@ class RecordingEngine:
                 break
         return delay
 
+    @staticmethod
+    def _capture_lease_expired(rec: _EpisodeRecording) -> bool:
+        return (
+            rec.capture_lease_deadline is not None
+            and asyncio.get_running_loop().time() > rec.capture_lease_deadline
+        )
+
     async def _finalize_from_retry_task(
         self,
         rec: _EpisodeRecording,
@@ -1162,13 +1408,37 @@ class RecordingEngine:
         incomplete: bool = False,
         reason: str | None = None,
     ) -> None:
+        if reason == "capture_lease_expired":
+            self._park_capture_lease_bundle(rec)
+            return
         try:
             await self._finalize_bundle(rec, incomplete=incomplete, reason=reason)
         except Exception:
             self._recoverable[self._rec_key(rec.episode_id, rec.device_id)] = rec
+            self._failure_count += 1
+            self._last_error = "Recording Evidence could not be persisted; recovery is pending"
             logger.exception(
                 "Could not finalize recording for episode %s camera %s; "
                 "retaining the recovery workspace",
+                rec.episode_id[:8],
+                rec.device_id,
+            )
+
+    def _park_capture_lease_bundle(self, rec: _EpisodeRecording) -> None:
+        """Stop capture at its lease but wait for the Episode finalization barrier."""
+        key = self._rec_key(rec.episode_id, rec.device_id)
+        self._recoverable[key] = rec
+        self._recordings.pop(key, None)
+        rec.continued = True
+        rec.state = "reconnecting"
+        try:
+            rec.bundle.preserve_temporary_components()
+            rec.bundle.refresh_manifest(state="interrupted", reason="capture_lease_expired")
+        except Exception:
+            rec.last_error = "Capture stopped at its lease; HLS recovery marking failed"
+            self._last_error = rec.last_error
+            logger.exception(
+                "Could not mark capture workspace recoverable for episode %s camera %s",
                 rec.episode_id[:8],
                 rec.device_id,
             )
@@ -1406,13 +1676,14 @@ class RecordingEngine:
                 key=lambda item: (item.start_time, item.device_id),
             )
         )
-        degraded = any(
+        degraded = bool(self._recoverable) or any(
             item["state"] in {"stalled", "reconnecting", "failed"} for item in recordings
         )
         return {
             "running": self._running,
             "state": "unavailable" if not self._running else "degraded" if degraded else "healthy",
             "active_recordings": len(self._recordings),
+            "recoverable_recordings": len(self._recoverable),
             "cameras": len({key[1] for key in self._recordings}),
             "format": "hls-fmp4",
             "fragment_seconds": self._fragment_seconds,

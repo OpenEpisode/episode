@@ -42,8 +42,9 @@ from that Device should keep its Area Episode and participating recordings open.
 
 For enhanced vendor Event monitoring, first run **Discover with ONVIF** in the
 Device editor. When the discovered identity is Hikvision, Episode offers ISAPI
-for Cameras and Doorbells, and HCNetSDK for Doorbells only. Select **ISAPI Event stream**,
-validate the selected connection, and save the Device only when supported.
+for Cameras and Doorbells, and HCNetSDK for both roles: camera video only, or
+Doorbell Events. Select the capability you need, validate the connection, and
+save the Device only when supported.
 Episode safely requests Hikvision device information to verify ISAPI
 independently from ONVIF. Credentials entered for the
 Device are shared with its enabled integrations and are never returned to the
@@ -153,14 +154,28 @@ Episode can discover and validate an optional Hikvision HCNetSDK installation.
 The SDK remains user-supplied: Episode does not download, redistribute, or add
 vendor binaries to its container image.
 
-Episode validates HCNetSDK, then starts one isolated worker process for each
-device that explicitly enables the capability. Each worker logs in on the SDK
-service port and subscribes to alarm callbacks. A native crash affects that
-device worker, not the Episode server or other devices.
+The selected Device role determines what the HCNetSDK connection does:
 
-Every callback buffer is preserved as an immutable raw delivery. Episode also
-interprets narrowly validated video-intercom callbacks emitted by supported
-Hikvision devices:
+- **Camera:** Episode logs in through one isolated worker and reads the current
+  main/sub encoding settings. Supported H.264/H.265 streams appear as recording
+  source choices. SDK video preview starts only while that Device is recorded.
+  Camera alarm callbacks are not subscribed to; use ONVIF or ISAPI for Events.
+- **Doorbell:** Episode logs in through its existing isolated event worker and
+  subscribes to alarm callbacks. SDK video sources are not registered for
+  Doorbells yet.
+
+The camera source list describes its current encoder configuration; it does
+not change the camera's settings or enumerate every mode it could support.
+Unknown resolutions or frame rates are left unspecified. Hikvision's private
+H.264 variant is not offered until its framing is verified. SDK video audio is
+not recorded. Enabling the camera integration keeps one SDK login active; its
+video preview is on-demand. This adds a camera connection, so enable it only
+where you want to use or test SDK video.
+
+A native crash affects that Device's worker, not the Episode server or other
+Devices. Doorbell alarm callbacks are preserved as immutable raw deliveries.
+Episode interprets narrowly validated video-intercom callbacks emitted by
+supported Hikvision devices:
 
 - `COMM_ALARM_VIDEO_INTERCOM` (`0x1133`) subtype `17` creates an active
   canonical `doorbell` Event;
@@ -185,9 +200,14 @@ same Area using **Any Episode in this Area** join the same Episode.
 ### Activate the plugin
 
 Installing SDK files alone does not activate or load the integration; HCNetSDK
-is disabled by default. It is available for Hikvision Doorbell Devices, where its callback
-flow has been validated. Edit the Doorbell, enable **HCNetSDK**, set its login
-port (default `8000`) under manual connection overrides, then save the Device.
+is disabled by default. For camera video, edit a Hikvision Camera, enable
+**Hikvision HCNetSDK**, set its login port (default `8000`) under manual
+connection overrides, then save the Device. Main/Sub choices become available
+after the SDK connection succeeds. Choose one under **Capture → Recording
+source** to pin it for future recordings; leaving **Automatic** lets Episode
+choose the available preferred source. Enabling HCNetSDK does not subscribe to
+camera alarm Events. For Doorbell Events, enable HCNetSDK on the Doorbell as
+before.
 
 The Device name, Area, IP address, username, and password are required.
 Credentials are sent to the isolated worker over standard input; they are not
@@ -231,8 +251,9 @@ before any native library is loaded.
 
 Open Episode's **System** page and find **Integrations**. A working install
 shows `Hikvision HCNetSDK`, its SDK version and architecture, plus one health
-entry per configured device. It includes connection state, preserved
-notification count, and last notification time. The same state is available from:
+entry per configured Device. Camera entries report the discovered stream count;
+Doorbell entries report event-worker health and callback activity. The same
+state is available from:
 
 ```bash
 curl http://localhost:8989/api/v1/plugins

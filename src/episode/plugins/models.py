@@ -5,9 +5,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Literal, Protocol
 
-from episode.domain.models import Device
+from episode.domain.models import Device, DeviceDiscoveryUpdate
 
 if TYPE_CHECKING:
     from episode.ingestion.router import IngressHandlerRegistration
@@ -94,7 +94,7 @@ class RawPluginDelivery:
 
 
 RawPluginDeliverySink = Callable[[RawPluginDelivery], Awaitable[None]]
-PluginDeviceUpdateSink = Callable[[Device], Awaitable[Device]]
+PluginDeviceUpdateSink = Callable[[DeviceDiscoveryUpdate], Awaitable[Device | None]]
 
 
 class PluginIngressRouter(Protocol):
@@ -112,7 +112,7 @@ class PluginMediaRegistry(Protocol):
 
     def register(self, source: CameraMedia) -> None: ...
 
-    def get(self, device_id: str) -> CameraMedia | None: ...
+    def get(self, device_id: str, *, source_id: str | None = None) -> CameraMedia | None: ...
 
     def unregister(self, device_id: str, *, source: str | None = None) -> None: ...
 
@@ -199,6 +199,19 @@ class PluginRegistration:
     installed_version: str | None = None
     unavailable_state: PluginState | None = None
     unavailable_error: str | None = None
+    # Inventory inputs that can affect a running plugin.  ``selected`` keeps
+    # device integrations scoped to enabled devices using their capability;
+    # shared ingress plugins may opt into ``all`` or ``none`` explicitly.
+    inventory_scope: Literal["selected", "all", "none"] = "selected"
+    inventory_fields: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.inventory_scope not in {"selected", "all", "none"}:
+            raise ValueError("Plugin inventory_scope must be one of: selected, all, none")
+        if not all(
+            isinstance(field_name, str) and field_name for field_name in self.inventory_fields
+        ):
+            raise ValueError("Plugin inventory_fields must contain non-empty strings")
 
     def validating_status(self) -> PluginStatus:
         return PluginStatus(

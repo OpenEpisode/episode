@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -164,3 +165,50 @@ async def test_finalizing_episode_completes_after_repository_restart(tmp_path):
         await engine.stop()
     finally:
         await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_timeout_storage_failures_back_off_and_notify_expired_capture_lease(monkeypatch):
+    class LockedRepository:
+        def __init__(self):
+            self.attempts = 0
+
+        async def transition_timed_out_episodes(self, *_args, **_kwargs):
+            self.attempts += 1
+            if self.attempts <= 2:
+                raise sqlite3.OperationalError("database is locked")
+            return [], []
+
+    repository = LockedRepository()
+    bus = EventBus()
+    engine = EpisodeEngine(repository, bus)
+    engine._running = True
+    engine._timeout_retry_initial_seconds = 0.01
+    engine._timeout_retry_max_seconds = 0.02
+    engine._episode_deadlines["episode-expired"] = datetime.now(tz=timezone.utc) - timedelta(
+        seconds=10
+    )
+    notifications = []
+    delays = []
+
+    async def record_notification(message):
+        notifications.append(message.data)
+
+    async def controlled_sleep(delay):
+        delays.append(delay)
+        if len(delays) == 3:
+            engine._running = False
+
+    bus.subscribe("episode.capture_lease_expired", record_notification)
+    monkeypatch.setattr("episode.engine.engine.asyncio.sleep", controlled_sleep)
+
+    await engine._timeout_loop()
+
+    assert repository.attempts == 3
+    assert delays == [0.01, 0.02, 1]
+    assert notifications == [
+        {
+            "episode_ids": ["episode-expired"],
+            "reason": "lifecycle_storage_unavailable",
+        }
+    ]

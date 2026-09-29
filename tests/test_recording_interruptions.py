@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -21,7 +22,8 @@ from episode.domain.models import (
 )
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import CanonicalEventResult, EpisodeEngine
-from episode.recording.engine import RecordingEngine
+from episode.recording.engine import RecordingEngine, _EpisodeRecording
+from episode.recording.hls import HLSCaptureState, HLSRecordingBundle
 from episode.storage.repository import Repository
 
 
@@ -315,6 +317,290 @@ async def test_retry_backoff_is_interruptible_when_camera_is_offline(tmp_path, m
     finally:
         await recorder.stop()
         await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_local_capture_lease_stops_without_database_read_and_preserves_bundle(
+    tmp_path,
+    monkeypatch,
+):
+    config = EpisodeConfig(data_dir=str(tmp_path))
+    repository = Repository(config)
+    await repository.initialize()
+    episode_id = "lease-expired-episode"
+    device_id = "lease-camera"
+    started_at = datetime.now(tz=timezone.utc) - timedelta(seconds=20)
+    bundle = HLSRecordingBundle.create(
+        tmp_path / "episodes" / episode_id / "recordings" / "lease-evidence",
+        HLSCaptureState(
+            evidence_id="lease-evidence",
+            episode_id=episode_id,
+            device_id=device_id,
+            area_id="test-area",
+            session_id="session",
+            started_at=started_at,
+        ),
+    )
+    (bundle.root / "init.mp4").write_bytes(b"init")
+    (bundle.root / "segments" / "segment-000000.m4s").write_bytes(b"video-fragment")
+    bundle.playlist_path.write_text(
+        '#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:4.0,\nsegments/segment-000000.m4s\n',
+        encoding="utf-8",
+    )
+
+    reads = 0
+
+    async def unexpected_episode_read(_episode_id):
+        nonlocal reads
+        reads += 1
+        raise AssertionError("an expired lease must not wait for another Episode DB read")
+
+    monkeypatch.setattr(repository, "get_episode", unexpected_episode_read)
+    publication_attempts = []
+
+    async def locked_evidence_sink(evidence):
+        publication_attempts.append(evidence)
+        if len(publication_attempts) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return evidence
+
+    recorder = RecordingEngine(
+        repository,
+        EventBus(),
+        config.data_dir,
+        evidence_sink=locked_evidence_sink,
+    )
+    future_lease = datetime.now(tz=timezone.utc) + timedelta(minutes=1)
+    recorder._set_episode_capture_lease("lease-order", future_lease.isoformat())
+    retained_deadline = recorder._episode_capture_leases["lease-order"][1]
+    recorder._set_episode_capture_lease(
+        "lease-order",
+        (future_lease - timedelta(seconds=30)).isoformat(),
+    )
+    assert recorder._episode_capture_leases["lease-order"][1] == retained_deadline
+    recorder._set_episode_capture_lease(
+        "lease-order",
+        (future_lease - timedelta(seconds=30)).isoformat(),
+        revision=1,
+    )
+    assert recorder._episode_capture_leases["lease-order"][1] < retained_deadline
+
+    recorder._running = True
+    recording = _EpisodeRecording(
+        episode_id=episode_id,
+        device_id=device_id,
+        area_id="test-area",
+        session_id="session",
+        bundle=bundle,
+        start_time=started_at,
+        capture_lease_deadline=asyncio.get_running_loop().time() - 1,
+        finalize_reason="capture_lease_expired",
+    )
+    key = (episode_id, device_id)
+    recorder._recordings[key] = recording
+
+    try:
+        await recorder._record_episode(recording, "rtsp://unused")
+
+        assert reads == 0
+        assert publication_attempts == []
+        assert not recording.published
+        assert key not in recorder._recordings
+        assert recorder._recoverable[key] is recording
+        assert bundle.capture_state_path.exists()
+        assert bundle.playlist_path.exists()
+        assert await repository.list_evidence(episode_id=episode_id, limit=10) == []
+        assert recorder.status()["recoverable_recordings"] == 1
+        assert recorder.status()["state"] == "degraded"
+
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await recorder.finalize_episode(episode_id)
+        assert len(publication_attempts) == 1
+        assert recorder._recoverable[key] is recording
+
+        await recorder.finalize_episode(episode_id)
+        assert len(publication_attempts) == 2
+        assert recording.published
+        assert key not in recorder._recoverable
+    finally:
+        await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_wait_is_capped_by_remaining_capture_lease(tmp_path, monkeypatch):
+    episode = Episode(
+        id="lease-retry-episode",
+        primary_area_id="test-area",
+        state=EpisodeState.ACTIVE,
+    )
+
+    class RepositoryStub:
+        def __init__(self):
+            self.episode_reads = 0
+
+        async def get_episode(self, episode_id):
+            assert episode_id == episode.id
+            self.episode_reads += 1
+            return episode
+
+    class FailedProcess:
+        returncode = 1
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+        async def wait(self):
+            return self.returncode
+
+    async def start_ffmpeg(*_args, **_kwargs):
+        return FailedProcess()
+
+    repository = RepositoryStub()
+    publication_attempts = []
+
+    async def fail_publication(evidence):
+        publication_attempts.append(evidence)
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start_ffmpeg)
+    recorder = RecordingEngine(
+        repository,
+        EventBus(),
+        str(tmp_path),
+        evidence_sink=fail_publication,
+    )
+    recorder._running = True
+    recorder._retry_initial_seconds = 10
+    recorder._retry_max_seconds = 10
+    started_at = datetime.now(tz=timezone.utc)
+    bundle = HLSRecordingBundle.create(
+        tmp_path / "episodes" / episode.id / "recordings" / "retry-evidence",
+        HLSCaptureState(
+            evidence_id="retry-evidence",
+            episode_id=episode.id,
+            device_id="camera-retry",
+            area_id="test-area",
+            session_id="session",
+            started_at=started_at,
+        ),
+    )
+    recording = _EpisodeRecording(
+        episode_id=episode.id,
+        device_id="camera-retry",
+        area_id="test-area",
+        session_id="session",
+        bundle=bundle,
+        start_time=started_at,
+        capture_lease_deadline=asyncio.get_running_loop().time() + 0.15,
+    )
+    key = (episode.id, recording.device_id)
+    recorder._recordings[key] = recording
+
+    began_at = asyncio.get_running_loop().time()
+    await recorder._record_episode(recording, "rtsp://unused")
+    elapsed = asyncio.get_running_loop().time() - began_at
+
+    assert elapsed < 1
+    assert repository.episode_reads == 1
+    assert publication_attempts == []
+    assert key in recorder._recoverable
+
+
+@pytest.mark.asyncio
+async def test_expiry_notice_is_cancelled_by_extension_and_closed_clears_lease(tmp_path):
+    recorder = RecordingEngine(
+        Repository(EpisodeConfig(data_dir=str(tmp_path))), EventBus(), str(tmp_path)
+    )
+    episode_id = "lease-extension-episode"
+    device_id = "lease-extension-camera"
+    started_at = datetime.now(tz=timezone.utc)
+    bundle = HLSRecordingBundle.create(
+        tmp_path / "episodes" / episode_id / "recordings" / "lease-extension-evidence",
+        HLSCaptureState(
+            evidence_id="lease-extension-evidence",
+            episode_id=episode_id,
+            device_id=device_id,
+            area_id="test-area",
+            session_id="session",
+            started_at=started_at,
+        ),
+    )
+    recording = _EpisodeRecording(
+        episode_id=episode_id,
+        device_id=device_id,
+        area_id="test-area",
+        session_id="session",
+        bundle=bundle,
+        start_time=started_at,
+    )
+    key = (episode_id, device_id)
+    recorder._recordings[key] = recording
+    recorder._set_episode_capture_lease(
+        episode_id,
+        (datetime.now(tz=timezone.utc) - timedelta(seconds=1)).isoformat(),
+    )
+
+    await recorder._on_capture_lease_expired(
+        Message(type="episode.capture_lease_expired", data={"episode_ids": [episode_id]})
+    )
+
+    assert recorder._recordings[key] is recording
+    assert recording.finalize_reason == "capture_lease_expired"
+
+    await recorder._on_episode_updated(
+        Message(
+            type="episode.updated",
+            data={
+                "episode_id": episode_id,
+                "capture_lease_until": (
+                    datetime.now(tz=timezone.utc) + timedelta(minutes=1)
+                ).isoformat(),
+            },
+        )
+    )
+
+    assert recording.finalize_reason is None
+    await recorder._on_capture_lease_expired(
+        Message(type="episode.capture_lease_expired", data={"episode_ids": [episode_id]})
+    )
+    assert recording.finalize_reason is None
+
+    await recorder._on_episode_updated(
+        Message(
+            type="episode.updated",
+            data={"episode_id": episode_id, "state": EpisodeState.CLOSED.value},
+        )
+    )
+
+    assert episode_id not in recorder._episode_capture_leases
+    assert key not in recorder._recordings
+
+
+@pytest.mark.asyncio
+async def test_active_episode_without_deadline_uses_engine_timeout_for_recovery(tmp_path):
+    class RepositoryStub:
+        async def get_quiescent_grace_seconds(self):
+            return 5
+
+    now = datetime.now(tz=timezone.utc)
+    recorder = RecordingEngine(
+        RepositoryStub(),
+        EventBus(),
+        str(tmp_path),
+        episode_timeout_seconds=90,
+    )
+    episode = Episode(
+        id="fallback-deadline-episode",
+        primary_area_id="test-area",
+        state=EpisodeState.ACTIVE,
+        start_time=now - timedelta(seconds=100),
+    )
+
+    assert recorder._episode_capture_deadline(episode) == episode.start_time + timedelta(seconds=90)
+    assert not await recorder._episode_within_capture_horizon(episode, now)
 
 
 @pytest.mark.skipif(

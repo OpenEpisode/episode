@@ -100,6 +100,61 @@ def test_builtin_plugin_module_is_not_imported_during_registration(monkeypatch):
     assert imported == []
 
 
+def test_builtin_plugins_declare_only_their_runtime_inventory_inputs():
+    registry = builtin_plugin_registry()
+    registrations = {
+        plugin_id: registry.registration(plugin_id)
+        for plugin_id in (
+            "onvif",
+            "hikvision-isapi",
+            "reolink",
+            "hikvision-sdk",
+            "hikvision-alarm-server",
+            "hikvision-ftp",
+        )
+    }
+
+    assert registrations["onvif"].inventory_fields == (
+        "id",
+        "area_id",
+        "ip_address",
+        "username",
+        "password",
+        "configs.onvif",
+    )
+    assert registrations["hikvision-isapi"].inventory_fields == (
+        "id",
+        "area_id",
+        "ip_address",
+        "username",
+        "password",
+        "configs.isapi",
+    )
+    assert registrations["reolink"].inventory_fields == (
+        "id",
+        "area_id",
+        "ip_address",
+        "username",
+        "password",
+        "configs.reolink",
+    )
+    assert registrations["hikvision-sdk"].inventory_fields == (
+        "id",
+        "device_type",
+        "area_id",
+        "ip_address",
+        "username",
+        "password",
+        "configs.hikvision_sdk",
+    )
+    assert registrations["hikvision-alarm-server"].inventory_fields == ()
+    assert registrations["hikvision-ftp"].inventory_fields == (
+        "id",
+        "ip_address",
+        "device_type",
+    )
+
+
 @pytest.mark.asyncio
 async def test_importing_one_hikvision_plugin_does_not_load_its_siblings():
     source = (
@@ -201,10 +256,10 @@ async def test_application_reloads_device_integrations_during_recording(tmp_path
     application = Application(EpisodeConfig(data_dir=str(tmp_path)))
     events: list[str] = []
     application._plugin_registry.register(_registration("test-device", "test-device", events))
+    application._plugin_registry.register(_registration("other-device", "other-device", events))
     await application._repo.initialize()
     try:
         await application._inventory.save_area(Area(id="gate", name="Gate"), create=True)
-        application._recorder.status = lambda: {"active_recordings": 1}
         await application._inventory.save_device(
             Device(
                 id="gate-camera",
@@ -215,8 +270,54 @@ async def test_application_reloads_device_integrations_during_recording(tmp_path
             ),
             create=True,
         )
-        assert [status["id"] for status in application._plugins.statuses()] == ["test-device"]
-        assert events == ["load:test-device", "start:test-device"]
+        application._recorder.status = lambda: {"active_recordings": 1}
+        await application._inventory.save_device(
+            Device(
+                id="other-camera",
+                name="Other camera",
+                device_type="camera",
+                area_id="gate",
+                configs={"other-device": CapabilityConfig()},
+            ),
+            create=True,
+        )
+        assert [status["id"] for status in application._plugins.statuses()] == [
+            "test-device",
+            "other-device",
+        ]
+        assert events == [
+            "load:test-device",
+            "start:test-device",
+            "load:other-device",
+            "start:other-device",
+        ]
+
+        # Discovery may update another Device without an inventory callback.
+        # That must not make an unrelated operator save restart its integration.
+        discovered = await application._repo.get_device("gate-camera")
+        assert discovered is not None
+        discovered.metadata["discovered_model"] = "Updated by plugin"
+        await application._repo.upsert_device(discovered)
+
+        await application._inventory.save_device(
+            Device(
+                id="other-camera",
+                name="Renamed camera",
+                device_type="camera",
+                area_id="gate",
+                configs={"other-device": CapabilityConfig()},
+            ),
+            create=False,
+        )
+        assert events == [
+            "load:test-device",
+            "start:test-device",
+            "load:other-device",
+            "start:other-device",
+            "stop:other-device",
+            "load:other-device",
+            "start:other-device",
+        ]
     finally:
         await application._plugins.stop()
         await application._repo.close()

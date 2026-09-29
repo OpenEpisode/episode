@@ -12,7 +12,7 @@ from episode.config import ExternalPluginConfig
 from episode.domain.models import ReceiptStatus as CoreReceiptStatus
 from episode.ingestion import models as ingress_models
 from episode.ingestion.router import IngressHandlerRegistration
-from episode.media import CameraMedia
+from episode.media import CameraMedia, VideoMode, VideoSourceDescriptor
 from episode.plugins.external.manifest import ExternalPluginManifest
 from episode.plugins.models import (
     ManagedPlugin,
@@ -223,6 +223,39 @@ class _ExternalMedia:
         if self._registry is None:
             raise plugin_api.PluginConfigurationError("Runtime media registration is unavailable.")
         source_name = f"external:{self._plugin_id}"
+        public_info = source.video_source
+        source_id = (
+            f"external:{self._plugin_id}:{public_info.id}"
+            if public_info
+            else f"external:{self._plugin_id}:default"
+        )
+        if len(source_id) > 256:
+            source_id = f"external:{sha256(source_id.encode()).hexdigest()[:48]}"
+        video_source = VideoSourceDescriptor(
+            id=source_id,
+            name=public_info.name if public_info else f"{self._plugin_id} stream",
+            provider=self._plugin_id,
+            protocol=public_info.protocol if public_info else "rtsp",
+            metadata_kind=public_info.metadata_kind if public_info else "unknown",
+            width=public_info.width if public_info else None,
+            height=public_info.height if public_info else None,
+            frame_rate=public_info.frame_rate if public_info else None,
+            codec=public_info.codec if public_info else "",
+            modes=(
+                tuple(
+                    VideoMode(
+                        width=mode.width,
+                        height=mode.height,
+                        frame_rates=mode.frame_rates,
+                        codec=mode.codec,
+                    )
+                    for mode in public_info.modes
+                )
+                if public_info
+                else ()
+            ),
+            default=public_info.default if public_info else True,
+        )
         self._registry.register(
             CameraMedia(
                 device_id=source.device_id,
@@ -232,6 +265,7 @@ class _ExternalMedia:
                 password=source.password,
                 profile_token=source.profile_token,
                 source=source_name,
+                video_source=video_source,
             )
         )
         self._registered.add(source.device_id)

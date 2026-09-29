@@ -30,7 +30,7 @@ from episode.domain.models import (
 )
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import EpisodeEngine
-from episode.media.registry import CameraMedia, MediaRegistry
+from episode.media.registry import CameraMedia, MediaRegistry, VideoSourceDescriptor
 from episode.recording.engine import RecordingEngine, _EpisodeRecording
 from episode.recording.hls import HLSCaptureState, HLSRecordingBundle
 from episode.retention import RetentionService
@@ -144,6 +144,267 @@ def _camera_device() -> Device:
             )
         },
     )
+
+
+def test_recorder_uses_selected_video_source_and_does_not_fallback_when_missing(tmp_path):
+    registry = MediaRegistry()
+    registry.register(
+        CameraMedia(
+            device_id="camera-1",
+            stream_uri="rtsp://192.0.2.10/main",
+            source="onvif",
+            video_source=VideoSourceDescriptor(
+                id="onvif:main",
+                name="Main profile",
+                provider="ONVIF",
+                protocol="rtsp",
+                default=True,
+            ),
+        )
+    )
+    registry.register(
+        CameraMedia(
+            device_id="camera-1",
+            stream_uri="rtsp://192.0.2.10/sub",
+            source="onvif",
+            video_source=VideoSourceDescriptor(
+                id="onvif:sub",
+                name="Sub profile",
+                provider="ONVIF",
+                protocol="rtsp",
+            ),
+        )
+    )
+    engine = RecordingEngine(None, None, str(tmp_path), media=registry)
+    device = Device(
+        id="camera-1",
+        name="Camera",
+        device_type="camera",
+        area_id="entrance",
+        ip_address="192.0.2.10",
+        configs={
+            "video": CapabilityConfig(
+                protocol="rtsp",
+                port=554,
+                path="/manual",
+                settings={"recording_source_id": "onvif:sub"},
+            )
+        },
+    )
+
+    assert engine._video_source(device) == ("rtsp://192.0.2.10/sub", None, "")
+
+    device.get_config("video").settings["recording_source_id"] = "onvif:missing"
+    assert engine._video_source(device) == ("", None, "")
+    assert engine._video_source(device, source_id_override="onvif:main")[0] == (
+        "rtsp://192.0.2.10/main"
+    )
+
+    device.get_config("video").settings.update(
+        recording_source_id="manual",
+        origin="onvif",
+    )
+    assert engine._video_source(device) == ("", None, "")
+
+
+def test_media_registry_bounds_video_sources_per_device():
+    registry = MediaRegistry()
+    for index in range(64):
+        registry.register(
+            CameraMedia(
+                device_id="camera-1",
+                stream_uri=f"rtsp://192.0.2.10/stream-{index}",
+                source="test",
+                video_source=VideoSourceDescriptor(
+                    id=f"test:{index}",
+                    name=f"Stream {index}",
+                    provider="Test",
+                ),
+            )
+        )
+
+    with pytest.raises(ValueError, match="registration limit"):
+        registry.register(
+            CameraMedia(
+                device_id="camera-1",
+                stream_uri="rtsp://192.0.2.10/stream-overflow",
+                source="test",
+                video_source=VideoSourceDescriptor(
+                    id="test:overflow",
+                    name="Overflow",
+                    provider="Test",
+                ),
+            )
+        )
+
+
+def test_media_registry_falls_back_to_remaining_explicit_default_source():
+    registry = MediaRegistry()
+    for provider in ("first", "second"):
+        registry.register(
+            CameraMedia(
+                device_id="camera-1",
+                stream_uri=f"rtsp://192.0.2.10/{provider}-main",
+                source=provider,
+                video_source=VideoSourceDescriptor(
+                    id=f"{provider}:main",
+                    name=f"{provider.title()} main",
+                    provider=provider.title(),
+                    default=True,
+                ),
+            )
+        )
+        registry.register(
+            CameraMedia(
+                device_id="camera-1",
+                stream_uri=f"rtsp://192.0.2.10/{provider}-sub",
+                source=provider,
+                video_source=VideoSourceDescriptor(
+                    id=f"{provider}:sub",
+                    name=f"{provider.title()} sub",
+                    provider=provider.title(),
+                ),
+            )
+        )
+
+    # The second provider's explicit default was registered last. Removing it
+    # must select the first provider's explicit main stream, not its substream.
+    registry.unregister("camera-1", source="second")
+
+    selected = registry.get("camera-1")
+    assert selected is not None
+    assert selected.stream_uri.endswith("/first-main")
+    assert registry.source_id("camera-1") == "first:main"
+
+
+def test_media_registry_repairs_a_stale_automatic_default():
+    registry = MediaRegistry()
+    registry.register(
+        CameraMedia(
+            device_id="camera-1",
+            stream_uri="rtsp://192.0.2.10/main",
+            source="provider",
+            video_source=VideoSourceDescriptor(
+                id="provider:main",
+                name="Main",
+                provider="Provider",
+                default=True,
+            ),
+        )
+    )
+    registry.register(
+        CameraMedia(
+            device_id="camera-1",
+            stream_uri="rtsp://192.0.2.10/sub",
+            source="provider",
+            video_source=VideoSourceDescriptor(
+                id="provider:sub",
+                name="Sub",
+                provider="Provider",
+            ),
+        )
+    )
+    registry._defaults["camera-1"] = "provider:removed"
+
+    selected = registry.get("camera-1")
+    assert selected is not None
+    assert selected.stream_uri.endswith("/main")
+    assert registry.source_id("camera-1") == "provider:main"
+
+
+def test_media_registry_does_not_pin_automatic_to_snapshot_only_source():
+    registry = MediaRegistry()
+    registry.register(
+        CameraMedia(
+            device_id="camera-1",
+            source="snapshot-provider",
+            snapshot_uri="http://192.0.2.10/snapshot.jpg",
+        )
+    )
+    registry.register(
+        CameraMedia(
+            device_id="camera-1",
+            stream_uri="rtsp://192.0.2.10/main",
+            source="video-provider",
+            video_source=VideoSourceDescriptor(
+                id="video-provider:main",
+                name="Main",
+                provider="Video provider",
+            ),
+        )
+    )
+
+    selected = registry.get("camera-1")
+    assert selected is not None
+    assert selected.stream_uri.endswith("/main")
+    assert registry.source_id("camera-1") == "video-provider:main"
+
+
+@pytest.mark.asyncio
+async def test_media_registry_selects_snapshot_source_independently_of_video_source():
+    ordinary_calls = 0
+    event_tokens: list[str] = []
+
+    async def ordinary_fetch():
+        nonlocal ordinary_calls
+        ordinary_calls += 1
+        return b"ordinary", "image/jpeg"
+
+    async def event_fetch(token: str):
+        event_tokens.append(token)
+        return b"event-bound", "image/jpeg"
+
+    registry = MediaRegistry()
+    registry.register(
+        CameraMedia(
+            device_id="camera-1",
+            source="onvif",
+            stream_uri="rtsp://192.0.2.10/main",
+            snapshot_fetcher=ordinary_fetch,
+            event_snapshot_fetcher=event_fetch,
+        )
+    )
+    registry.register(
+        CameraMedia(
+            device_id="camera-1",
+            source="hikvision-sdk",
+            stream_uri="rtsp://192.0.2.10/sdk",
+            video_source=VideoSourceDescriptor(
+                id="hikvision-sdk:main",
+                name="SDK main",
+                provider="Hikvision SDK",
+                default=True,
+            ),
+        )
+    )
+
+    assert registry.get("camera-1").source == "hikvision-sdk"
+    assert await registry.fetch_snapshot("camera-1") == (b"ordinary", "image/jpeg")
+    assert await registry.fetch_snapshot("camera-1", snapshot_token="token-1") == (
+        b"event-bound",
+        "image/jpeg",
+    )
+    assert ordinary_calls == 1
+    assert event_tokens == ["token-1"]
+
+
+def test_interrupted_capture_remembers_its_video_source(tmp_path):
+    bundle = HLSRecordingBundle.create(
+        tmp_path / "recording",
+        HLSCaptureState(
+            evidence_id="evidence-1",
+            episode_id="episode-1",
+            device_id="camera-1",
+            area_id="entrance",
+            session_id="session-1",
+            started_at=datetime.now(tz=timezone.utc),
+            video_source_id="onvif:profile-low",
+        ),
+    )
+
+    recovered = HLSRecordingBundle.load(bundle.capture_state_path)
+
+    assert recovered.state.video_source_id == "onvif:profile-low"
 
 
 class Harness:

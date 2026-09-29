@@ -15,7 +15,7 @@ rather than silently loading incompatible code.
 A plugin may connect to an external Device or protocol, preserve opaque
 deliveries, and interpret its own preserved deliveries into normalized Event or
 Evidence observations. A Device plugin may also register an assigned camera's
-runtime stream and snapshot endpoints. Episode still owns:
+runtime media sources and snapshot endpoints. Episode still owns:
 
 - durable raw-artifact and receipt creation;
 - Device and Area authority;
@@ -26,6 +26,50 @@ runtime stream and snapshot endpoints. Episode still owns:
 In particular, a plugin reports an observation; it does not choose the Episode
 deadline. Core correlation resolves the authoritative Device and applies that
 Device's activity window after successful processing.
+
+### Register recording sources
+
+Device plugins can register one or more selectable video sources for each
+assigned Device. The source URI and credentials are runtime-only; the UI and
+Device API receive only the safe `VideoSourceInfo` description. Use stable,
+non-secret source IDs across reconnects so an operator's saved choice continues
+to identify the same stream. If a source is removed or temporarily unavailable,
+an explicitly selected source is reported unavailable and Episode does not
+silently switch to another one.
+
+```python
+from episode.plugin_api import MediaSource, VideoMode, VideoSourceInfo
+
+context.media.register(
+    MediaSource(
+        device_id=device.id,
+        stream_uri=main_stream_uri,
+        username=device.username,
+        password=device.password,
+        source="acme-camera",
+        video_source=VideoSourceInfo(
+            id="main",
+            name="Main stream",
+            protocol="rtsp",
+            metadata_kind="capabilities",
+            modes=(VideoMode(width=2560, height=1440, frame_rates=(15, 20, 25)),),
+            default=True,
+        ),
+    )
+)
+```
+
+Register each independently selectable profile/transport with its own stable
+ID. `default=True` identifies the plugin's preferred source for **Automatic**;
+if no source is marked default, Episode keeps the first registered usable
+source as the default. This flag is not a claim that advertised capability
+settings are currently active.
+Use `metadata_kind="configured"` for active profile configuration,
+`"capabilities"` for camera-advertised modes, `"observed"` for measured stream
+properties, and `"unknown"` when details are unavailable. Do not manufacture
+resolution, frame rate, or codec values from a URL or profile name. The Device
+configuration stores only the chosen ID; recording remains owned by Episode's
+core recorder and an active recording is not switched when that setting changes.
 
 A plugin also does not decide whether an observation drives capture. The core
 maps canonical `event_type` strings to event classes and applies the Capture
@@ -189,6 +233,18 @@ plugins from starting or stopping. These bounds cannot protect Episode from
 synchronous blocking code, which is another reason to install only reviewed
 plugins.
 
+Saving a Device restarts only integrations whose relevant inputs changed;
+other plugin instances stay connected. Built-in camera integrations ignore
+core-only recording policy, source selection, filter, and display-name edits.
+An out-of-tree plugin is refreshed when a field in its assigned public
+`DeviceConfig` changes, including its plugin-specific configuration, but not
+for unrelated core policy fields. The restart is at plugin granularity, so if
+several Devices share one plugin, editing one relevant input may briefly
+disconnect the others. A plugin that supplies native video must cleanly end an
+active handler on `stop()` so the recorder can mark an interrupted capture
+honestly. Shared built-in ingress handlers declare which inventory fields they
+actually use.
+
 ## Preserve before interpreting
 
 Register a handler, then submit exact source bytes through the public ingress
@@ -285,9 +341,10 @@ in-tree media source instead of URIs. `snapshot_fetcher` returns
 `handler(push)` and the handler pushes Annex-B access units with `await
 push(chunk)` until it returns, raises, or is cancelled, and `codec_hint` names the
 elementary-stream demuxer (`h264` or `hevc`) from a real capability rather than a
-guess. Both are in-tree contracts: `plugin_api.MediaSource` exposes only URIs, so
-out-of-tree plugins cannot supply either until the contract version that does is
-agreed.
+guess. These callbacks remain in-tree contracts. The public `plugin_api.MediaSource`
+supports URI-based sources and optional safe `VideoSourceInfo` metadata, but
+out-of-tree plugins cannot supply snapshot or video callbacks until that contract
+is agreed and versioned.
 
 The recorder keeps writing the same HLS bundle either way; only where the bytes
 come from changes. Fragmentation, the component manifest, finalization, retention,

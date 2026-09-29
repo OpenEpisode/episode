@@ -24,6 +24,25 @@ logger = logging.getLogger(__name__)
 MAX_PLUGIN_DIRECTORIES = 256
 
 
+def _inventory_fields(plugin_id: str) -> tuple[str, ...]:
+    """Fields visible to an out-of-tree DeviceConfig.
+
+    Keep this list aligned with ``episode.plugin_api.DeviceConfig``. Runtime
+    selection handles whether a Device is enabled or ready; those operational
+    flags are deliberately not part of a plugin's public DeviceConfig.
+    """
+    return (
+        "id",
+        "name",
+        "device_type",
+        "area_id",
+        "ip_address",
+        "username",
+        "password",
+        f"configs.{plugin_id}",
+    )
+
+
 def _unavailable_registration(
     configured: ExternalPluginConfig,
     state: PluginState,
@@ -46,6 +65,7 @@ def _unavailable_registration(
         installed_version=version,
         unavailable_state=state,
         unavailable_error=error,
+        inventory_fields=_inventory_fields(configured.id),
     )
 
 
@@ -127,6 +147,7 @@ def _registration(
         explicitly_enabled=True,
         configured_device_ids=tuple(configured.device_ids),
         installed_version=manifest.version,
+        inventory_fields=_inventory_fields(manifest.id),
     )
 
 

@@ -75,6 +75,11 @@ class EpisodeEngine:
         self._finalizer = finalizer
         self._defer_finalization = False
         self._finalizing_ids: set[str] = set()
+        self._episode_deadlines: dict[str, datetime] = {}
+        self._capture_lease_revision = 0
+        self._capture_lease_expiry_notified: set[str] = set()
+        self._timeout_retry_initial_seconds = 1.0
+        self._timeout_retry_max_seconds = 15.0
 
     def set_finalizer(self, finalizer: EpisodeFinalizer | None) -> None:
         self._finalizer = finalizer
@@ -88,6 +93,7 @@ class EpisodeEngine:
         self._bus.subscribe("receipt.received", self._on_receipt_received)
         self._bus.subscribe("event.received", self._on_event_received)
         self._bus.subscribe("evidence.received", self._on_evidence_received)
+        await self._restore_episode_deadlines()
         await self._recover_unassigned_active_events()
         await self._close_timed_out_episodes()
         self._timeout_task = asyncio.create_task(
@@ -148,8 +154,78 @@ class EpisodeEngine:
         await self._repo.set_system_setting(QUIESCENT_GRACE_SETTING, str(value))
         self._quiescent_grace_seconds = value
         if self._running:
+            self._capture_lease_revision += 1
+            self._capture_lease_expiry_notified.clear()
+            await self._publish_capture_lease_updates()
             await self._close_timed_out_episodes()
         return self.lifecycle_settings()
+
+    async def _restore_episode_deadlines(self) -> None:
+        """Keep the last persisted capture horizon available without a DB read."""
+        episodes = [
+            *await self._repo.list_episodes(state=EpisodeState.ACTIVE, limit=10000),
+            *await self._repo.list_episodes(state=EpisodeState.QUIESCENT, limit=10000),
+        ]
+        for episode in episodes:
+            self._episode_deadlines[episode.id] = self._episode_deadline(episode)
+
+    def _episode_deadline(self, episode: Episode) -> datetime:
+        if episode.minimum_end_at is not None:
+            return episode.minimum_end_at
+        baseline = episode.last_activity_at or episode.last_event_time or episode.start_time
+        return baseline + timedelta(seconds=self._timeout)
+
+    def _capture_lease_payload(self, episode_id: str) -> dict[str, str | int]:
+        deadline = self._episode_deadlines[episode_id] + timedelta(
+            seconds=self._quiescent_grace_seconds
+        )
+        return {
+            "capture_lease_until": deadline.isoformat(),
+            "capture_lease_revision": self._capture_lease_revision,
+        }
+
+    def _remember_episode_deadline(self, episode_id: str, deadline: datetime) -> datetime:
+        previous = self._episode_deadlines.get(episode_id)
+        effective = max(previous, deadline) if previous is not None else deadline
+        if previous is None or effective > previous:
+            self._capture_lease_expiry_notified.discard(episode_id)
+        self._episode_deadlines[episode_id] = effective
+        return effective
+
+    async def _publish_capture_lease_updates(self) -> None:
+        for episode_id in sorted(self._episode_deadlines):
+            await self._bus.publish(
+                Message(
+                    type="episode.updated",
+                    data={
+                        "episode_id": episode_id,
+                        **self._capture_lease_payload(episode_id),
+                    },
+                )
+            )
+
+    async def _notify_expired_capture_leases(self, *, now: datetime | None = None) -> None:
+        observed_at = now or datetime.now(tz=timezone.utc)
+        expired = [
+            episode_id
+            for episode_id, deadline in self._episode_deadlines.items()
+            if episode_id not in self._capture_lease_expiry_notified
+            and deadline + timedelta(seconds=self._quiescent_grace_seconds) <= observed_at
+        ]
+        if not expired:
+            return
+        self._capture_lease_expiry_notified.update(expired)
+        logger.error(
+            "Episode lifecycle persistence is unavailable past capture lease for %s; "
+            "requesting recorder shutdown",
+            ", ".join(expired),
+        )
+        await self._bus.publish(
+            Message(
+                type="episode.capture_lease_expired",
+                data={"episode_ids": expired, "reason": "lifecycle_storage_unavailable"},
+            )
+        )
 
     async def _on_receipt_received(self, msg: Message):
         receipt = await self._persist_delivery(msg)
@@ -774,6 +850,11 @@ class EpisodeEngine:
                     _defer_manifest=True,
                 )
             event.episode_id = episode.id
+            persisted_deadline = episode.minimum_end_at
+            deadline = (
+                max(persisted_deadline, minimum_end_at) if persisted_deadline else minimum_end_at
+            )
+            episode.minimum_end_at = self._remember_episode_deadline(episode.id, deadline)
             logger.debug(
                 "Added event %s to existing episode %s",
                 event.id,
@@ -804,6 +885,7 @@ class EpisodeEngine:
                 _defer_manifest=True,
             )
             event.episode_id = episode.id
+            self._remember_episode_deadline(episode.id, minimum_end_at)
             logger.info("Created episode %s for area %s", episode.id, event.area_id)
             episode_created = True
 
@@ -814,7 +896,15 @@ class EpisodeEngine:
                     data={"episode_id": episode.id, "event_id": event.id},
                 )
             )
-        await self._bus.publish(Message(type="episode.updated", data={"episode_id": episode.id}))
+        await self._bus.publish(
+            Message(
+                type="episode.updated",
+                data={
+                    "episode_id": episode.id,
+                    **self._capture_lease_payload(episode.id),
+                },
+            )
+        )
 
     async def _match_orphan_evidence(self, evidence: Evidence):
         async with self._lifecycle_lock:
@@ -885,6 +975,8 @@ class EpisodeEngine:
         if self._defer_finalization:
             return
         for episode in finalizing:
+            self._episode_deadlines.pop(episode.id, None)
+            self._capture_lease_expiry_notified.discard(episode.id)
             if episode.id in self._finalizing_ids:
                 continue
             self._finalizing_ids.add(episode.id)
@@ -925,12 +1017,24 @@ class EpisodeEngine:
                 self._finalizing_ids.discard(episode.id)
 
     async def _timeout_loop(self):
+        retry_delay = self._timeout_retry_initial_seconds
         while self._running:
-            await asyncio.sleep(1)
             try:
                 await self._close_timed_out_episodes()
             except Exception:
-                logger.exception("Error in timeout loop")
+                logger.exception(
+                    "Episode lifecycle timeout pass failed; retrying in %.1f seconds",
+                    retry_delay,
+                )
+                try:
+                    await self._notify_expired_capture_leases()
+                except Exception:
+                    logger.exception("Could not notify recorders about expired capture leases")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, self._timeout_retry_max_seconds)
+            else:
+                retry_delay = self._timeout_retry_initial_seconds
+                await asyncio.sleep(1)
 
     def status(self) -> dict:
         return {

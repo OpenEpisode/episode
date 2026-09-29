@@ -70,6 +70,7 @@ class Application:
             self._bus,
             config.data_dir,
             fragment_seconds=config.actions.recording.fragment_seconds,
+            episode_timeout_seconds=config.episode_timeout,
             media=self._media,
         )
         self._engine.set_finalizer(self._recorder.finalize_episode)
@@ -102,7 +103,7 @@ class Application:
         self._plugins = PluginManager((), self._plugin_context(()))
         self._inventory = InventoryService(
             self._repo,
-            on_device_configuration_changed=self.reload_configured_plugins,
+            on_device_configuration_changed=self.reconcile_configured_plugins,
         )
         self._connectors: list[ManagedConnector] = []
         self._operations = OperationalView(
@@ -138,6 +139,7 @@ class Application:
             engine=self._engine,
             capture_profiles=self._capture_profiles,
             episode_started_webhook=self._episode_started_webhook,
+            media=self._media,
         )
         register_plugins_api(self._fastapi_app, self._plugins)
 
@@ -300,7 +302,7 @@ class Application:
         logger.info("Shutting down...")
         await self._lifecycle.shutdown()
 
-    async def reload_configured_plugins(self) -> None:
+    async def reconcile_configured_plugins(self, device_id: str) -> None:
         async with self._plugin_reload_lock:
             configured_devices = await self._inventory.configured_devices()
             configured_device_types = {
@@ -308,17 +310,14 @@ class Application:
                 for device in configured_devices
                 for config_type in device.get("configs", {})
             }
-            logger.info("Reloading plugins from saved Device configuration...")
-            await self._plugins.stop()
-            self._plugins.configure(
+            await self._plugins.reconcile(
                 self._plugin_registry.for_configuration(
                     configured_device_types,
                     self._configured_connector_types,
                 ),
                 self._plugin_context(configured_devices),
+                changed_device_id=device_id,
             )
-            await self._plugins.start()
-            logger.info("Configured plugins reloaded")
 
     def _plugin_context(self, configured_devices) -> PluginContext:
         return PluginContext(
@@ -327,7 +326,7 @@ class Application:
             raw_delivery_sink=self._raw_plugin_deliveries,
             ingress_router=self._ingress_router,
             media_registry=self._media,
-            device_update_sink=self._repo.upsert_device,
+            device_update_sink=self._repo.apply_device_discovery,
         )
 
     def _build_connector(self, cfg):

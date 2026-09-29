@@ -78,7 +78,7 @@ function deviceDefaults(device) {
       // camera's own decision.
       event_filter: Array.isArray(policy.event_filter) ? policy.event_filter : null,
     },
-    video: { enabled: !isNew, manual_endpoint: false, protocol: "rtsp", port: 554, path: "/Streaming/Channels/101", recording_mode: "on_event", ...(config.video || {}) },
+    video: { enabled: !isNew, manual_endpoint: false, protocol: "rtsp", port: 554, path: "/Streaming/Channels/101", recording_mode: "on_event", recording_source_id: "", ...(config.video || {}) },
     onvif: { enabled: !isNew, protocol: "http", port: 80, path: "/onvif/device_service", auth_mode: "digest_wsse", events_enabled: false, relaxed_xml: false, ...(config.onvif || {}) },
     // Nothing is preset: `ignore_events` stops interpretation before a canonical
     // Event exists, and class filtering now owns suppression after one exists. An
@@ -263,6 +263,7 @@ function devicePayload(data, editing, device) {
       port: numberOrNull(field(data, "video_port")),
       path: field(data, "video_path"),
       recording_mode: field(data, "recording_mode"),
+      recording_source_id: field(data, "recording_source_id"),
     },
     onvif: {
       enabled: isChecked(data, "onvif_enabled"),
@@ -298,9 +299,53 @@ function devicePayload(data, editing, device) {
   };
 }
 
+function sourceMetadataSummary(source) {
+  const modes = source.modes || [];
+  const details = [];
+  if (source.width && source.height) {
+    details.push(`${source.width} × ${source.height}`);
+  } else if (modes.length) {
+    const dimensions = [...new Set(modes
+      .filter(mode => mode.width && mode.height)
+      .map(mode => `${mode.width} × ${mode.height}`))];
+    if (dimensions.length) details.push(dimensions.slice(0, 3).join(", "));
+    if (dimensions.length > 3) details.push(`+${dimensions.length - 3} modes`);
+  }
+  const frameRates = source.frame_rate
+    ? [`${source.frame_rate} fps`]
+    : [...new Set(modes.flatMap(mode => mode.frame_rates || []))]
+      .sort((a, b) => b - a).map(rate => `${rate} fps`);
+  if (frameRates.length) {
+    details.push(frameRates.length > 3
+      ? `${frameRates.at(-1)}–${frameRates[0]} fps options`
+      : frameRates.join(" / "));
+  }
+  if (source.codec) details.push(source.codec);
+  return details.join(" · ");
+}
+
+function sourceMetadataLabel(source) {
+  return {
+    configured: "Configured profile",
+    capabilities: "Advertised capabilities; active camera settings may differ",
+    observed: "Observed stream",
+    unknown: "Stream details not reported",
+  }[source.metadata_kind] || "Stream details not reported";
+}
+
 export function openDeviceEditor(device, areas, onSaved) {
   const editing = Boolean(device);
   const values = deviceDefaults(device);
+  const videoSources = device?.video_sources || [];
+  const selectedVideoSource = values.video.recording_source_id || "";
+  const videoSourceOptions = videoSources.map(source => {
+    const summary = sourceMetadataSummary(source);
+    const metadata = [source.provider, source.protocol, summary, sourceMetadataLabel(source)]
+      .filter(Boolean).join(" · ");
+    return `<option value="${safeValue(source.id)}"${selected(source.id === selectedVideoSource)}>${safeValue(source.name)}${metadata ? ` — ${safeValue(metadata)}` : ""}</option>`;
+  }).join("");
+  const selectedSourceMissing = selectedVideoSource
+    && !videoSources.some(source => source.id === selectedVideoSource);
   const configuredIntegrations = new Set(
     Object.entries({
       onvif: values.onvif.enabled,
@@ -327,6 +372,9 @@ export function openDeviceEditor(device, areas, onSaved) {
   const setupDescription = setupState === "needs_setup"
     ? "This Device is saved for later and will not open Episodes or join new captures."
     : "Ready Devices can participate in new activity; configure an Event source or a recording contribution.";
+  const hikvisionSdkDescription = deviceType === "camera"
+    ? "Selectable HCNetSDK Main/Sub video sources. Camera alarm events are not subscribed."
+    : "Doorbell rings and unlock records; anti-tamper mapping is not yet device-tested.";
 
   const overlay = openDialog({
     title: editing ? "Edit Device" : "Add a Device",
@@ -378,6 +426,11 @@ export function openDeviceEditor(device, areas, onSaved) {
               <option value="on_event"${selected(values.video.recording_mode === "on_event")}>Own Events only</option>
               <option value="on_episode"${selected(values.video.recording_mode === "on_episode")}>Any Episode in this Area</option>
             </select></label>
+            <label class="field"><span>Recording source</span><select name="recording_source_id">
+              <option value=""${selected(!selectedVideoSource)}>Automatic (recommended)</option>
+              ${selectedSourceMissing ? `<option value="${safeValue(selectedVideoSource)}" selected>Saved source — currently unavailable</option>` : ""}
+              ${videoSourceOptions}
+            </select><small>Automatic uses the integration's preferred stream, or the configured manual endpoint when no discovered source is available. Pin future recordings to a discovered source here. Discovery refreshes when its integration reconnects.</small>${selectedSourceMissing ? '<small class="video-source-warning">The saved source is currently unavailable. Episode will not switch to another source automatically.</small>' : ""}</label>
           </div>`) }
       </div>
 
@@ -389,12 +442,12 @@ export function openDeviceEditor(device, areas, onSaved) {
             <label class="toggle-row"><input type="checkbox" name="onvif_relaxed_xml"${checked(values.onvif.relaxed_xml)}><span><strong>Tolerate malformed SOAP XML</strong><small>Compatibility fallback for Devices that return malformed ONVIF responses. Leave off unless validation fails.</small></span></label>`, integrationOptionAttributes("onvif")) }
           <div class="integration-group-label" data-vendor-group="hikvision"><strong>Hikvision enhancements</strong><span>Optional vendor connections that complement ONVIF.</span></div>
           ${integrationToggle("isapi", "Hikvision ISAPI Event stream", "Rich motion and classification Events from Hikvision devices.", values.isapi.enabled, "", integrationOptionAttributes("isapi"))}
-          ${integrationToggle("hikvision_sdk", "Hikvision HCNetSDK", "Doorbell rings and unlock records; anti-tamper mapping is not yet device-tested. Available for Doorbell Devices.", values.sdk.enabled, "", integrationOptionAttributes("hikvision_sdk")) }
+          ${integrationToggle("hikvision_sdk", "Hikvision HCNetSDK", hikvisionSdkDescription, values.sdk.enabled, "", integrationOptionAttributes("hikvision_sdk")) }
           <div class="integration-group-label" data-vendor-group="reolink"><strong>Reolink</strong><span>Native binary protocol for Reolink cameras.</span></div>
           ${integrationToggle("reolink", "Reolink API", "Discovery, media, and Events over the Reolink binary protocol.", values.reolink.enabled, `
             <label class="toggle-row"><input type="checkbox" name="reolink_media_enabled"${checked(values.reolink.media_enabled)}><span><strong>Enable media (streams &amp; snapshots)</strong><small>Register the discovered RTSP stream and binary snapshots so recording and snapshot-on-event work without ONVIF.</small></span></label>
             <label class="toggle-row"><input type="checkbox" name="reolink_events_enabled"${checked(values.reolink.events_enabled)}><span><strong>Receive Reolink events</strong><small>Listen for motion and detection events pushed over the binary protocol. Disabled by default to avoid noisy state changes.</small></span></label>
-            <label class="toggle-row"><input type="checkbox" name="reolink_native_video"${checked(values.reolink.native_video)}><span><strong>Native media acquisition</strong><small>Record from the on-demand native burst instead of RTSP. The camera leads with an I-Frame, so the first access unit reaches the recorder sooner than a fresh RTSP keyframe-wait.</small></span></label>
+            <label class="toggle-row"><input type="checkbox" name="reolink_native_video"${checked(values.reolink.native_video)}><span><strong>Native media acquisition</strong><small>Prefer the on-demand native burst for Automatic recording; an explicitly selected source takes precedence. The camera leads with an I-Frame, so the first access unit reaches the recorder sooner than a fresh RTSP keyframe-wait.</small></span></label>
             <div class="form-grid">
               <label class="field"><span>Preview variant</span><select name="reolink_preview_variant">
                 <option value="main"${selected(values.reolink.preview_variant === "main")}>main</option>
@@ -552,18 +605,21 @@ export function openDeviceEditor(device, areas, onSaved) {
     const eventSources = [
       ["onvif_events_enabled", "onvif"],
       ["isapi_enabled", "isapi"],
-      ["hikvision_sdk_enabled", "hikvision_sdk"],
       ["reolink_events_enabled", "reolink"],
     ].some(([fieldName, integration]) => {
       const fieldValue = form.querySelector(`[name="${fieldName}"]`);
       const integrationToggle = form.querySelector(`[data-integration="${integration}"] .integration-toggle input`);
       return Boolean(fieldValue?.checked && integrationToggle?.checked);
-    });
+    }) || (
+      typeSelect.value === "doorbell"
+      && Boolean(form.querySelector('[name="hikvision_sdk_enabled"]')?.checked)
+      && Boolean(form.querySelector('[data-integration="hikvision_sdk"] .integration-toggle input')?.checked)
+    );
     const saveForLater = form.querySelector('[name="save_for_later"]')?.checked;
     const videoEnabled = form.querySelector('[name="video_enabled"]')?.checked;
     noTriggerWarning.classList.toggle("hidden", eventSources || saveForLater);
     noTriggerMessage.textContent = videoEnabled
-      ? "This Device can still be saved for later or used as a recording-only target with a validated media stream. It will not open Episodes by itself. An Event API or configured Alarm Server can provide the trigger; FTP uploads provide Evidence but do not open Episodes."
+      ? "This Device can still be saved for later or used as a recording-only target once a media source is discovered or configured. It will not open Episodes by itself. An Event API or configured Alarm Server can provide the trigger; FTP uploads provide Evidence but do not open Episodes."
       : "This Device has no direct Event or media integration selected. Keep it ready when Events will arrive through the shared Event API or a configured Alarm Server; FTP alone provides Evidence and does not open Episodes. Otherwise choose Save for later.";
   };
 

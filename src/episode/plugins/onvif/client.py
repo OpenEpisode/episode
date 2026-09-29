@@ -45,6 +45,7 @@ class ONVIFProfile:
     height: int = 0
     stream_uri: str = ""
     snapshot_uri: str = ""
+    frame_rate: float | None = None
 
 
 @dataclass
@@ -287,6 +288,16 @@ class ONVIFClient:
                 continue
             encoder = profile.find(f"{{{TT}}}VideoEncoderConfiguration")
             resolution = encoder.find(f"{{{TT}}}Resolution") if encoder is not None else None
+            rate_control = encoder.find(f"{{{TT}}}RateControl") if encoder is not None else None
+            frame_rate_text = (
+                rate_control.findtext(f"{{{TT}}}FrameRateLimit", "")
+                if rate_control is not None
+                else ""
+            )
+            try:
+                frame_rate = float(frame_rate_text) if frame_rate_text else None
+            except ValueError:
+                frame_rate = None
             device.profiles.append(
                 ONVIFProfile(
                     token=token,
@@ -304,6 +315,7 @@ class ONVIFClient:
                         if resolution is not None
                         else 0
                     ),
+                    frame_rate=frame_rate,
                     stream_uri=await self._get_stream_uri(media_url, token),
                     snapshot_uri=await self._get_snapshot_uri(media_url, token),
                 )

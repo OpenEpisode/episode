@@ -56,6 +56,97 @@ class PluginConfigurationError(ValueError):
 
 
 @dataclass(frozen=True)
+class VideoMode:
+    """A configured or camera-advertised encoding mode for a media source."""
+
+    width: int | None = None
+    height: int | None = None
+    frame_rates: tuple[int, ...] = ()
+    codec: str = ""
+
+    def __post_init__(self) -> None:
+        for name, value in (("width", self.width), ("height", self.height)):
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 16384
+            ):
+                raise ValueError(f"VideoMode {name} must be between 1 and 16384")
+        if not isinstance(self.frame_rates, (tuple, list)):
+            raise ValueError("VideoMode frame_rates must be a tuple or list")
+        frame_rates = tuple(self.frame_rates)
+        if len(frame_rates) > 32 or any(
+            not isinstance(rate, int) or isinstance(rate, bool) or not 1 <= rate <= 240
+            for rate in frame_rates
+        ):
+            raise ValueError("VideoMode frame rates must be between 1 and 240 fps")
+        object.__setattr__(self, "frame_rates", frame_rates)
+        if (
+            not isinstance(self.codec, str)
+            or len(self.codec) > 32
+            or any(ord(character) < 32 for character in self.codec)
+            or "://" in self.codec
+        ):
+            raise ValueError("VideoMode codec is invalid or too long")
+
+
+@dataclass(frozen=True)
+class VideoSourceInfo:
+    """Credential-free, selectable source metadata reported during discovery.
+
+    ``metadata_kind`` distinguishes active configuration and observed media from
+    a device's advertised capabilities, which may not match its current settings.
+    """
+
+    id: str
+    name: str
+    protocol: str = "unknown"
+    metadata_kind: str = "unknown"
+    width: int | None = None
+    height: int | None = None
+    frame_rate: float | None = None
+    codec: str = ""
+    modes: tuple[VideoMode, ...] = ()
+    default: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not self.id or len(self.id) > 256:
+            raise ValueError("VideoSourceInfo id must contain 1 to 256 characters")
+        if any(ord(character) < 32 for character in self.id) or "://" in self.id:
+            raise ValueError("VideoSourceInfo id cannot contain control characters or a URL")
+        if not isinstance(self.name, str) or not self.name or len(self.name) > 120:
+            raise ValueError("VideoSourceInfo name must contain 1 to 120 characters")
+        if not isinstance(self.protocol, str) or len(self.protocol) > 32:
+            raise ValueError("VideoSourceInfo protocol is too long")
+        if not isinstance(self.codec, str) or len(self.codec) > 32:
+            raise ValueError("VideoSourceInfo protocol or codec is too long")
+        for value in (self.name, self.protocol, self.codec):
+            if any(ord(character) < 32 for character in value) or "://" in value:
+                raise ValueError(
+                    "VideoSourceInfo labels cannot contain control characters or a URL"
+                )
+        if self.metadata_kind not in {"configured", "capabilities", "observed", "unknown"}:
+            raise ValueError("VideoSourceInfo metadata_kind is unsupported")
+        for name, value in (("width", self.width), ("height", self.height)):
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 16384
+            ):
+                raise ValueError(f"VideoSourceInfo {name} must be between 1 and 16384")
+        if not isinstance(self.modes, (tuple, list)):
+            raise ValueError("VideoSourceInfo modes must be a tuple or list")
+        modes = tuple(self.modes)
+        if len(modes) > 32 or any(not isinstance(mode, VideoMode) for mode in modes):
+            raise ValueError("VideoSourceInfo has too many encoding modes")
+        object.__setattr__(self, "modes", modes)
+        if self.frame_rate is not None and (
+            isinstance(self.frame_rate, bool)
+            or not isinstance(self.frame_rate, (int, float))
+            or not 0 < self.frame_rate <= 240
+        ):
+            raise ValueError("VideoSourceInfo frame_rate must be between 0 and 240 fps")
+        if not isinstance(self.default, bool):
+            raise ValueError("VideoSourceInfo default must be a boolean")
+
+
+@dataclass(frozen=True)
 class DeviceConfig:
     """Read-only configuration for a Device explicitly assigned to a plugin."""
 
@@ -212,6 +303,7 @@ class MediaSource:
     password: str = ""
     profile_token: str = ""
     source: str = ""
+    video_source: VideoSourceInfo | None = None
 
     def __post_init__(self) -> None:
         if not self.device_id:
@@ -306,4 +398,6 @@ __all__ = [
     "RawDelivery",
     "ReceiptStatus",
     "StoredDelivery",
+    "VideoMode",
+    "VideoSourceInfo",
 ]

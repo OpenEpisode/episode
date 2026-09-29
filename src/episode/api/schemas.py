@@ -86,6 +86,27 @@ class CapturePolicyResponse(ApiModel):
     activity_window_seconds: int
 
 
+class VideoModeResponse(ApiModel):
+    width: int | None = None
+    height: int | None = None
+    frame_rates: list[int] = Field(default_factory=list)
+    codec: str = ""
+
+
+class VideoSourceResponse(ApiModel):
+    id: str
+    name: str
+    provider: str
+    protocol: str
+    metadata_kind: Literal["configured", "capabilities", "observed", "unknown"]
+    width: int | None = None
+    height: int | None = None
+    frame_rate: float | None = None
+    codec: str = ""
+    modes: list[VideoModeResponse] = Field(default_factory=list)
+    default: bool = False
+
+
 class DeviceSummaryResponse(ApiModel):
     id: str
     name: str
@@ -122,6 +143,7 @@ class DeviceDetailResponse(DeviceSummaryResponse):
     capture_policy: CapturePolicyResponse
     configuration: DeviceConfigurationResponse
     integration_support: dict[str, IntegrationSupportResponse] = Field(default_factory=dict)
+    video_sources: list[VideoSourceResponse] = Field(default_factory=list)
     can_delete: bool = False
 
 

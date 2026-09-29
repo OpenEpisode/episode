@@ -54,19 +54,26 @@ fields blank while editing keeps their stored values.
 The default ONVIF service is HTTP port 80 at `/onvif/device_service`.
 Change this configured bootstrap endpoint under **Manual connection overrides**
 when a camera uses non-standard values. ONVIF-discovered manufacturer, model,
-firmware, selected profile, and media profiles are shown read-only on the Device
-page.
+firmware, selected profile, and media profiles are shown on the Device page.
+The profiles are discovery data; choose the recording source under **Edit
+Device → Capture**.
 
 ONVIF-discovered media is preferred for capture and is kept in the runtime media
 registry rather than written back into editable configuration. A manual RTSP
 fallback can be enabled explicitly for cameras with incomplete media discovery;
 the common Hikvision path is `/Streaming/Channels/101` on port 554.
+Discovery updates only ONVIF-owned Device capabilities and metadata against the
+latest saved Device; it does not rewrite credentials, recording policy, or a
+manual video endpoint.
 
 Episode registers Devices by IP; multicast WS-Discovery is intentionally not
-required by the Docker installation. Without an explicit profile preference,
-Episode selects the advertised profile with the highest pixel resolution. The
-Device detail page shows discovered profiles, capabilities, and connection
-health.
+required by the Docker installation. **Automatic** preserves the existing
+behavior: Episode prefers the highest-resolution usable ONVIF profile. Under
+**Edit Device → Capture**, you can pin future recordings to another discovered
+profile. This does not change camera settings, switch a recording already in
+progress, or silently fall back if the chosen source becomes unavailable. The
+Device detail page shows discovered profiles, available recording sources,
+capabilities, and connection health.
 
 Validation, configuration, and runtime health are distinct. A timeout or
 authentication error does not mean that ONVIF is unsupported and therefore
@@ -89,7 +96,8 @@ is only silenced when you select the `motion` class.
 
 1. Episode reads the camera clock to tolerate normal WS-Security clock skew.
 2. It discovers ONVIF services and media profiles.
-3. It registers the selected RTSP and snapshot endpoints with the media layer.
+3. It registers usable RTSP profiles as selectable media sources and keeps the
+   existing highest-resolution profile as the automatic default.
 4. If ONVIF Events are enabled, it creates a pull-point subscription.
 5. Active Events create or join an Episode and start configured actions.
 

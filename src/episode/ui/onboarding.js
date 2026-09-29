@@ -1,7 +1,7 @@
 import { api, apiRequest } from "./api.js?v=3";
 import { pageHeader } from "./components.js?v=3";
 import { closeDialog, confirmDialog, notify } from "./dialogs.js?v=1";
-import { openAreaEditor, openDeviceEditor } from "./inventory.js?v=7";
+import { openAreaEditor, openDeviceEditor } from "./inventory.js?v=10";
 import { refreshRetentionPolicy } from "./retention-policy.js?v=1";
 import { showContent, showError, showLoading } from "./view.js?v=1";
 

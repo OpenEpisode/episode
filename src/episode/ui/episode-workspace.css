@@ -474,6 +474,10 @@
   .episode-media-stage { min-height: 13rem; }
   .episode-media-header,
   .episode-timeline-heading { align-items: flex-start; gap: 0.5rem; }
+  .episode-media-header { flex-direction: column; }
+  .episode-media-header > div,
+  .episode-media-status { width: 100%; }
+  .episode-media-header strong { white-space: normal; overflow-wrap: anywhere; }
   .episode-media-status { align-items: flex-start; }
   .episode-timeline-heading { flex-direction: column; }
   .episode-timeline-heading small { text-align: left; }

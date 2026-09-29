@@ -8,6 +8,18 @@ const source = await readFile(
   new URL("../../src/episode/ui/inventory.js", import.meta.url),
   "utf8",
 );
+const inventoryPagesSource = await readFile(
+  new URL("../../src/episode/ui/inventory-pages.js", import.meta.url),
+  "utf8",
+);
+const inventoryCss = await readFile(
+  new URL("../../src/episode/ui/inventory.css", import.meta.url),
+  "utf8",
+);
+const episodeWorkspaceCss = await readFile(
+  new URL("../../src/episode/ui/episode-workspace.css", import.meta.url),
+  "utf8",
+);
 
 const apiUrl = moduleUrl(`
   export async function apiRequest(path, options) {
@@ -311,14 +323,15 @@ test("Ignored Events starts empty because it stops interpretation, not capture",
   ]);
 });
 
-test("HCNetSDK is presented as catalogue-gated vendor integration", () => {
-  const dialog = captureEditor();
+test("HCNetSDK offers video for cameras and Events for Doorbells", () => {
+  const camera = captureEditor({ device_type: "camera" });
+  const doorbell = captureEditor({ device_type: "doorbell" });
 
-  assert.match(dialog.content, /anti-tamper mapping is not yet device-tested/);
-  assert.match(dialog.content, /Available for Doorbell Devices/);
-  assert.doesNotMatch(dialog.content, /experimental camera callbacks/i);
-  assert.doesNotMatch(dialog.content, /Camera mode is diagnostic-only/);
-  assert.match(dialog.content, /name="hikvision_sdk_enabled"\>/);
+  assert.match(camera.content, /Selectable HCNetSDK Main\/Sub video sources/);
+  assert.match(camera.content, /Camera alarm events are not subscribed/);
+  assert.match(doorbell.content, /Doorbell rings and unlock records/);
+  assert.match(doorbell.content, /anti-tamper mapping is not yet device-tested/);
+  assert.match(camera.content, /name="hikvision_sdk_enabled"\>/);
   assert.match(source, /devices\/integrations\/catalog/);
   assert.match(source, /catalogEntryMatches/);
 });
@@ -370,7 +383,7 @@ const validationCatalog = [
     available: true,
     manufacturer_scope_kind: "targeted",
     manufacturer_scope: ["hikvision"],
-    device_types: ["doorbell"],
+    device_types: ["camera", "doorbell"],
   },
   {
     id: "reolink",
@@ -389,7 +402,7 @@ test("validation results follow current manufacturer and device type", () => {
       deviceType: "camera",
       manufacturer: "Hikvision Digital Technology",
     })],
-    ["onvif", "isapi"],
+    ["onvif", "isapi", "hikvision_sdk"],
   );
 });
 
@@ -422,6 +435,14 @@ test("the Device editor hides stale validation from unrelated integrations", () 
   assert.doesNotMatch(validation, /Authentication Failed/);
 });
 
+test("mobile inventory and episode layouts keep dense metadata readable", () => {
+  assert.match(inventoryPagesSource, /resource-row recording-source-row/);
+  assert.match(inventoryCss, /\.recording-source-row\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);/);
+  assert.match(inventoryCss, /\.validation-result \.validation-status\s*\{[\s\S]*?grid-column: 2;/);
+  assert.match(inventoryCss, /\.dialog-footer \.button \{ min-height: 2\.75rem; width: 100%; \}/);
+  assert.match(episodeWorkspaceCss, /\.episode-media-header \{ flex-direction: column; \}/);
+});
+
 test("configured mismatched integrations remain visible for diagnosis", () => {
   const keys = applicableValidationKeys({
     catalog: validationCatalog,
@@ -430,7 +451,7 @@ test("configured mismatched integrations remain visible for diagnosis", () => {
     manufacturer: "Hikvision",
   });
 
-  assert.deepEqual([...keys], ["onvif", "isapi", "reolink"]);
+  assert.deepEqual([...keys], ["onvif", "isapi", "hikvision_sdk", "reolink"]);
 });
 
 test("selected mismatched integrations remain visible while being validated", () => {
@@ -441,5 +462,75 @@ test("selected mismatched integrations remain visible while being validated", ()
     selected: new Set(["reolink"]),
   });
 
-  assert.deepEqual([...keys], ["onvif", "isapi", "reolink"]);
+  assert.deepEqual([...keys], ["onvif", "isapi", "hikvision_sdk", "reolink"]);
+});
+
+test("Device editor lists discovered video sources and submits the pinned choice", async () => {
+  globalThis.inventoryRequests = [];
+  const dialog = captureEditor({
+    id: "garage-camera",
+    name: "Garage camera",
+    device_type: "camera",
+    area_id: "entrance",
+    video_sources: [
+      {
+        id: "onvif:main",
+        name: "Main profile",
+        provider: "ONVIF",
+        protocol: "rtsp",
+        metadata_kind: "configured",
+        width: 1920,
+        height: 1080,
+        frame_rate: 25,
+        codec: "H264",
+        modes: [],
+        default: true,
+      },
+      {
+        id: "reolink:native:sub",
+        name: "Reolink native · Sub stream",
+        provider: "Reolink",
+        protocol: "Baichuan",
+        metadata_kind: "capabilities",
+        modes: [{ width: 640, height: 360, frame_rates: [15, 10], codec: "" }],
+        default: false,
+      },
+      {
+        id: "hikvision-sdk:main",
+        name: "HCNetSDK · Main stream",
+        provider: "Hikvision HCNetSDK",
+        protocol: "HCNetSDK",
+        metadata_kind: "capabilities",
+        width: 2560,
+        height: 1440,
+        frame_rate: 25,
+        codec: "h264",
+        modes: [],
+        default: false,
+      },
+    ],
+    configuration: {
+      video: { enabled: true, recording_source_id: "reolink:native:sub" },
+    },
+  });
+
+  assert.match(dialog.content, /name="recording_source_id"/);
+  assert.match(dialog.content, /Advertised capabilities; active camera settings may differ/);
+  assert.match(dialog.content, /reolink:native:sub/);
+  assert.match(dialog.content, /hikvision-sdk:main/);
+
+  await dialog.onSubmit(new Map([
+    ["name", "Garage camera"],
+    ["device_type", "camera"],
+    ["area_id", "entrance"],
+    ["activity_window_seconds", "30"],
+    ["video_enabled", "on"],
+    ["recording_mode", "on_event"],
+    ["recording_source_id", "reolink:native:sub"],
+  ]));
+
+  assert.equal(
+    globalThis.inventoryRequests[0].options.body.video.recording_source_id,
+    "reolink:native:sub",
+  );
 });

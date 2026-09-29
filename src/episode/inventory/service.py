@@ -22,7 +22,7 @@ class InventoryService:
         self,
         repository,
         *,
-        on_device_configuration_changed: Callable[[], Awaitable[None]] | None = None,
+        on_device_configuration_changed: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._repo = repository
         self._on_device_configuration_changed = on_device_configuration_changed
@@ -80,7 +80,7 @@ class InventoryService:
                 )
 
         saved = await self._repo.upsert_device(device)
-        await self._notify_device_configuration_changed()
+        await self._notify_device_configuration_changed(saved.id)
         return saved
 
     async def delete_device(self, device_id: str) -> None:
@@ -92,7 +92,7 @@ class InventoryService:
                 "This Device has incident history. Disable it instead of deleting it."
             )
         await self._repo.delete_device(device_id)
-        await self._notify_device_configuration_changed()
+        await self._notify_device_configuration_changed(device_id)
 
     async def area_usage(self, area_id: str) -> dict[str, int]:
         return await self._repo.area_usage(area_id)
@@ -104,9 +104,9 @@ class InventoryService:
         devices = await self._repo.list_devices()
         return tuple(asdict(device) for device in devices)
 
-    async def _notify_device_configuration_changed(self) -> None:
+    async def _notify_device_configuration_changed(self, device_id: str) -> None:
         if self._on_device_configuration_changed:
-            await self._on_device_configuration_changed()
+            await self._on_device_configuration_changed(device_id)
 
     @staticmethod
     async def _available_id(name: str, getter, fallback: str) -> str:

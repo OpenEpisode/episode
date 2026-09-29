@@ -37,6 +37,7 @@ class ApiContext:
     engine: EpisodeEngine | None = None
     capture_profiles: CaptureProfileService | None = None
     episode_started_webhook: EpisodeStartedWebhookSettingsService | None = None
+    media: Any | None = None
 
     def __post_init__(self) -> None:
         if self.timelapses is None:

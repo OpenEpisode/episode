@@ -47,6 +47,15 @@ Episode writes one final atomic manifest and then becomes **closed**. A failure
 or restart leaves it finalizing for a later retry. Configure the grace period
 under **System → Recordings**.
 
+If SQLite remains unavailable beyond an Episode's full capture lease, the
+recorder stops from its locally maintained monotonic deadline rather than
+waiting for another database read. It parks the HLS workspace for recovery and
+does not publish Evidence until the Episode reaches its `FINALIZING` barrier.
+If Evidence cannot be persisted there, no completed Evidence row is published;
+the workspace remains recoverable and the Recorder reports a degraded state
+until retry succeeds. Episode timeout writes retry with capped backoff while
+storage recovers.
+
 Events or Evidence that arrive after the grace period remain preserved and
 searchable, but unassigned. They never reopen or amend a finalizing or closed
 Episode. This keeps a closed Episode a stable, sealed account of what was
@@ -161,6 +170,20 @@ one logical recording Evidence item to an Episode, backed by a playlist,
 initialization file, immutable media fragments, and a checksummed component
 manifest. This allows playback while the Episode is active and keeps the whole
 recording portable.
+
+In **Devices → Edit → Recording source**, **Automatic** uses the preferred
+source registered by the active integration. When integrations discover more
+than one usable stream, the list shows their provider, protocol, and any known
+resolution, frame rate, or codec. These details distinguish an active profile,
+advertised camera capability, an observed stream, and unknown information;
+advertised modes do not prove what the camera is currently transmitting. A
+source can be pinned for future recordings. If that exact choice is unavailable,
+Episode reports the problem rather than quietly recording from a different
+stream. Updating the selection does not alter an already-running recording; its
+active workspace retains the resolved source ID for restart recovery as well.
+Device configuration can be saved before asynchronous plugin discovery finishes;
+recording starts only after a usable source is available.
+The source URI and credentials are never part of the public Device projection.
 
 `actions.recording.fragment_seconds` controls the target fragment duration
 (four seconds by default). Camera keyframe intervals can make fragments longer.

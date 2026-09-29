@@ -67,6 +67,27 @@ def test_missing_and_incompatible_plugins_report_safe_states(tmp_path):
     assert "requires API 99" in incompatible.unavailable_error
     assert missing.unavailable_state == PluginState.NOT_INSTALLED
     assert "episode-plugin.json" in missing.unavailable_error
+    expected_fields = (
+        "id",
+        "name",
+        "device_type",
+        "area_id",
+        "ip_address",
+        "username",
+        "password",
+        "configs.example-udp-sensor",
+    )
+    assert incompatible.inventory_fields == expected_fields
+    assert missing.inventory_fields == (
+        "id",
+        "name",
+        "device_type",
+        "area_id",
+        "ip_address",
+        "username",
+        "password",
+        "configs.not-installed",
+    )
     assert not any(name.startswith("_episode_external_example_udp_sensor") for name in sys.modules)
 
 
@@ -187,6 +208,63 @@ def test_external_media_registration_is_scoped_and_removed_on_close(tmp_path):
 
     media.close()
     assert registry.get(assigned.id) is None
+
+
+def test_external_media_can_advertise_multiple_selectable_sources(tmp_path):
+    registry = MediaRegistry()
+    assigned = plugin_api.DeviceConfig(
+        id="assigned-camera",
+        name="Assigned camera",
+        device_type="camera",
+        area_id="garden",
+    )
+    media = _ExternalMedia(
+        "camera-plugin",
+        PluginContext(tmp_path, media_registry=registry),
+        (assigned,),
+    )
+    media.register(
+        plugin_api.MediaSource(
+            device_id=assigned.id,
+            stream_uri="rtsp://192.0.2.20/main",
+            video_source=plugin_api.VideoSourceInfo(
+                id="primary",
+                name="Primary stream",
+                protocol="rtsp",
+                metadata_kind="configured",
+                width=2560,
+                height=1440,
+                default=True,
+            ),
+        )
+    )
+    media.register(
+        plugin_api.MediaSource(
+            device_id=assigned.id,
+            stream_uri="rtsp://192.0.2.20/low-bandwidth",
+            video_source=plugin_api.VideoSourceInfo(
+                id="low-bandwidth",
+                name="Low bandwidth",
+                protocol="rtsp",
+            ),
+        )
+    )
+
+    choices = registry.video_sources(assigned.id)
+    assert [choice.name for choice in choices] == ["Primary stream", "Low bandwidth"]
+    assert choices[0].id == "external:camera-plugin:primary"
+    assert registry.get(assigned.id).stream_uri.endswith("/main")
+    assert registry.get(
+        assigned.id, source_id="external:camera-plugin:low-bandwidth"
+    ).stream_uri.endswith("/low-bandwidth")
+
+    media.close()
+    assert registry.video_sources(assigned.id) == ()
+
+
+def test_public_video_source_info_rejects_urls_in_public_metadata():
+    with pytest.raises(ValueError, match="cannot contain.*URL"):
+        plugin_api.VideoSourceInfo(id="main", name="rtsp://user:secret@camera/live")
 
 
 @pytest.mark.asyncio

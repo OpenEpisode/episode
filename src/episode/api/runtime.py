@@ -209,11 +209,19 @@ class OperationalView:
                 "id": "recorder",
                 "name": "Recorder",
                 "state": status["services"]["recorder"],
-                "summary": f"{int(recorder.get('active_recordings', 0))} active recordings",
+                "summary": (
+                    f"{int(recorder.get('active_recordings', 0))} active recordings"
+                    + (
+                        f" · {int(recorder.get('recoverable_recordings', 0))} awaiting recovery"
+                        if recorder.get("recoverable_recordings")
+                        else ""
+                    )
+                ),
                 "metrics": {
                     key: recorder.get(key)
                     for key in (
                         "active_recordings",
+                        "recoverable_recordings",
                         "cameras",
                         "fragment_seconds",
                         "stall_seconds",

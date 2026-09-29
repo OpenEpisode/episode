@@ -438,18 +438,8 @@ def test_device_config_events_disabled_by_default():
 # ---------------------------------------------------------------------------
 
 
-class FakeMediaRegistry:
-    def __init__(self):
-        self.sources: dict[str, CameraMedia] = {}
-
-    def register(self, source: CameraMedia) -> None:
-        self.sources[source.device_id] = source
-
-    def get(self, device_id: str) -> CameraMedia | None:
-        return self.sources.get(device_id)
-
-    def unregister(self, device_id: str, *, source: str | None = None) -> None:
-        self.sources.pop(device_id, None)
+class FakeMediaRegistry(MediaRegistry):
+    """Use the real source selection semantics while keeping device I/O mocked."""
 
 
 class FakeBaichuanClient:
@@ -596,8 +586,92 @@ async def test_connection_registers_native_video_handler_when_enabled():
     await connection._discover_stream()
     source = registry.get("cam-1")
     assert source is not None
-    assert source.video_handler is not None, "native_video must register a video handler"
+    assert source.video_handler is not None, "native_video must select a video handler by default"
     assert source.codec_hint in ("h264", "hevc") or source.codec_hint == ""
+
+
+@pytest.mark.asyncio
+async def test_connection_reports_generic_main_sub_and_native_video_choices():
+    from episode.plugins.reolink.client import StreamUrlInfo
+
+    registry = FakeMediaRegistry()
+    client = FakeBaichuanClient()
+    connection = ReolinkDeviceConnection(
+        _make_media_config(media_enabled=True),
+        async_noop,
+        async_noop,
+        media_registry=registry,
+        client_factory=lambda _config: client,
+    )
+    connection._stream_url = StreamUrlInfo(
+        main_stream_url="rtsp://192.168.1.10/main",
+        sub_stream_url="rtsp://192.168.1.10/sub",
+        success=True,
+        streams=[
+            {
+                "encodeTables": [
+                    {
+                        "type": "mainStream",
+                        "width": 3840,
+                        "height": 2160,
+                        "framerate": [20, 15, 10],
+                    },
+                    {
+                        "type": "subStream",
+                        "width": 640,
+                        "height": 360,
+                        "framerate": [15, 10],
+                    },
+                ]
+            }
+        ],
+    )
+
+    await connection._register_media()
+
+    sources = {source.id: source for source in registry.video_sources("cam-1")}
+    assert set(sources) == {
+        "reolink:rtsp:main",
+        "reolink:rtsp:sub",
+        "reolink:native:main",
+        "reolink:native:sub",
+    }
+    assert sources["reolink:rtsp:main"].modes[0].width == 3840
+    assert sources["reolink:rtsp:main"].modes[0].frame_rates == (20, 15, 10)
+    assert sources["reolink:rtsp:main"].metadata_kind == "capabilities"
+    assert sources["reolink:rtsp:main"].default is True
+    assert sources["reolink:native:main"].default is False
+    assert "192.168.1.10" not in repr(sources)
+
+
+@pytest.mark.asyncio
+async def test_native_sub_source_is_available_without_a_substream_rtsp_url():
+    from episode.plugins.reolink.client import StreamUrlInfo
+
+    registry = FakeMediaRegistry()
+    client = FakeBaichuanClient()
+    config = dataclasses.replace(
+        _make_media_config(media_enabled=True),
+        preview=PreviewSettings(native_video=True, variant="sub"),
+    )
+    connection = ReolinkDeviceConnection(
+        config,
+        async_noop,
+        async_noop,
+        media_registry=registry,
+        client_factory=lambda _config: client,
+    )
+    connection._stream_url = StreamUrlInfo(
+        main_stream_url="rtsp://192.168.1.10/main",
+        success=True,
+    )
+
+    await connection._register_media()
+
+    sources = {source.id: source for source in registry.video_sources("cam-1")}
+    assert "reolink:rtsp:main" in sources
+    assert "reolink:rtsp:sub" not in sources
+    assert sources["reolink:native:sub"].default is True
 
 
 @pytest.mark.asyncio

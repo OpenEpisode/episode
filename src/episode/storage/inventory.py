@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import aiosqlite
 
 from episode.domain.event_filter import decode_device_filter, encode_device_filter
-from episode.domain.models import Area, Device
+from episode.domain.models import Area, CapabilityConfig, Device, DeviceDiscoveryUpdate
 
 _SETUP_STATE_KEY = "_setup_state"
 
@@ -15,6 +16,7 @@ class InventoryStore:
 
     def __init__(self, connection: aiosqlite.Connection) -> None:
         self._connection = connection
+        self._device_write_lock = asyncio.Lock()
 
     async def upsert_area(self, area: Area) -> Area:
         await self._connection.execute(
@@ -48,6 +50,10 @@ class InventoryStore:
         await self._connection.commit()
 
     async def upsert_device(self, device: Device) -> Device:
+        async with self._device_write_lock:
+            return await self._upsert_device(device)
+
+    async def _upsert_device(self, device: Device) -> Device:
         await self._connection.execute(
             """INSERT INTO devices (
                 id, name, device_type, area_id,
@@ -98,6 +104,65 @@ class InventoryStore:
         await self._connection.commit()
         return device
 
+    async def apply_device_discovery(self, update: DeviceDiscoveryUpdate) -> Device | None:
+        """Merge integration-owned discovery data into the current Device row.
+
+        The row is read and written under the same lock as operator upserts so
+        a late discovery result cannot overwrite a newer edit.  Discovery is
+        deliberately ignored once the Device is disabled, awaiting setup, or
+        no longer has the integration configuration that produced the result.
+        """
+        if not update.device_id or not update.integration_type:
+            return None
+        async with self._device_write_lock:
+            rows = await self._connection.execute_fetchall(
+                "SELECT * FROM devices WHERE id = ?", (update.device_id,)
+            )
+            if not rows:
+                return None
+            latest = self._row_to_device(rows[0])
+            if not latest.can_participate:
+                return None
+            if update.integration_type not in latest.configs:
+                return None
+
+            capabilities = list(dict.fromkeys([*latest.capabilities, *update.capabilities]))
+            metadata = dict(latest.metadata)
+            metadata[update.integration_type] = dict(update.metadata)
+            configs = dict(latest.configs)
+            existing_video = latest.get_config("video")
+            discovered_video = update.video_if_unconfigured
+            if discovered_video is not None and (
+                existing_video is None or (not existing_video.protocol and not existing_video.path)
+            ):
+                settings = dict(discovered_video.settings)
+                if existing_video is not None:
+                    settings = {**settings, **existing_video.settings}
+                configs["video"] = CapabilityConfig(
+                    protocol=discovered_video.protocol,
+                    port=discovered_video.port,
+                    path=discovered_video.path,
+                    settings=settings,
+                )
+
+            merged = Device(
+                id=latest.id,
+                name=latest.name,
+                device_type=latest.device_type,
+                area_id=latest.area_id,
+                capabilities=capabilities,
+                ip_address=latest.ip_address,
+                username=latest.username,
+                password=latest.password,
+                configs=configs,
+                activity_window_seconds=latest.activity_window_seconds,
+                metadata=metadata,
+                enabled=latest.enabled,
+                event_filter=latest.event_filter,
+                setup_state=latest.setup_state,
+            )
+            return await self._upsert_device(merged)
+
     async def get_device(self, device_id: str) -> Device | None:
         rows = await self._connection.execute_fetchall(
             "SELECT * FROM devices WHERE id = ?", (device_id,)
@@ -131,8 +196,9 @@ class InventoryStore:
         return [self._row_to_device(row) for row in rows]
 
     async def delete_device(self, device_id: str) -> None:
-        await self._connection.execute("DELETE FROM devices WHERE id = ?", (device_id,))
-        await self._connection.commit()
+        async with self._device_write_lock:
+            await self._connection.execute("DELETE FROM devices WHERE id = ?", (device_id,))
+            await self._connection.commit()
 
     async def area_usage(self, area_id: str) -> dict[str, int]:
         row = (

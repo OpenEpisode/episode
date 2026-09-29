@@ -42,6 +42,7 @@ def create_api(
     engine: EpisodeEngine | None = None,
     capture_profiles: CaptureProfileService | None = None,
     episode_started_webhook: EpisodeStartedWebhookSettingsService | None = None,
+    media=None,
 ) -> FastAPI:
     app = FastAPI(
         title="Episode",
@@ -64,6 +65,7 @@ def create_api(
         engine=engine,
         capture_profiles=capture_profiles,
         episode_started_webhook=episode_started_webhook,
+        media=media,
     )
     install_error_handlers(app)
 

@@ -14,8 +14,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
-from episode.domain.models import CapabilityConfig, Device
-from episode.media.registry import CameraMedia
+from episode.domain.models import CapabilityConfig, Device, DeviceDiscoveryUpdate
+from episode.media.registry import CameraMedia, VideoMode, VideoSourceDescriptor
 from episode.plugins.models import (
     PluginDeviceUpdateSink,
     PluginInstanceState,
@@ -340,17 +340,14 @@ class ReolinkDeviceConnection:
             "Reolink:%s applying discovery results",
             self.config.device.name,
         )
-        device = self.config.device
-        for capability in ("reolink",):
-            if capability not in device.capabilities:
-                device.capabilities.append(capability)
+        capabilities = ["reolink"]
         if self._stream_url and self._stream_url.main_stream_url:
-            if "media" not in device.capabilities:
-                device.capabilities.append("media")
-        if self._snapshot_supported and "snapshots" not in device.capabilities:
-            device.capabilities.append("snapshots")
+            capabilities.append("media")
+        if self._snapshot_supported and "snapshots" not in self.config.device.capabilities:
+            capabilities.append("snapshots")
+        metadata: dict[str, object] = {}
         if self._discovered:
-            device.metadata["reolink"] = {
+            metadata = {
                 "mac_address": self._discovered.mac_address,
                 "model": self._discovered.model,
                 "firmware_version": self._discovered.firmware_version,
@@ -359,27 +356,24 @@ class ReolinkDeviceConnection:
                 "events_enabled": self.config.events_enabled,
                 "media_enabled": self.config.media_enabled,
             }
-        # Wire the discovered RTSP URL into the video config so the recording
-        # engine can consume it for Reolink-only devices (preserving an
-        # existing manual video config).
+        video_if_unconfigured = None
         if self.config.media_enabled and self._stream_url and self._stream_url.main_stream_url:
-            existing_video = device.get_config("video")
-            if existing_video and (existing_video.protocol or existing_video.path):
-                recording_mode = existing_video.settings.get("recording_mode", "on_event")
-                device.configs["video"] = CapabilityConfig(
-                    protocol=existing_video.protocol,
-                    port=existing_video.port,
-                    path=existing_video.path,
-                    settings={**existing_video.settings, "recording_mode": recording_mode},
+            video_if_unconfigured = CapabilityConfig(
+                protocol="rtsp",
+                port=554,
+                path=self._stream_url.main_stream_url,
+                settings={"recording_mode": "on_event", "origin": "reolink"},
+            )
+        if self._device_update_sink is not None:
+            await self._device_update_sink(
+                DeviceDiscoveryUpdate(
+                    device_id=self.config.device.id,
+                    integration_type="reolink",
+                    capabilities=tuple(capabilities),
+                    metadata=metadata,
+                    video_if_unconfigured=video_if_unconfigured,
                 )
-            else:
-                device.configs["video"] = CapabilityConfig(
-                    protocol="rtsp",
-                    port=554,
-                    path=self._stream_url.main_stream_url,
-                    settings={"recording_mode": "on_event", "origin": "reolink"},
-                )
-        await self._device_update_sink(device)
+            )
         logger.debug(
             "Reolink:%s device update sent to sink",
             self.config.device.name,
@@ -406,60 +400,94 @@ class ReolinkDeviceConnection:
         return jpeg, "image/jpeg"
 
     async def _register_media(self) -> None:
-        """Register a CameraMedia source (streams + snapshots) when enabled."""
+        """Register discovered selectable streams and shared snapshot actions."""
         if self._media_registry is None:
             logger.warning(
                 "Reolink:%s media enabled but runtime media registry unavailable",
                 self.config.device.name,
             )
             return
-        stream_uri = (
-            self._stream_url.main_stream_url
-            if self._stream_url and self._stream_url.main_stream_url
-            else ""
-        )
-        if not stream_uri:
+        self._media_registry.unregister(self.config.device.id, source="reolink")
+        self._media_registered = False
+        if not self._stream_url or not self._stream_url.success:
             logger.debug(
-                "Reolink:%s no stream URL to register; skipping media registration",
+                "Reolink:%s stream discovery unavailable; skipping media registration",
                 self.config.device.name,
             )
             return
         try:
-            video_handler = None
-            codec_hint = ""
-            if self.config.preview.native_video:
-                # F1: the on-demand cmdId=3 burst is the recording source. The camera leads
-                # with an I-Frame, so the recorder's pipe gets an independently decodable
-                # picture ~157 ms after the command — instead of after a fresh RTSP
-                # keyframe-wait. The codec comes from what the camera actually sent on the
-                # last preview (cmdId=146 data is not a reliable codec source).
-                video_handler = self._preview_handler
-                codec_hint = self._preview_codec_hint
+            modes = self._stream_modes()
+            rtsp_candidates = (
+                ("main", self._stream_url.main_stream_url),
+                ("sub", self._stream_url.sub_stream_url),
+            )
+            preferred_native = self.config.preview.native_video
+            preferred_variant = self.config.preview.variant
+            registered_count = 0
+            for variant, stream_uri in rtsp_candidates:
+                if stream_uri:
+                    self._media_registry.register(
+                        CameraMedia(
+                            device_id=self.config.device.id,
+                            stream_uri=stream_uri,
+                            username=self.config.device.username,
+                            password=self.config.device.password,
+                            source="reolink",
+                            snapshot_fetcher=self._fetch_snapshot,
+                            event_snapshot_fetcher=self._snapshot_fetcher,
+                            video_source=VideoSourceDescriptor(
+                                id=f"reolink:rtsp:{variant}",
+                                name=f"RTSP · {variant.title()} stream",
+                                provider="Reolink",
+                                protocol="rtsp",
+                                metadata_kind="capabilities" if modes[variant] else "unknown",
+                                modes=modes[variant],
+                                default=not preferred_native and variant == "main",
+                            ),
+                        )
+                    )
+                    registered_count += 1
+
+                # Native variants do not depend on a corresponding RTSP URL. Keep
+                # the selectable acquisition paths independent so one missing RTSP
+                # profile does not hide a usable Baichuan variant.
+                self._media_registry.register(
+                    CameraMedia(
+                        device_id=self.config.device.id,
+                        username=self.config.device.username,
+                        password=self.config.device.password,
+                        source="reolink",
+                        snapshot_fetcher=self._fetch_snapshot,
+                        event_snapshot_fetcher=self._snapshot_fetcher,
+                        video_handler=self._preview_handler_for(variant),
+                        codec_hint=(
+                            self._preview_codec_hint
+                            if variant == self.config.preview.variant
+                            else ""
+                        ),
+                        video_source=VideoSourceDescriptor(
+                            id=f"reolink:native:{variant}",
+                            name=f"Reolink native · {variant.title()} stream",
+                            provider="Reolink",
+                            protocol="Baichuan",
+                            metadata_kind="capabilities" if modes[variant] else "unknown",
+                            modes=modes[variant],
+                            default=preferred_native and variant == preferred_variant,
+                        ),
+                    )
+                )
+                registered_count += 1
             logger.debug(
                 "Reolink:%s media source mode=%s codec_hint=%r",
                 self.config.device.name,
-                "native-video-handler" if video_handler is not None else "rtsp-only",
-                codec_hint,
-            )
-            self._media_registry.register(
-                CameraMedia(
-                    device_id=self.config.device.id,
-                    stream_uri=stream_uri,
-                    username=self.config.device.username,
-                    password=self.config.device.password,
-                    profile_token="",
-                    source="reolink",
-                    snapshot_fetcher=self._fetch_snapshot,
-                    event_snapshot_fetcher=self._snapshot_fetcher,
-                    video_handler=video_handler,
-                    codec_hint=codec_hint,
-                )
+                "native-video-available" if self.config.preview.native_video else "rtsp-default",
+                self._preview_codec_hint,
             )
             self._media_registered = True
             logger.info(
-                "Reolink:%s registered media source: stream=%s",
+                "Reolink:%s registered %d selectable media sources",
                 self.config.device.name,
-                stream_uri[:50],
+                registered_count,
             )
         except Exception as error:
             logger.warning(
@@ -467,6 +495,48 @@ class ReolinkDeviceConnection:
                 self.config.device.name,
                 error,
             )
+
+    def _stream_modes(self) -> dict[str, tuple[VideoMode, ...]]:
+        """Return camera-advertised modes, not a claim about the active encode setting."""
+        modes: dict[str, list[VideoMode]] = {"main": [], "sub": []}
+        if self._stream_url is None:
+            return {key: () for key in modes}
+        for stream in self._stream_url.streams or ():
+            for table in stream.get("encodeTables", ()):
+                variant = {"mainStream": "main", "subStream": "sub"}.get(str(table.get("type", "")))
+                if variant is None:
+                    continue
+                width = table.get("width")
+                height = table.get("height")
+                frame_rates = tuple(
+                    sorted(
+                        {
+                            rate
+                            for rate in table.get("framerate", ())
+                            if isinstance(rate, int) and not isinstance(rate, bool)
+                        },
+                        reverse=True,
+                    )
+                )[:32]
+                try:
+                    modes[variant].append(
+                        VideoMode(
+                            width=width if isinstance(width, int) and width > 0 else None,
+                            height=height if isinstance(height, int) and height > 0 else None,
+                            frame_rates=frame_rates,
+                        )
+                    )
+                except ValueError:
+                    logger.debug(
+                        "Reolink:%s ignored invalid stream capability", self.config.device.name
+                    )
+        return {key: tuple(value[:32]) for key, value in modes.items()}
+
+    def _preview_handler_for(self, variant: str):
+        async def handler(push: Callable[[bytes], Awaitable[None]]) -> None:
+            await self._stream_preview(push, variant=variant)
+
+        return handler
 
     async def _unregister_media(self) -> None:
         """Unregister the media source for this device, if registered."""
@@ -734,17 +804,25 @@ class ReolinkDeviceConnection:
         fixed preview deadline. Cancellation or failure simply ends the burst; the
         recorder's own reconnect/stall handling owns the outcome.
         """
+        await self._stream_preview(push, variant=self.config.preview.variant)
+
+    async def _stream_preview(
+        self,
+        push: Callable[[bytes], Awaitable[None]],
+        *,
+        variant: str,
+    ) -> None:
         logger.debug(
             "Reolink:%s native preview burst starting (variant=%s first_packet_timeout=%.1fs)",
             self.config.device.name,
-            self.config.preview.variant,
+            variant,
             self.config.preview.timeout,
         )
         try:
             stats = await self._client.stream_preview(
                 push,
                 channel=0,
-                variant=self.config.preview.variant,
+                variant=variant,
                 timeout=self.config.preview.timeout,
             )
         except asyncio.CancelledError:

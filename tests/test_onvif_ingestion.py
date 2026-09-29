@@ -99,7 +99,7 @@ async def test_unmapped_topic_is_preserved_and_reported_without_becoming_an_even
             raw_delivery_sink=sink,
             ingress_router=router,
             media_registry=MediaRegistry(),
-            device_update_sink=repository.upsert_device,
+            device_update_sink=repository.apply_device_discovery,
         ),
         connection_factory=_FakeONVIFConnection,
     )
@@ -166,7 +166,7 @@ async def test_repeated_state_keeps_source_response_and_derived_receipts(tmp_pat
             raw_delivery_sink=sink,
             ingress_router=router,
             media_registry=MediaRegistry(),
-            device_update_sink=repository.upsert_device,
+            device_update_sink=repository.apply_device_discovery,
         )
     )
     await plugin.start()

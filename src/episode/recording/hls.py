@@ -53,6 +53,7 @@ class HLSCaptureState:
     area_id: str
     session_id: str
     started_at: datetime
+    video_source_id: str = ""
 
 
 class HLSRecordingBundle:
@@ -100,6 +101,7 @@ class HLSRecordingBundle:
             area_id=raw["area_id"],
             session_id=raw["session_id"],
             started_at=started_at,
+            video_source_id=str(raw.get("video_source_id", "")),
         )
         return cls(capture_state_path.parent, state)
 
@@ -133,6 +135,7 @@ class HLSRecordingBundle:
                 "area_id": self.state.area_id,
                 "session_id": self.state.session_id,
                 "started_at": _utc_iso(self.state.started_at),
+                "video_source_id": self.state.video_source_id,
             },
         )
 

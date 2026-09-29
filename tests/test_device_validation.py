@@ -254,6 +254,6 @@ def test_builtin_catalog_matches_manufacturer_and_keeps_onvif_universal():
         entry["id"] for entry in service.catalog(manufacturer="Unknown", device_type="camera")
     }
 
-    assert hikvision == {"onvif", "hikvision-isapi"}
+    assert hikvision == {"onvif", "hikvision-isapi", "hikvision-sdk"}
     assert reolink == {"onvif", "reolink"}
     assert unknown == {"onvif"}

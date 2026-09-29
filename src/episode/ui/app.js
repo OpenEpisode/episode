@@ -1,8 +1,8 @@
 import { $, $$ } from "./dom.js";
 import { closeCarousel } from "./evidence-gallery.js?v=9";
 import { captureProfiles, refreshCaptureProfileNotice } from "./capture-profiles.js?v=4";
-import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=21";
-import { onboardingNeeded, welcome } from "./onboarding.js?v=8";
+import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=25";
+import { onboardingNeeded, welcome } from "./onboarding.js?v=10";
 import { notifications } from "./notifications.js?v=3";
 import {
   activity,
