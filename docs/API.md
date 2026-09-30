@@ -142,6 +142,11 @@ presets and custom whole-day ranges. `has_episode=false` is the supported way
 to find observations or artifacts that have not been associated with an
 Episode; absence of a direct `event_id` is not itself an error because
 recordings and other Episode-level Evidence need not belong to one Event.
+The Episode collection accepts optional `started_from` and `started_before`
+RFC 3339 bounds. They filter the Episode `start_time` with an inclusive lower
+bound and exclusive upper bound, require timezone offsets, and compose with
+the existing `area_id`, `state`, `limit`, and `offset` filters. Episodes remain
+newest-first with their identifier as the stable tie-breaker.
 
 ## Errors
 

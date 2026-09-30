@@ -1221,15 +1221,34 @@ class Repository:
         state: EpisodeState | None = None,
         limit: int = 50,
         offset: int = 0,
+        *,
+        started_from: datetime | None = None,
+        started_before: datetime | None = None,
     ) -> list[Episode]:
-        clauses = []
-        params = []
+        clauses: list[str] = []
+        params: list[object] = []
         if area_id:
             clauses.append("primary_area_id = ?")
             params.append(area_id)
         if state:
             clauses.append("state = ?")
             params.append(state.value)
+        if started_from is not None:
+            if started_from.tzinfo is None or started_from.utcoffset() is None:
+                raise ValueError("started_from must be timezone-aware")
+            clauses.append("start_time >= ?")
+            params.append(_utc_iso(started_from))
+        if started_before is not None:
+            if started_before.tzinfo is None or started_before.utcoffset() is None:
+                raise ValueError("started_before must be timezone-aware")
+            clauses.append("start_time < ?")
+            params.append(_utc_iso(started_before))
+        if (
+            started_from is not None
+            and started_before is not None
+            and started_before <= started_from
+        ):
+            raise ValueError("started_before must be later than started_from")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = await self._conn.execute_fetchall(
             f"SELECT * FROM episodes{where} ORDER BY start_time DESC, id DESC LIMIT ? OFFSET ?",
