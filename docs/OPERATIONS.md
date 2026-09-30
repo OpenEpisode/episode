@@ -163,6 +163,47 @@ timeout, and no retries or history. A slow or unavailable destination cannot
 stop capture, but a notification can be lost during failure, overload,
 shutdown, or restart.
 
+## Finding Episodes by time
+
+The **Episodes** page starts with the newest Episodes and continues backward
+across days. Its compact timeline shows only preserved incidents, grouped by
+local date, so long quiet periods do not consume screen space. The narrow time
+rail on the left shows the time, thumbnail, Area, and trigger for each incident
+beside the main viewer. Its current date heading stays visible as you scroll
+and changes when you reach the next day. Select an Episode to load its recording,
+then use the standard player controls to start playback. When several cameras
+recorded the Episode, use the camera selector to switch views. Only the selected
+Episode loads media; playback stops when you change the selection or leave the
+page.
+
+An **Ongoing** section stays above the scrolling history while Episodes are
+active or settling. It refreshes automatically, follows the selected Area, and
+ignores the historical date filter so current activity remains visible while
+you browse the past. Selecting an ongoing Episode opens its current recording;
+refreshes never switch your selection or restart playback. Ongoing Episodes
+appear only once, and leave the pinned section when they finalize or close.
+Entries already loaded in history return to their chronological position;
+choose **Latest** or reload to fetch Episodes created after you opened the page.
+If live status cannot be refreshed, the previous entries remain
+visible with a warning rather than being silently reported as finished.
+
+The viewer keeps the Episode's Area and time visible. **Open details** leads to
+the full activity timeline and Evidence. A snapshot remains visible if no
+playable recording exists; loading, failure, and expired media are identified
+explicitly. Ready ongoing recordings can also be viewed here. On smaller
+screens the viewer sits above the timeline.
+Scroll down the timeline to load older Episodes automatically, without paging
+buttons or interrupting the selected recording. Use **Latest**, the Area filter,
+or the **On or before** date picker to jump in history. The selected date bound
+and Area are retained in the URL. Loading failures offer a retry without losing
+the Episodes already shown. Each visit is bounded to 480 Episodes; choose an
+earlier date to continue beyond that window.
+
+This is an Episode navigator, not a continuous playback timeline. Empty spaces
+do not imply that video was captured between incidents. Thumbnails and the
+selected recording load after the list so navigation remains usable while they
+are being retrieved.
+
 ## Recordings and live review
 
 Recordings are rolling HLS/fMP4 bundles. Each participating camera contributes

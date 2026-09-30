@@ -21,8 +21,8 @@ async function errorMessage(response) {
   return message;
 }
 
-export async function api(path) {
-  const response = await fetch(API + path);
+export async function api(path, { signal } = {}) {
+  const response = await fetch(API + path, { signal });
   if (!response.ok) throw new Error(await errorMessage(response));
   return escapeApiData(await response.json());
 }

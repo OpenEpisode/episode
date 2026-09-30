@@ -12,7 +12,7 @@ import {
   evidence,
   evidenceDetail,
   event,
-} from "./review-pages.js?v=29";
+} from "./review-pages.js?v=39";
 import { startSidebar } from "./sidebar.js?v=4";
 import { startRetentionPolicy } from "./retention-policy.js?v=1";
 import { toggleCollapse } from "./view.js?v=1";
@@ -74,7 +74,7 @@ function navigate() {
   }
 
   const routes = {
-    episodes: () => episodes(page),
+    episodes: () => episodes(page, parameters),
     episode: () => episode(args[0]),
     activity: () => activity(args[0], page, parameters),
     event: () => event(args[0]),

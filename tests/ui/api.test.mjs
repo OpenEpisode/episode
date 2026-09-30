@@ -13,7 +13,7 @@ const domUrl = moduleUrl(await uiFile("dom.js"));
 const apiUrl = moduleUrl(
   (await uiFile("api.js")).replace('"./dom.js"', JSON.stringify(domUrl)),
 );
-const { apiAll, apiRequest } = await import(apiUrl);
+const { api, apiAll, apiRequest } = await import(apiUrl);
 
 test("apiAll follows limit and offset pages until the collection is exhausted", async t => {
   const originalFetch = globalThis.fetch;
@@ -58,4 +58,18 @@ test("API requests surface the stable error message and validation details", asy
     apiRequest("/devices", { method: "POST", body: {} }),
     /Request validation failed · Network address is required/,
   );
+});
+
+test("api forwards an optional abort signal", async t => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const controller = new AbortController();
+  let requestOptions;
+  globalThis.fetch = async (_url, options) => {
+    requestOptions = options;
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+
+  await api("/episodes", { signal: controller.signal });
+  assert.equal(requestOptions.signal, controller.signal);
 });
