@@ -14,6 +14,7 @@ HLS_MIME_TYPE = "application/vnd.apple.mpegurl"
 PLAYLIST_NAME = "index.m3u8"
 COMPONENT_MANIFEST_NAME = "manifest.json"
 CAPTURE_STATE_NAME = "capture.json"
+_LIVE_PLAYLIST_INSPECTION_BYTES = 64 * 1024
 
 _SEGMENT_INDEX = re.compile(r"segment-(?P<index>\d+)\.m4s$")
 
@@ -292,6 +293,61 @@ class HLSRecordingBundle:
             unreferenced_fragment_count=max(0, len(segment_files) - len(segment_references)),
         )
         return result
+
+    def live_playback_ready(self) -> bool:
+        """Return whether a bounded playlist prefix references playable fMP4 media.
+
+        FFmpeg creates the event playlist before it has finished the first segment.
+        Do not expose that early playlist as a live source: browsers may reject it
+        before the initialization section and a complete media fragment exist.
+        The recording playlist grows for the life of an Episode, so inspect only a
+        small prefix and the first referenced media components here.
+        """
+        try:
+            with self.playlist_path.open("rb") as playlist_file:
+                raw = playlist_file.read(_LIVE_PLAYLIST_INSPECTION_BYTES)
+            lines = raw.decode("utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            return False
+
+        if not lines or lines[0].strip() != "#EXTM3U":
+            return False
+
+        initialization_reference: str | None = None
+        pending_duration: float | None = None
+        for line in lines[1:]:
+            line = line.strip()
+            if line.startswith("#EXT-X-MAP:"):
+                match = re.search(r'(?:^|,)URI="([^"]+)"', line.partition(":")[2])
+                if not match:
+                    return False
+                initialization_reference = match.group(1)
+            elif line.startswith("#EXTINF:"):
+                if pending_duration is not None:
+                    return False
+                try:
+                    duration = float(line.partition(":")[2].partition(",")[0])
+                except ValueError:
+                    return False
+                if not math.isfinite(duration) or duration <= 0:
+                    return False
+                pending_duration = duration
+            elif line and not line.startswith("#"):
+                if pending_duration is None or not line.endswith(".m4s"):
+                    return False
+                initialization = (
+                    self.resolve_component(initialization_reference)
+                    if initialization_reference
+                    else None
+                )
+                segment = self.resolve_component(line)
+                if initialization is None or segment is None:
+                    return False
+                try:
+                    return initialization.stat().st_size > 0 and segment.stat().st_size > 0
+                except OSError:
+                    return False
+        return False
 
     def ensure_endlist(self) -> bool:
         if not self.playlist_path.exists():

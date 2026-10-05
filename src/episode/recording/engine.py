@@ -239,7 +239,7 @@ class RecordingEngine:
             "device_id": recording.device_id,
             "started_at": recording.start_time,
             "state": recording.state,
-            "ready": recording.bundle.playlist_path.exists(),
+            "ready": recording.bundle.live_playback_ready(),
             "fragment_count": recording.fragment_count,
             "last_fragment_at": recording.last_fragment_at,
             "reconnect_count": recording.reconnect_count,

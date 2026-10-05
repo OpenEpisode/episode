@@ -95,6 +95,27 @@ def test_valid_fmp4_playlist_is_completed_with_endlist(tmp_path):
     assert "#EXT-X-ENDLIST" in bundle.playlist_path.read_text(encoding="utf-8")
 
 
+def test_live_playback_waits_for_complete_initialization_and_media_components(tmp_path):
+    bundle = _bundle(tmp_path)
+    assert bundle.live_playback_ready() is False
+
+    bundle.playlist_path.write_text("#EXTM3U\n", encoding="utf-8")
+    assert bundle.live_playback_ready() is False
+
+    (bundle.root / "init.mp4").write_bytes(b"initialization")
+    bundle.playlist_path.write_text(
+        '#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:4.0,\nsegments/segment-000000.m4s\n',
+        encoding="utf-8",
+    )
+    assert bundle.live_playback_ready() is False
+
+    (bundle.root / "segments" / "segment-000000.m4s").write_bytes(b"fragment")
+    assert bundle.live_playback_ready() is True
+
+    (bundle.root / "segments" / "segment-000000.m4s").write_bytes(b"")
+    assert bundle.live_playback_ready() is False
+
+
 def test_uncommitted_temporary_components_are_preserved_as_incomplete(tmp_path):
     bundle = _bundle(tmp_path)
     _write_playable_bundle(bundle)

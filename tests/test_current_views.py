@@ -13,8 +13,9 @@ from episode.storage.repository import Repository
 
 
 class FakeRecordings:
-    def __init__(self, assignments: dict[str, tuple[str, ...]]) -> None:
+    def __init__(self, assignments: dict[str, tuple[str, ...]], *, ready: bool = True) -> None:
         self.assignments = assignments
+        self.ready = ready
 
     def active_device_ids(self, episode_id: str) -> tuple[str, ...]:
         return self.assignments.get(episode_id, ())
@@ -24,7 +25,7 @@ class FakeRecordings:
             {
                 "device_id": device_id,
                 "evidence_id": f"evidence-{device_id}",
-                "ready": True,
+                "ready": self.ready,
             }
             for device_id in self.active_device_ids(episode_id)
         )
@@ -192,5 +193,37 @@ async def test_ready_recording_stream_replaces_snapshot_current_view(tmp_path):
         assert response.json()[0]["recording_state"] == "recording"
         assert response.json()[0]["fragment_count"] == 0
         assert "camera/" not in response.text
+    finally:
+        await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_unready_recording_does_not_advertise_its_playlist_as_a_live_stream(tmp_path):
+    repository = Repository(EpisodeConfig(data_dir=str(tmp_path)))
+    await repository.initialize()
+    await repository.upsert_area(Area(id="front-door", name="Front door"))
+    await repository.upsert_device(Device(id="camera-a", name="Entry camera", area_id="front-door"))
+    await repository.create_episode(
+        Episode(id="episode-a", primary_area_id="front-door", state=EpisodeState.ACTIVE)
+    )
+    recordings = FakeRecordings({"episode-a": ("camera-a",)}, ready=False)
+    previews = CurrentViewService(FakeSnapshots({"camera-a"}), recordings)
+    app = create_api(
+        repository,
+        str(tmp_path),
+        current_views=previews,
+        recorder=recordings,
+    )
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/v1/episodes/episode-a/current-views")
+        assert response.status_code == 200
+        view = response.json()[0]
+        assert view["mode"] == "snapshot"
+        assert view["image_url"].endswith("/current-views/camera-a")
+        assert view["stream_url"] is None
+        assert view["recording_state"] == "recording"
+        assert view["summary"] == "Recording is in progress; preparing live playback"
     finally:
         await repository.close()

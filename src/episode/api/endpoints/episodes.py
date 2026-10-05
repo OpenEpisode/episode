@@ -74,6 +74,8 @@ def episodes_router(context: ApiContext) -> APIRouter:
                 "stalled": "Camera stream stalled · automatic recovery in progress",
                 "failed": "Recording stopped after repeated stream failures",
             }.get(recording_state or "")
+            if recording and not stream_ready and recording_state == "recording":
+                recording_summary = "Recording is in progress; preparing live playback"
             result.append(
                 {
                     "device_id": view.device_id,
