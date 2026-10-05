@@ -64,7 +64,9 @@ should be reviewed with it.
 The plugin-side `ignore_events` setting (for example Hikvision ISAPI) is a
 different lever: it stops a vendor message from being *interpreted*, so no
 canonical Event is produced at all. Core filtering stops *capture* after an
-Event exists. Prefer core filtering; use `ignore_events` only when a device
+Event exists. In the current ISAPI implementation, repeated identical ignored
+states are also suppressed before storage; those repeats have no Raw Artifact
+or Receipt. Prefer core filtering; use `ignore_events` only when a device
 emits messages the core should never turn into Events.
 
 Treat an Episode-start webhook URL as a credential: Discord and similar URLs

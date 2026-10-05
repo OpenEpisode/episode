@@ -21,10 +21,18 @@ cp .env.example .env
 mkdir -p data plugins
 ```
 
-Replace the example FTP password in `episode.json` before allowing camera
-access. Areas and Devices are configured in the web interface; the JSON file
+Before starting, replace the example FTP password in `episode.json`, or disable
+the FTP connector if uploads are not needed. The example enables FTP and
+Compose publishes its ports on all host interfaces by default. Set
+`EPISODE_UID` and `EPISODE_GID` in `.env` to a user that can write `data/`
+(`id -u` and `id -g` show your Linux user/group IDs). Areas and Devices are
+configured in the web interface; the JSON file
 contains only system-wide settings such as shared transports and action
 defaults.
+
+The commands below run the release image pinned in `.env`, not the source in
+your checkout. Use the documentation and example configuration from that
+release tag. For a local source build, follow [contributor setup](CONTRIBUTING.md#development-setup).
 
 Pull and start the pinned release:
 
@@ -96,8 +104,10 @@ covered by the [Hikvision](HIKVISION_SETUP.md) and
 
 Native or third-party integrations use the generic read-only `./plugins`
 mount. Hikvision HCNetSDK is supplied by the user and is never included in the
-Episode image. Installed runtime files remain inactive until a Device
-explicitly enables the matching integration.
+Episode image. Built-in SDK integrations remain inactive until a Device
+explicitly enables them. External Device and ingress plugins instead require
+an entry in the top-level `plugins` array in `episode.json` and a restart; see
+[external plugin activation](PLUGINS.md#activate-a-plugin).
 
 Third-party plugins are trusted code and are not sandboxed. Their manifest,
 lifecycle, compatibility, and raw-first requirements are documented in the
@@ -107,9 +117,12 @@ lifecycle, compatibility, and raw-first requirements are documented in the
 
 The image version is pinned by `EPISODE_IMAGE` in `.env`. To upgrade:
 
-1. read the target release notes;
-2. update `EPISODE_IMAGE`;
-3. run:
+1. read the target release notes and compare the target configuration examples;
+2. stop Episode and make a consistent backup of `data/`, `episode.json`, and
+   `.env` before changing versions; keep credentials and evidence private, and
+   record any separately installed plugin/SDK versions needed to restore;
+3. update `EPISODE_IMAGE`;
+4. run:
 
 ```bash
 docker compose --env-file .env pull
@@ -119,7 +132,11 @@ docker compose --env-file .env up -d
 During pre-1.0 development, compatibility is not guaranteed for every schema
 change. Episode applies explicitly supported additive schema steps, while an
 incompatible release may require a clean database and will say so in its
-release notes.
+release notes. Never reset or delete your existing database as a routine upgrade
+step. Keep a pre-upgrade backup; switching the image tag alone is not a reliable
+rollback after a schema change. The [release-retention policy](CONTRIBUTING.md#release-retention)
+keeps Git tags but prunes older release assets and images, so an old pinned image
+may need to be retained locally or rebuilt from its tag.
 
 ## Troubleshooting
 

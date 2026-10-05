@@ -5,6 +5,12 @@ preserve opaque deliveries; configured plugins can interpret them into a small
 vendor-neutral domain. Neither layer decides how incidents are correlated or
 which actions run.
 
+For a first read, follow [Processing flow](#processing-flow),
+[Domain language](#domain-language), [Current module boundaries](#current-module-boundaries),
+and [Known constraints](#known-constraints). The persistence and bundle sections
+are detailed references for storage changes. For setup and daily use, start
+with the [documentation map](README.md) instead.
+
 ## Processing flow
 
 ```mermaid
@@ -31,8 +37,8 @@ still has a durable receipt and artifact record.
 
 Handler selection is explicit. The core normalized Event contract is registered
 only when its Event API transport is configured. Installed files do not activate
-plugins, handler execution has a timeout, failures are isolated, and conflicting
-claims are rejected instead of being resolved by registration order.
+plugins, handler execution uses a cooperative asynchronous timeout, ordinary
+failures are isolated, and conflicting claims are rejected instead of being resolved by registration order.
 
 ## Domain language
 
@@ -308,8 +314,11 @@ Runtime resources are entered through one application lifecycle and released in
 reverse order. Shared transports stop accepting deliveries before plugin
 handlers, actions, the Episode engine, and storage are stopped. A failure in one
 cleanup is logged without preventing the remaining resources from closing.
-Asynchronous plugin startup and shutdown are bounded independently, so a hung
-plugin cannot indefinitely block later integrations or application cleanup.
+The manager bounds its waits for asynchronous plugin startup and shutdown and
+uses a cancellation grace period. Work that suppresses cancellation may outlive
+that wait; synchronous import, factory or status code can still block the host
+event loop. These are trusted in-process extensions, not a sandbox. See the
+[plugin trust and failure boundaries](PLUGINS.md#trust-and-failure-boundaries).
 
 The optional Episode-start webhook is a deliberately small operational bridge.
 Its `episode.created` handler only writes to a bounded in-memory queue; one
@@ -593,10 +602,12 @@ their protocol clients, discovery, connection supervision, validation, and
 interpretation; the application must not construct protocol-specific
 connectors.
 
-Device integrations may suppress repeated transport-level status heartbeats
-before submission when the integration is explicitly configured to ignore that
-Event type. The first observed state and every transition are still preserved;
-non-ignored Events always cross the raw-first boundary unchanged.
+Current implementation exception: Hikvision ISAPI can suppress repeated states
+for explicitly ignored Event types before submission. The first observed state
+and transitions pass through, but suppressed repeats have no Raw Artifact or
+Receipt. This falls short of the preserve-first rule above and must not be
+copied into new integrations. Prefer core capture filtering when the intent is
+to stop an observation triggering recording while keeping its delivery history.
 
 Device integrations may register multiple runtime video-source candidates per
 Device. Each candidate keeps its URI and credentials inside the media registry

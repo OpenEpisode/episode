@@ -53,17 +53,20 @@ browser.
 Enabling ISAPI lazily activates the built-in Hikvision ISAPI Device plugin. The
 core does not connect to or decode the vendor stream. The plugin connects to
 `/ISAPI/Event/notification/alertStream` using the configured protocol, port,
-path, and Digest authentication, then preserves every complete XML delivery
-before interpreting it. Connection and authentication failures are isolated to
+path, and Digest authentication, then preserves complete XML deliveries before
+normal interpretation. Explicitly ignored repeated states are the current
+exception described below. Connection and authentication failures are isolated to
 that Device and appear in the Device/System views and in
 `docker compose --env-file .env logs -f episode`.
 
 **Ignored Events** is empty by default and should stay that way. A name entered
-here stops the plugin *interpreting* that vendor message, so the Raw Artifact and
-Receipt are still preserved but no canonical Event is ever produced and no
-participation decision is recorded for it. Noise reduction belongs in the Capture
-profile or the camera's **Filtered event classes** (`docs/OPERATIONS.md`), which
-filters after the Event exists and stays auditable. The historical default
+here prevents a canonical Event and capture-participation decision for that
+message. The first ignored state and later transitions are preserved, but the
+current ISAPI implementation suppresses repeated identical ignored states before
+storage, so those repeats have no Raw Artifact or Receipt. This limitation
+differs from core filtering, which preserves delivery history. Noise reduction belongs in the Capture
+profile or the camera's **Filtered event classes**
+([event filtering](OPERATIONS.md#filtering-noisy-event-classes)), which filters after the Event exists and stays auditable. The historical default
 contained `videoloss`, which removed the `security` class from those cameras
 before the core could see it; it is no longer preset. Names are matched against
 the vendor's own spelling (`videoloss`, `illegalaccess`, `VMD`, …).

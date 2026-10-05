@@ -56,7 +56,7 @@ themselves. Nothing is filtered until you name its class, every class is
 available at both levels, and a filtered Event is still preserved and attributed
 to the Episode that was already open.
 
-## Start in five minutes
+## Quick start
 
 You need Docker with the Compose plugin. Clone the repository or download a
 release source archive, then run:
@@ -65,6 +65,15 @@ release source archive, then run:
 cp episode.example.json episode.json
 cp .env.example .env
 mkdir -p data plugins
+```
+
+Before starting, replace the example FTP password in `episode.json`, or disable
+the FTP connector if you do not need uploads. FTP is enabled in the example and
+its published ports bind to all host interfaces by default. Set `EPISODE_UID`
+and `EPISODE_GID` in `.env` to a user that can write `data/`. Review the
+[network bindings](docs/INSTALLATION.md#network-access) before allowing access.
+
+```bash
 docker compose --env-file .env pull
 docker compose --env-file .env up -d
 ```
@@ -76,10 +85,13 @@ Open <http://localhost:8989>. The guided setup will help you:
 3. choose its recording behavior and integrations;
 4. confirm the Evidence retention policy.
 
-Replace the example FTP password in `episode.json` before allowing cameras to
-upload files. Areas, Devices, capture profiles, retention, notifications, and
+Areas, Devices, capture profiles, retention, notifications, and
 other operator settings are managed from the UI and apply without restarting
 the container.
+
+These commands run the image pinned in `.env`, not changes in your checkout.
+Use matching release documentation and examples; see [source development](docs/CONTRIBUTING.md#development-setup)
+to run your own edits.
 
 See the [installation guide](docs/INSTALLATION.md) for network access, upgrades,
 native plugins, and troubleshooting.
@@ -114,6 +126,10 @@ capabilities are detected rather than assumed, and the beta plugin API remains
 versioned for external contributors.
 
 ## Documentation
+
+Start with the [documentation map](docs/README.md) for reading paths, a short
+glossary, and guidance on which reference to use. Contributors can start with
+the [development guide](docs/CONTRIBUTING.md).
 
 - [Installation and troubleshooting](docs/INSTALLATION.md)
 - [Using and operating Episode](docs/OPERATIONS.md)

@@ -11,7 +11,9 @@ pipeline.
 
 ## Enable the input
 
-Add the connector to `episode.json` and restart Episode:
+Add the following object to the top-level `connectors` array in `episode.json`
+and restart Episode. It is one array entry, not a replacement for the whole
+configuration file:
 
 ```json
 {

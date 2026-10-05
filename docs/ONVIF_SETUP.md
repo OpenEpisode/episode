@@ -89,7 +89,7 @@ noisy. Enable **Receive ONVIF Events** only when those Events are useful. This
 toggle does not disable ONVIF discovery, media profiles, RTSP recording, or FTP
 uploads. Once Events are enabled, an unwanted stream of plain motion can be
 filtered per Capture profile or per camera instead of switching ONVIF Events off
-altogether (`docs/OPERATIONS.md`). ONVIF motion maps to `motion_detection`, so it
+altogether ([event filtering](OPERATIONS.md#filtering-noisy-event-classes)). ONVIF motion maps to `motion_detection`, so it
 is only silenced when you select the `motion` class.
 
 ## What happens at runtime
@@ -106,7 +106,7 @@ do not create Episodes. Changed motion, tamper, and digital-input
 (`DIInput`/`DIInputStatus`) values are normalized into vendor-neutral Events; a
 digital input becomes `digital_input`, the same Event a Hikvision `alarm` report
 becomes, so one class selection treats a wired contact the same way on either
-camera (`docs/OPERATIONS.md`). Equivalent topics describing the same device state are
+camera ([event filtering](OPERATIONS.md#filtering-noisy-event-classes)). Equivalent topics describing the same device state are
 aggregated. The complete SOAP response is preserved exactly, and each derived
 notification remains separately traceable to its source receipt.
 

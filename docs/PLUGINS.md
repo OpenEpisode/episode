@@ -99,9 +99,10 @@ Plugins must import only from `episode.plugin_api`. Modules below
 `episode.plugins`, `episode.ingestion`, `episode.storage`, and `episode.engine`
 are implementation details and may change without a plugin API version change.
 
-Action and processor plugin kinds are reserved for later contracts. Recording,
-snapshots, AI processing, and historical reprocessing are not third-party
-extension points in API version 1.
+Action and processor plugin kinds are reserved for later contracts. External
+plugins can register URI-based media for core recording and snapshot actions;
+they cannot replace those actions or supply native media callbacks through v1.
+AI processing and historical reprocessing are not v1 extension points.
 
 ## Directory and manifest
 
@@ -225,9 +226,11 @@ def create_plugin(context: PluginContext) -> MyPlugin:
 ```
 
 Do not open connections, start threads, or perform network I/O at module import
-time. Validate configuration and allocate runtime resources in the factory or
-`start()`. `stop()` must close connections, cancel owned tasks, and return
-promptly. Episode bounds asynchronous startup to 60 seconds and shutdown to 15
+time. Validate configuration in the factory and acquire runtime resources in
+`start()`, with rollback on partial failure. If a factory raises, Episode can
+remove registered ingress/media resources but cannot recover arbitrary sockets
+or tasks the factory created before returning. `stop()` must close connections,
+cancel owned tasks, and return promptly. Episode bounds asynchronous startup to 60 seconds and shutdown to 15
 seconds; a timeout fails only that plugin and does not prevent other configured
 plugins from starting or stopping. These bounds cannot protect Episode from
 synchronous blocking code, which is another reason to install only reviewed
@@ -291,8 +294,11 @@ await context.ingress.submit(
 Episode seals and checksums the `RawDelivery` and creates its receipt before the
 handler sees `StoredDelivery`. A malformed payload should therefore return a
 claimed `HandlerResult` with `ReceiptStatus.REJECTED`; do not discard it before
-submission. Handler exceptions and timeouts reject that receipt and update
-health metrics without stopping other handlers.
+submission. Ordinary handler exceptions and cooperative timeouts reject that
+receipt and update health metrics. The current handler timeout relies on cancellation
+cooperation: suppressing cancellation can delay dispatch and is unsupported.
+Keep matchers fast and nonblocking; synchronous plugin code cannot be preempted
+by these asynchronous timeouts.
 
 The adapter supplies the assigned Device and Area to normalized observations.
 A plugin cannot redirect an observation to an unassigned Device by changing its

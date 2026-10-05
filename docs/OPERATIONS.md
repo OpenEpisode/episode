@@ -4,6 +4,35 @@ This guide describes the operator-facing behavior behind Episode correlation,
 recording, notifications, storage, and recovery. For deployment and network
 configuration, see the [installation guide](INSTALLATION.md).
 
+## Verify your first capture
+
+Start with one Area and one Device before adding more integrations:
+
+1. Add and validate the Device using its [setup guide](README.md#connect-a-device-or-automation).
+   Save it ready and enabled; **Needs setup** is a draft, not working capture.
+2. Enable an Event source as well as media if you want the camera to trigger
+   recording. For a separate sensor or doorbell, put the recording camera in
+   the same Area and select **Any Episode in this Area** (`on_episode`).
+3. Check the active Capture profile includes the source and intended cameras,
+   and that its event filter does not suppress the test observation. Confirm
+   the retention policy before keeping real footage.
+4. Trigger one expected observation, such as a motion event supported by your
+   configured integration. For an automation source, use the
+   [Event API example](EVENT_API.md#submit-an-event) with your own Device ID.
+5. Find the Event and its Episode. Check the Device, Area and time, then open
+   the recording/current view. A successful connection check alone does not
+   prove that Events arrive or that playable video is being captured.
+6. Let the activity window and quiescent grace finish. Reopen the Episode and
+   play its finalized recording. Confirm that any gap or incomplete capture is
+   visible; live preview alone is not the completion check.
+
+An Episode without video may be valid for an event-only source. If you expected
+video, check recording behavior, selected source, and **System → Recordings**.
+If no Event appears, check **System → Integrations** and the integration's
+troubleshooting guide. Snapshot capture is separate from video and disabled in
+the example action configuration; do not expect a JPEG merely because a video
+stream works.
+
 ## Areas and recording behavior
 
 An Area is the current correlation and action boundary. Related Events from
@@ -171,6 +200,15 @@ initialization file, immutable media fragments, and a checksummed component
 manifest. This allows playback while the Episode is active and keeps the whole
 recording portable.
 
+Before publishing a recording as complete, Episode validates that the playlist
+has an fMP4 initialization reference and at least one non-empty fragment that
+it actually references. It adds `#EXT-X-ENDLIST` only after that validation
+succeeds. If the playlist is invalid, or FFmpeg leaves an uncommitted temporary
+component, the bundle is marked **Incomplete** and the original components are
+preserved and inventoried. A structurally valid playlist can still be played
+as a partial capture; an invalid playlist is not sent to the video player.
+The validation result and FFmpeg exit code are retained for diagnosis.
+
 In **Devices → Edit → Recording source**, **Automatic** uses the preferred
 source registered by the active integration. When integrations discover more
 than one usable stream, the list shows their provider, protocol, and any known
@@ -192,8 +230,9 @@ This controls playback latency and file granularity, not Episode duration.
 By default each recording is pulled over the camera's RTSP stream. A Reolink
 device can instead record from an on-demand native `cmdId=3` burst
 (`configs.reolink.settings.native_video: true`): the camera opens the burst
-with an I-Frame, so the first access unit reaches the recorder ~157 ms after the
-command rather than after a fresh RTSP keyframe-wait (~1.4–3.8 s). The bundle,
+with an I-Frame on tested cameras, which can reduce startup delay compared with
+waiting for an RTSP keyframe. Timing depends on model, firmware and configuration;
+see the [Reolink media notes](REOLINK-SETUP.md#media). The bundle,
 manifest, Evidence, and retention are unchanged — only the bytes' origin differs.
 Native recording is off by default; enable it after confirming the camera
 streams the chosen `preview_variant` natively.
@@ -230,7 +269,10 @@ failing camera is still identifiable.
 ## Shutdown and recovery
 
 During shutdown, Episode signals all active FFmpeg processes together and
-leaves their HLS bundles recoverable. On startup, capture can continue in the
+leaves their HLS bundles recoverable. Concurrent stop requests send at most one
+termination signal to each child, allowing FFmpeg to finish its HLS playlist;
+an unresponsive child is forcibly stopped after the five-second exit timeout.
+On startup, capture can continue in the
 same logical recording with a discontinuity marker when its Episode remains
 active. Finalizing Episodes are retried after recorder recovery; a failed
 finalization remains visible as finalizing instead of being silently marked

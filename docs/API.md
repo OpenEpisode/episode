@@ -166,11 +166,16 @@ an `unmatched` or `rejected` result returns its receipt-shaped outcome so the
 sender can retain the `receipt_id`. Failures that occur before preservation use
 the normal error envelope.
 
+## Evidence files, thumbnails, and availability
+
 Binary and media endpoints return their native content type. A successful
 artifact response is the preserved file; JSON errors are returned only when the
 requested resource or file cannot be served.
 
-`/evidence/{evidence_id}/file` serves the preserved Evidence bytes.
+`/evidence/{evidence_id}/file` serves the preserved Evidence bytes. A playable
+HLS recording redirects to its playlist; an HLS recording whose finalization
+validation failed serves its component manifest instead, and the invalid
+playlist endpoint returns `404`.
 `/evidence/{evidence_id}/thumbnail` serves a fixed-size JPEG derived on demand
 for collection and timeline presentation. Thumbnails are disposable cache
 entries below `data/cache/thumbnails`; they are not Raw Artifacts, Evidence, or
@@ -185,6 +190,8 @@ Evidence resources expose `availability`, `expired_at`, and
 `expiration_reason`. Retention-expired Evidence remains as a tombstone in JSON
 and Episode manifests, while its file and thumbnail endpoints return `410`.
 
+## Retention settings
+
 `GET /api/v1/settings/retention` returns the global visual Evidence policy,
 confirmation state, and cleanup status. A new installation reports an active
 30-day policy with `policy_state: "unconfirmed"`.
@@ -194,16 +201,20 @@ Updating an enabled policy immediately runs one cleanup pass. A disabled policy
 does not delete Evidence and reports `policy_state: "disabled"` so clients can
 keep the condition visible.
 
+## Current views
+
 Active Episodes expose `/api/v1/episodes/{episode_id}/current-views` as a small
 operational projection of Devices currently recording that Episode. Once the
-first recording fragment is ready, `mode: "hls"` provides a local
-`stream_url`; before then, a registered snapshot provider may supply
-`mode: "snapshot"`. Neither response exposes Device credentials. Devices
-without a ready stream or snapshot provider remain in the collection with
-`mode: "unavailable"` so preview support is never confused with recording
-health. `recording_state`, `fragment_count`, and `last_fragment_at` explain
+playlist references a complete initialization segment and first media fragment,
+`mode: "hls"` provides a local `stream_url`; before then, a registered snapshot
+provider may supply `mode: "snapshot"`. Neither response exposes Device
+credentials. Devices without a ready stream or snapshot provider remain in the
+collection with `mode: "unavailable"` so preview support is never confused with
+recording health. `recording_state`, `fragment_count`, and `last_fragment_at` explain
 whether capture is starting, progressing, reconnecting, or recovering without
 revealing the upstream stream URL.
+
+## Diagnostics and recording alerts
 
 `GET /api/v1/diagnostics` includes a bounded active `recordings` collection and
 up to ten persisted `recording_issues`. Active entries report fragment progress,
@@ -211,12 +222,26 @@ reconnect count, and safe exit information. Recent issues identify incomplete
 recording Evidence across application restarts. The compact `/api/v1/status`
 endpoint continues to expose only aggregate health and active-recording count.
 
+`GET /api/v1/alerts` returns a bounded newest-first collection of warning alerts
+derived from unexpired `incomplete_recording` Evidence whose finalization reason
+is `invalid_hls_playlist` or `incomplete_hls_finalization`. It accepts `limit`
+(1–50, default 50) and `offset` (default 0), and returns a JSON array. Each
+alert is backed by one Evidence ID and includes its Device/Episode references,
+the safe playlist-validation diagnostics, and FFmpeg's exit code when known.
+Paths, stderr, credentials, and raw payloads are never included. Alerts are
+not acknowledged or stored separately: they disappear when their source
+Evidence expires under retention.
+
+## Recording components
+
 HLS recording playlists and components are served from
 `/api/v1/recordings/{evidence_id}/{component_path}`. Active playlists are never
 cached; finalized media fragments are immutable and may be cached. The route
 only exposes the known playlist, initialization file, component manifest, and
 media-fragment paths within the exact recording bundle. Legacy MP4 Evidence
 continues to use `/evidence/{evidence_id}/file`.
+
+## Episode timing
 
 Device detail exposes `capture_policy.activity_window_seconds`. An active
 Event from that Device contributes this minimum duration to its Episode.
@@ -232,6 +257,8 @@ seconds. When a minimum Episode deadline passes, the Episode enters
 An active Event received within the window continues the same Episode. A value
 of zero disables the settling period. This setting is distinct from the
 per-Device `activity_window_seconds` policy.
+
+## Installation URL and notifications
 
 `GET /api/v1/settings/installation` returns the non-secret global
 `external_url`. `PUT` accepts the address operators use to reach this Episode
@@ -257,6 +284,8 @@ preview the embed style without creating an Episode or including an Episode
 link. Settings changes apply immediately and do not require an application
 restart.
 
+## Capture profiles and event filters
+
 `POST /api/v1/capture-profiles`, and `GET`, `PUT`, or `DELETE` on
 `/api/v1/capture-profiles/{profile_id}`, manage custom profiles. The built-in or
 currently active profile cannot be deleted, and the built-in profile cannot be
@@ -273,8 +302,7 @@ default `[]` (no filtering). Every class is selectable, at both levels:
 selector means one thing whatever it names and whoever it is applied to. An
 unknown class name is rejected with `422`, as is a duplicate. `digital_input` (a
 wired alarm input, reached by both the Hikvision `alarm` report and an ONVIF
-digital-input topic) is a `detection`; see `docs/OPERATIONS.md` for what each
-class contains.
+digital-input topic) is a `detection`; see the [operations guide](OPERATIONS.md) for what each class contains.
 
 Suppressing a class removes only its power to start or lengthen a recording. Its
 Raw Artifact, Receipt, and canonical Event are still persisted, and a filtered
@@ -282,7 +310,7 @@ Event still joins an already open Episode as context.
 
 Each Device carries its own `event_filter` in `episode_policy`: an array (possibly
 empty) is that camera's own selector, and `null` (the default) means it follows
-the active Capture profile. The Device value wins in both directions, so `"[]"`
+the active Capture profile. The Device value wins in both directions, so `[]`
 is an explicit negative that keeps every observation while a profile filters.
 The class selector is the only supported filter representation at both levels.
 

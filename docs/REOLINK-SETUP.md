@@ -96,7 +96,9 @@ usable picture. On the same three cameras in the same window, native `cmdId=3`
 delivery reached a first independently decodable frame in 80–270 ms at 12–15
 fps, and the three captures kept as test fixtures recorded 157 ms, 223 ms and
 473 ms. RTSP took 1.36–3.76 s to reach its first packet *and* first IDR. These
-measurements are why native media is available as an opt-in recording source,
+are illustrative development measurements, not a supported latency
+guarantee or a model/firmware compatibility matrix. Validate your own setup.
+They are why native media is available as an opt-in recording source,
 and why `media_priming` can measure it without changing the recording source.
 
 A snapshot requested after an Event is normally taken at that moment, so the
@@ -104,8 +106,10 @@ camera's JPEG encode time (measured at 0.3–1.1 s on current firmware) adds to 
 perceived delay. Pre-arming starts that fetch as soon as the camera's Event frame
 arrives and serves the result to the snapshot request if it is still fresh. This
 overlaps the encode with Event processing and never changes what is preserved: the
-Event frame is stored before anything interprets it, and a pre-armed snapshot is
-discarded rather than turned into Evidence.
+Event frame is stored before interpretation. A fresh pre-armed image consumed
+by the matching Event's snapshot action becomes Evidence through the normal
+preservation path. Unused or expired prefetched images are discarded; pre-arming
+alone does not create Evidence.
 
 ## Settings
 
@@ -124,7 +128,7 @@ Optional keys under `configs.reolink.settings`:
 | `snapshot_prearm_ttl` | `2.0` | Seconds a pre-armed snapshot stays available (0.5–10.0); older snapshots are counted as `expired` and fetched live. |
 | `snapshot_prearm_min_interval` | `1.0` | Minimum seconds between pre-armed snapshot captures (0–60), so a burst of frames cannot burn captures. |
 | `media_priming` | `false` | On an Event frame, open one short native preview (`cmdId=3`) so the camera's encoder is warm and its codec, resolution, and time-to-first-keyframe are known before anything records. |
-| `native_video` | `false` | Make the on-demand native `cmdId=3` burst the **Automatic** recording source instead of RTSP. An explicit source selected in the Device editor takes precedence. The camera opens the burst with an I-Frame, so the first access unit reaches the recorder's pipe ~157 ms after the command — instead of after a fresh RTSP keyframe-wait (~1.4–3.8 s). Video Evidence remains the core-owned HLS/fMP4 bundle; the plugin only hands Annex-B bytes to the recorder's pipe. |
+| `native_video` | `false` | Make the on-demand native `cmdId=3` burst the **Automatic** recording source instead of RTSP. An explicit source selected in the Device editor takes precedence. On tested cameras this can reduce keyframe startup delay; the measurements above are illustrative, not a per-device guarantee. Video Evidence remains the core-owned HLS/fMP4 bundle; the plugin only hands Annex-B bytes to the recorder's pipe. |
 | `preview_variant` | `main` | Native preview stream: `main` or `sub`. Also the variant chosen when `native_video` makes the native stream the Automatic recording source. |
 | `preview_timeout` | `3.0` | Seconds to wait for the first video packet of a native preview pass (1.0–10.0). Also bounds an on-demand `native_video` recording burst. |
 

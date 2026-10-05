@@ -1,14 +1,22 @@
-# Native SDKs
+# Runtime plugins
 
-This directory is mounted read-only at `/opt/episode/plugins` by Docker
-Compose. It holds optional, user-supplied native SDK runtime files; it is not a
-general-purpose code plugin directory.
+Docker Compose mounts this directory read-only at `/opt/episode/plugins`.
+It holds two kinds of optional, user-supplied content:
 
-Runtime files are not discovered or executed merely because they exist here.
-Episode loads only registered plugins explicitly activated by device
-configuration.
+- Native SDK runtime files used by built-in integrations. See the
+  [Hikvision SDK layout and activation](../docs/HIKVISION_SETUP.md#hikvision-hcnetsdk).
+- External Device or ingress plugins, each in its own directory with an
+  `episode-plugin.json` manifest and Python entrypoint. See
+  [plugin authoring and activation](../docs/PLUGINS.md).
 
-Vendor binaries below this directory are ignored by Git and excluded from the
-container build context. See the
-[Hikvision setup guide](../docs/HIKVISION_SETUP.md#hikvision-hcnetsdk) for the
-expected `hikvision-sdk/` layout.
+Installed files do not activate an integration. Built-in Device integrations
+are enabled through Device configuration. External plugins require an explicit
+entry in `episode.json`'s top-level `plugins` array and an application restart;
+Device plugins receive only their assigned Devices through the public context.
+
+External plugins are trusted executable code, not sandboxed extensions. Native
+SDKs remain user-supplied and must not be redistributed without permission.
+All content here except this README is ignored by Git and excluded from the
+container build context. The maintained external example lives in
+[`examples/plugins/udp-sensor`](../examples/plugins/udp-sensor), where it can be
+reviewed and tested before copying it into this runtime directory.
