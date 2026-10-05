@@ -10,6 +10,7 @@ import {
   sectionHeading,
   stateBadge,
 } from "./components.js?v=6";
+import { activity } from "./activity-page.js?v=1";
 import { closeDeliveryViewer, openDeliveryViewer } from "./delivery-viewer.js?v=1";
 import { escHtml } from "./dom.js";
 import {
@@ -41,45 +42,28 @@ import {
   fmtBytes,
   fmtDuration,
   fmtShort,
-  fmtTime,
   plural,
   titleCase,
   trunc,
 } from "./format.js?v=3";
 import {
-  groupActivityByDay,
   groupEvidenceBundlesByDay,
   groupEvidenceByEpisode,
 } from "./review-lists.js?v=3";
 import { updateRecentEpisodes } from "./sidebar.js?v=4";
+import {
+  eventParticipationBadge,
+  eventParticipationNotice,
+  participationAttachmentNote,
+} from "./review-participation.js?v=1";
+import { filterValues, filteredHash, option } from "./review-filters.js?v=1";
 import { calendarTimeBounds, TIME_RANGE_OPTIONS } from "./time-range.js?v=1";
 import { showContent, showError, showLoading } from "./view.js?v=1";
 import { eventTitle } from "./timeline.js?v=6";
 
-const PAGE_SIZES = Object.freeze({ episodes: 48, activity: 100, evidence: 60 });
-const COMMON_EVENT_TYPES = [
-  "human_detection",
-  "vehicle_detection",
-  "motion_detection",
-  "doorbell",
-  "door_access",
-  "manual_trigger",
-  "tamper_detection",
-];
+const PAGE_SIZES = Object.freeze({ episodes: 48, evidence: 60 });
 const COMMON_EVIDENCE_TYPES = ["recording", "snapshot", "payload", "event_attachment"];
 let eventDeliveries = [];
-
-function filterValues(items, field, defaults, selected = "") {
-  return [...new Set([
-    ...defaults,
-    ...items.map(item => item[field]).filter(Boolean),
-    ...(selected ? [selected] : []),
-  ])].sort();
-}
-
-function option(value, label, selected) {
-  return `<option value="${escHtml(value)}" ${value === selected ? "selected" : ""}>${escHtml(label)}</option>`;
-}
 
 function incompleteRecordingGuidance(item) {
   if (item.evidence_type !== "incomplete_recording") return null;
@@ -99,14 +83,6 @@ function incompleteRecordingGuidance(item) {
       ? "The incomplete MP4 index was never written, so browsers cannot play this older partial file. The original bytes remain available for forensic recovery, but no action is required."
       : "Completed HLS fragments were preserved and can be reviewed below. No action is required.",
   };
-}
-
-function filteredHash(view, filters) {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(filters)) {
-    if (value) query.set(key, value);
-  }
-  return `#${view}${query.size ? `?${query}` : ""}`;
 }
 
 function payloadFieldLabel(key) {
@@ -143,83 +119,6 @@ function eventConditionBadge(state) {
   if (normalized === "active") return '<span class="badge badge-active">Reported active</span>';
   if (normalized === "inactive") return '<span class="badge badge-inactive">Reported ended</span>';
   return `<span class="badge badge-neutral">${escHtml(titleCase(state || "Unknown condition"))}</span>`;
-}
-
-function participationProfileName(participation) {
-  return participation?.profile_name || participation?.profile_id || "active profile";
-}
-
-// Which level decided, phrased for an operator. ``device`` means this camera's
-// own selector suppressed the Event, so naming the profile would mislead. An
-// older decision recorded no source, and none is invented for it.
-function participationFilterSource(participation) {
-  if (participation?.filter_source === "device") return "this camera";
-  if (participation?.filter_source === "profile") return participationProfileName(participation);
-  return "";
-}
-
-// One clause naming the level that suppressed the Event. Without a recorded
-// source (a ``beta.7`` row) it falls back to the active profile, which is the
-// factual snapshot recorded with the decision.
-function participationFilterBy(participation) {
-  const source = participationFilterSource(participation);
-  return source ? ` is filtered by ${source}` : " is filtered by the policy in force";
-}
-
-function participationFilterLabel(participation) {
-  const source = participationFilterSource(participation);
-  return [
-    "Filtered",
-    participation?.filtered_event_class ? titleCase(participation.filtered_event_class) : null,
-    source ? `by ${source}` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-}
-
-export function eventParticipationBadge(participation) {
-  if (participation?.allowed !== false) return "";
-  const filtered = participation?.reason === "generic_event_filtered";
-  const label = filtered
-    ? participationFilterLabel(participation)
-    : `Capture excluded · ${escHtml(participationProfileName(participation))}`;
-  return `<span class="badge ${filtered ? "badge-capture-filtered" : "badge-capture-excluded"}">${escHtml(label)}</span>`;
-}
-
-// What happened instead of driving capture. An attached Event is part of the
-// Episode's story without having changed when it ends, and that distinction is
-// the whole point of the filter, so the detail says which one occurred.
-export function participationAttachmentNote(participation) {
-  if (participation?.attachment === "attached") {
-    return "It is attributed to the Episode that was already open for this Area, so the timeline stays complete. It did not extend the Episode, restart it, or start a recording.";
-  }
-  if (participation?.attachment === "no_open_episode") {
-    return "No Episode was open for this Area at that moment, so the Event stays unassigned rather than opening one.";
-  }
-  return "It did not open or extend an Episode and it did not join a new recording.";
-}
-
-export function eventParticipationNotice(participation) {
-  if (participation?.allowed !== false) return "";
-  const filtered = participation?.reason === "generic_event_filtered";
-  const activeProfile = filtered && participation?.filter_source !== "profile"
-    ? ` · active profile ${escHtml(participationProfileName(participation))}`
-    : "";
-  const reason = participation.reason
-    ? `<small>Reason: ${escHtml(titleCase(participation.reason))}${participation.filtered_event_type ? ` · ${escHtml(participation.filtered_event_type)}` : ""}${participation.filtered_event_class ? ` (${escHtml(titleCase(participation.filtered_event_class))})` : ""}${activeProfile}${participation.evaluated_at ? ` · evaluated ${escHtml(fmtShort(participation.evaluated_at))}` : ""}</small>`
-    : participation.evaluated_at
-    ? `<small>Evaluated ${escHtml(fmtShort(participation.evaluated_at))}</small>`
-    : "";
-  const message = filtered
-    ? `<span>This observation was preserved. Its ${escHtml(titleCase(participation.filtered_event_class || "event"))} class (${escHtml(participation.filtered_event_type || "unknown event type")})${escHtml(participationFilterBy(participation))}, so it is not treated as activity on its own.${escHtml(participationAttachmentNote(participation))} Only the classes selected on this camera or its Capture profile are filtered, so this is the effect of your own selection.</span>${reason}`
-    : `<span>This observation was preserved, but it did not affect an Episode. Its active Event did not open or extend an Episode and it did not join a new recording because the active Capture profile excludes this Device.</span>${reason}`;
-  return `<section class="notice notice-info event-participation-notice" role="status">
-    <div><strong>${
-      filtered
-        ? escHtml(participationFilterLabel(participation))
-        : `Capture excluded · ${escHtml(participationProfileName(participation))}`
-    }</strong>${message}</div>
-  </section>`;
 }
 
 export function closeReviewOverlays() {
@@ -303,6 +202,13 @@ export async function episodes(page = 1) {
     showError(error.message);
   }
 }
+
+export {
+  activity,
+  eventParticipationBadge,
+  eventParticipationNotice,
+  participationAttachmentNote,
+};
 
 export async function episode(id) {
   showLoading();
@@ -392,123 +298,6 @@ export async function episode(id) {
       ${workspace.html}`);
     activateEpisodeWorkspace(workspace.model, item, deviceNames);
     if (active) activateCurrentViews(id, currentViews);
-  } catch (error) {
-    showError(error.message);
-  }
-}
-
-export async function activity(deviceId, page = 1, parameters = new URLSearchParams()) {
-  showLoading();
-  try {
-    const selected = {
-      device_id: parameters.get("device_id") || deviceId || "",
-      area_id: parameters.get("area_id") || "",
-      event_type: parameters.get("event_type") || "",
-      event_state: parameters.get("event_state") || "",
-      association: parameters.get("association") || "",
-      time_range: parameters.get("time_range") || "",
-      custom_from: parameters.get("custom_from") || "",
-      custom_to: parameters.get("custom_to") || "",
-    };
-    const timeBounds = calendarTimeBounds(selected);
-    const pageSize = PAGE_SIZES.activity;
-    const offset = (page - 1) * pageSize;
-    const query = new URLSearchParams({ limit: pageSize + 1, offset });
-    for (const key of ["device_id", "area_id", "event_type", "event_state"]) {
-      if (selected[key]) query.set(key, selected[key]);
-    }
-    if (timeBounds.valid) {
-      if (timeBounds.from) query.set("observed_from", timeBounds.from);
-      if (timeBounds.before) query.set("observed_before", timeBounds.before);
-    }
-    if (selected.association === "episode") query.set("has_episode", "true");
-    if (selected.association === "unassigned") query.set("has_episode", "false");
-    const [devices, areas, result] = await Promise.all([
-      api("/devices?include_disabled=true"),
-      api("/areas?include_disabled=true"),
-      api(`/events?${query}`),
-    ]);
-    const hasNext = result.length > pageSize;
-    const list = result.slice(0, pageSize);
-    const deviceNames = new Map(devices.map(device => [device.id, device.name || device.id]));
-    const areaNames = new Map(areas.map(area => [area.id, area.name || area.id]));
-    const eventTypes = filterValues(list, "event_type", COMMON_EVENT_TYPES, selected.event_type);
-    const groups = groupActivityByDay(list);
-    const base = filteredHash("activity", selected);
-    showContent(`
-      ${pageHeader({
-        eyebrow: "Review",
-        title: "Activity",
-        description: "Investigate the normalized Events that caused—or did not cause—an Episode.",
-      })}
-      <form class="review-filter-bar" onchange="applyReviewFilters(this, 'activity')">
-        <label><span>Device</span><select name="device_id">
-          ${option("", "All Devices", selected.device_id)}
-          ${devices.map(device => option(device.id, device.name || device.id, selected.device_id)).join("")}
-        </select></label>
-        <label><span>Area</span><select name="area_id">
-          ${option("", "All Areas", selected.area_id)}
-          ${areas.map(area => option(area.id, area.name || area.id, selected.area_id)).join("")}
-        </select></label>
-        <label><span>Event</span><select name="event_type">
-          ${option("", "All Event types", selected.event_type)}
-          ${eventTypes.map(type => option(type, titleCase(type), selected.event_type)).join("")}
-        </select></label>
-        <label><span>Condition</span><select name="event_state">
-          ${option("", "Any reported condition", selected.event_state)}
-          ${option("active", "Reported active", selected.event_state)}
-          ${option("inactive", "Reported ended", selected.event_state)}
-        </select></label>
-        <label><span>Episode</span><select name="association">
-          ${option("", "Any association", selected.association)}
-          ${option("episode", "Linked to an Episode", selected.association)}
-          ${option("unassigned", "Not linked to an Episode", selected.association)}
-        </select></label>
-        <label><span>Time</span><select name="time_range">
-          ${TIME_RANGE_OPTIONS.map(([value, label]) => option(value, label, selected.time_range || "all")).join("")}
-        </select></label>
-        ${selected.time_range === "custom" ? `
-          <label class="review-custom-date"><span>From</span><input type="date" name="custom_from" value="${escHtml(selected.custom_from)}"></label>
-          <label class="review-custom-date"><span>Through</span><input type="date" name="custom_to" value="${escHtml(selected.custom_to)}"></label>
-          ${timeBounds.valid ? "" : '<small class="review-filter-status">Choose a valid start and end date to apply this range.</small>'}
-        ` : ""}
-        <a class="filter-reset" href="#activity">Reset</a>
-      </form>
-      ${list.length === 0 ? '<div class="empty-state"><h3>No matching activity</h3><p>Try changing the filters or wait for a new Event.</p></div>' : `
-      <div class="activity-feed">
-        ${groups.map(group => `<section class="activity-day">
-          <header><strong>${escHtml(group.label)}</strong><span>${plural(group.events.length, "Event")}</span></header>
-          <div class="activity-day-list">${group.events.map(event => {
-            const deviceName = deviceNames.get(event.device_id) || event.device_id;
-            const areaName = areaNames.get(event.area_id) || event.area_id;
-            return `<article class="activity-entry ${event.episode_id ? "" : "needs-attention"}">
-              <time datetime="${escHtml(event.timestamp)}">${fmtTime(event.timestamp)}</time>
-              <div class="activity-marker"><span></span></div>
-              <div class="activity-entry-body">
-                <div class="activity-entry-heading">
-                  <div><h3><a href="#event/${event.id}">${escHtml(eventTitle(event))}</a></h3>
-                    ${eventParticipationBadge(event.participation)}
-                    <div class="activity-context">
-                      <span title="Device"><svg><use href="icons.svg#devices"></use></svg><span><small>Device</small><strong>${escHtml(deviceName)}</strong></span></span>
-                      <span title="Area"><svg><use href="icons.svg#areas"></use></svg><span><small>Area</small><strong>${escHtml(areaName)}</strong></span></span>
-                    </div>
-                  </div>
-                </div>
-                <div class="activity-entry-footer">
-                  <div>${eventSourceBadges(event)}</div>
-                  <div class="activity-entry-actions">
-                    <a href="#event/${event.id}">Inspect Event</a>
-                    ${event.episode_id
-                      ? `<a href="#episode/${event.episode_id}">Open Episode</a>`
-                      : '<span class="association-warning">Not linked to an Episode</span>'}
-                  </div>
-                </div>
-              </div>
-            </article>`;
-          }).join("")}</div>
-        </section>`).join("")}
-      </div>`}
-      ${pageControls(base, page, list.length, hasNext)}`);
   } catch (error) {
     showError(error.message);
   }
@@ -888,7 +677,9 @@ export async function evidenceDetail(id) {
           <span>${expired
             ? `Expired ${fmt(item.expired_at)}`
             : interruption
-            ? interruption.legacy ? "Original partial bytes preserved · not directly playable" : "Completed recording fragments preserved"
+            ? interruption.legacy
+              ? "Original partial bytes preserved · not directly playable"
+              : "Completed recording fragments preserved"
             : item.sha256
             ? isHlsEvidence(item) ? "Bundle manifest fingerprint recorded" : "SHA-256 fingerprint recorded"
             : "No integrity fingerprint recorded"}</span>

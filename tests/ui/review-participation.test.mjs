@@ -14,6 +14,10 @@ const timeRangeSource = await readFile(
   new URL("../../src/episode/ui/time-range.js", import.meta.url),
   "utf8",
 );
+const participationSource = await readFile(
+  new URL("../../src/episode/ui/review-participation.js", import.meta.url),
+  "utf8",
+);
 
 const apiUrl = moduleUrl(`
   export const API = "/api/v1";
@@ -36,6 +40,7 @@ const componentsUrl = moduleUrl(`
 const emptyUrl = moduleUrl(`
   export function closeDeliveryViewer() {}
   export function openDeliveryViewer() {}
+  export function activity() {}
   export function activateCurrentViews() {}
   export function deactivateCurrentViews() {}
   export function renderCurrentViews() { return ""; }
@@ -77,12 +82,31 @@ const formatUrl = moduleUrl(`
   }
   export function trunc(value) { return value; }
 `);
+const participationUrl = moduleUrl(
+  participationSource
+    .replace('"./dom.js"', JSON.stringify(domUrl))
+    .replace('"./format.js?v=3"', JSON.stringify(formatUrl)),
+);
+const filtersUrl = moduleUrl(`
+  export function filterValues(items, field, defaults, selected = "") {
+    return [...new Set([...defaults, ...items.map(item => item[field]).filter(Boolean), ...(selected ? [selected] : [])])].sort();
+  }
+  export function option(value, label, selected) {
+    return "<option value=\\"" + value + "\\" " + (value === selected ? "selected" : "") + ">" + label + "</option>";
+  }
+  export function filteredHash(view, filters) {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) if (value) query.set(key, value);
+    return "#" + view + (query.size ? "?" + query : "");
+  }
+`);
 
 globalThis.window = {};
 const module = await import(moduleUrl(
   source
     .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
     .replace('"./components.js?v=6"', JSON.stringify(componentsUrl))
+    .replace('"./activity-page.js?v=1"', JSON.stringify(emptyUrl))
     .replace('"./delivery-viewer.js?v=1"', JSON.stringify(emptyUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
     .replace('"./current-views.js?v=12"', JSON.stringify(emptyUrl))
@@ -92,6 +116,8 @@ const module = await import(moduleUrl(
     .replace('"./episode-view.js?v=15"', JSON.stringify(emptyUrl))
     .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
     .replace('"./review-lists.js?v=3"', JSON.stringify(emptyUrl))
+    .replace('"./review-participation.js?v=1"', JSON.stringify(participationUrl))
+    .replace('"./review-filters.js?v=1"', JSON.stringify(filtersUrl))
     .replace('"./sidebar.js?v=4"', JSON.stringify(emptyUrl))
     .replace('"./time-range.js?v=1"', JSON.stringify(timeRangeUrl))
     .replace('"./view.js?v=1"', JSON.stringify(emptyUrl))
@@ -185,29 +211,13 @@ test("a filtered Event predating the attachment field still reads correctly", ()
   assert.doesNotMatch(notice, /undefined|night · night/);
 });
 
-test("Activity sends calculated UTC bounds to the Event API", async () => {
+test("Episode collection keeps the original offset-only request", async () => {
   globalThis.apiCalls = [];
-  await module.activity("", 1, new URLSearchParams({ time_range: "yesterday" }));
+  await module.episodes(2);
 
-  const eventRequest = globalThis.apiCalls.find(path => path.startsWith("/events?"));
-  assert.ok(eventRequest);
-  const query = new URLSearchParams(eventRequest.split("?", 2)[1]);
-  assert.match(query.get("observed_from"), /Z$/);
-  assert.match(query.get("observed_before"), /Z$/);
-  assert.ok(new Date(query.get("observed_before")) > new Date(query.get("observed_from")));
-});
-
-test("Activity renders the selected custom range controls", async () => {
-  await module.activity("", 1, new URLSearchParams({
-    time_range: "custom",
-    custom_from: "2026-09-12",
-    custom_to: "2026-09-14",
-  }));
-
-  assert.match(globalThis.activityHtml, /<span>Time<\/span>/);
-  assert.match(globalThis.activityHtml, /value="2026-09-12"/);
-  assert.match(globalThis.activityHtml, /value="2026-09-14"/);
-  assert.doesNotMatch(globalThis.activityHtml, /Choose a valid start/);
+  const episodeRequest = globalThis.apiCalls.find(path => path.startsWith("/episodes?"));
+  assert.equal(episodeRequest, "/episodes?limit=49&offset=48");
+  assert.doesNotMatch(episodeRequest, /started_from|started_before/);
 });
 
 test("Evidence sends capture bounds to the Evidence API", async () => {
