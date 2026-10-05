@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -147,8 +148,9 @@ class HLSRecordingBundle:
                 indexes.append(int(match.group("index")))
         return max(indexes, default=-1) + 1
 
-    def preserve_temporary_components(self) -> None:
+    def preserve_temporary_components(self) -> list[str]:
         incomplete = self.root / "incomplete"
+        preserved = []
         for path in self.root.rglob("*.tmp"):
             if incomplete in path.parents:
                 continue
@@ -161,16 +163,154 @@ class HLSRecordingBundle:
                 target = incomplete / f"{path.name}.{suffix}"
                 suffix += 1
             os.replace(path, target)
+            preserved.append(target.relative_to(self.root).as_posix())
+        return sorted(preserved)
 
-    def ensure_endlist(self) -> None:
+    def validate_playlist(self, *, require_endlist: bool = False) -> dict[str, Any]:
+        """Check that the HLS entrypoint references complete, present bundle components."""
+        segment_files = sorted(
+            path for path in (self.root / "segments").glob("segment-*.m4s") if path.is_file()
+        )
+        empty_fragment_count = 0
+        for path in segment_files:
+            try:
+                if path.is_file() and path.stat().st_size == 0:
+                    empty_fragment_count += 1
+            except OSError:
+                # An unreferenced fragment must not prevent recording what the
+                # playlist says is playable; referenced components are checked below.
+                continue
+        result: dict[str, Any] = {
+            "valid": False,
+            "error": None,
+            "referenced_fragment_count": 0,
+            "unreferenced_fragment_count": len(segment_files),
+            "empty_fragment_count": empty_fragment_count,
+        }
+        playlist = self.resolve_component(PLAYLIST_NAME)
+        if playlist is None:
+            result["error"] = "playlist_missing"
+            return result
+
+        try:
+            lines = playlist.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            result["error"] = "playlist_unreadable"
+            return result
+
+        if not lines or lines[0].strip() != "#EXTM3U":
+            result["error"] = "playlist_header_missing"
+            return result
+
+        init_references = []
+        segment_references = []
+        pending_duration: float | None = None
+        endlist_found = False
+        map_available = False
+        for line in lines[1:]:
+            line = line.strip()
+            if line.startswith("#EXTINF:"):
+                if pending_duration is not None:
+                    result["error"] = "playlist_segment_reference_missing"
+                    return result
+                if not map_available:
+                    result["error"] = "playlist_initialization_reference_missing"
+                    return result
+                raw_duration = line.partition(":")[2].partition(",")[0]
+                try:
+                    duration = float(raw_duration)
+                except ValueError:
+                    result["error"] = "playlist_segment_duration_invalid"
+                    return result
+                if not math.isfinite(duration) or duration <= 0:
+                    result["error"] = "playlist_segment_duration_invalid"
+                    return result
+                pending_duration = duration
+            elif line.startswith("#EXT-X-MAP:"):
+                match = re.search(r'(?:^|,)URI="([^"]+)"', line.partition(":")[2])
+                if not match:
+                    result["error"] = "playlist_initialization_reference_missing"
+                    return result
+                init_references.append(match.group(1))
+                map_available = True
+            elif line == "#EXT-X-ENDLIST":
+                endlist_found = True
+            elif line and not line.startswith("#"):
+                if pending_duration is None or not line.endswith(".m4s"):
+                    result["error"] = "playlist_segment_reference_invalid"
+                    return result
+                segment_references.append(line)
+                pending_duration = None
+
+        result["referenced_fragment_count"] = len(segment_references)
+        result["unreferenced_fragment_count"] = max(
+            0,
+            len(segment_files) - len(segment_references),
+        )
+
+        if pending_duration is not None:
+            result["error"] = "playlist_segment_reference_missing"
+            return result
+        if not init_references:
+            result["error"] = "playlist_initialization_reference_missing"
+            return result
+        for reference in init_references:
+            component = self.resolve_component(reference)
+            if component is None:
+                result["error"] = "playlist_initialization_component_missing"
+                return result
+            try:
+                if component.stat().st_size <= 0:
+                    result["error"] = "playlist_initialization_component_empty"
+                    return result
+            except OSError:
+                result["error"] = "playlist_initialization_component_missing"
+                return result
+        if not segment_references:
+            result["error"] = "playlist_segments_missing"
+            return result
+        for reference in segment_references:
+            component = self.resolve_component(reference)
+            if component is None:
+                result["error"] = "playlist_segment_component_missing"
+                return result
+            try:
+                if component.stat().st_size <= 0:
+                    result["error"] = "playlist_segment_component_empty"
+                    return result
+            except OSError:
+                result["error"] = "playlist_segment_component_missing"
+                return result
+        if require_endlist and not endlist_found:
+            result["error"] = "playlist_endlist_missing"
+            return result
+
+        result.update(
+            valid=True,
+            error=None,
+            referenced_fragment_count=len(segment_references),
+            unreferenced_fragment_count=max(0, len(segment_files) - len(segment_references)),
+        )
+        return result
+
+    def ensure_endlist(self) -> bool:
         if not self.playlist_path.exists():
-            return
-        content = self.playlist_path.read_text(encoding="utf-8")
+            return False
+        try:
+            content = self.playlist_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return False
         if "#EXT-X-ENDLIST" in content:
-            return
+            return True
+        if not self.validate_playlist()["valid"]:
+            return False
         temporary = self.playlist_path.with_suffix(".m3u8.tmp")
-        temporary.write_text(content.rstrip() + "\n#EXT-X-ENDLIST\n", encoding="utf-8")
-        os.replace(temporary, self.playlist_path)
+        try:
+            temporary.write_text(content.rstrip() + "\n#EXT-X-ENDLIST\n", encoding="utf-8")
+            os.replace(temporary, self.playlist_path)
+            return True
+        except OSError:
+            return False
 
     def refresh_manifest(
         self,
@@ -185,7 +325,9 @@ class HLSRecordingBundle:
         for path in sorted(self.root.rglob("*")):
             if not path.is_file() or path.name in {COMPONENT_MANIFEST_NAME, CAPTURE_STATE_NAME}:
                 continue
-            if path.name.startswith(f".{COMPONENT_MANIFEST_NAME}") or path.suffix == ".tmp":
+            if path.name.startswith(f".{COMPONENT_MANIFEST_NAME}") or (
+                path.suffix == ".tmp" and "incomplete" not in path.parts
+            ):
                 continue
             try:
                 stat = path.stat()
@@ -268,10 +410,41 @@ class HLSRecordingBundle:
                 program_time = None
         return observations
 
-    def prepare_finalize(self, *, ended_at: datetime, reason: str | None = None) -> dict[str, Any]:
-        self.preserve_temporary_components()
-        self.ensure_endlist()
-        return self.refresh_manifest(state="complete", ended_at=ended_at, reason=reason)
+    def prepare_finalize(
+        self,
+        *,
+        ended_at: datetime,
+        reason: str | None = None,
+        incomplete: bool = False,
+    ) -> dict[str, Any]:
+        preserved_temporary = self.preserve_temporary_components()
+        validation = self.validate_playlist()
+        validation["preserved_temporary_component_count"] = len(preserved_temporary)
+        validation["playlist_temporary_preserved"] = any(
+            Path(path).name.startswith(f"{PLAYLIST_NAME}.tmp") for path in preserved_temporary
+        )
+        validation["temporary_components_preserved"] = bool(preserved_temporary)
+        if validation["valid"]:
+            if not self.ensure_endlist():
+                preserved_temporary.extend(self.preserve_temporary_components())
+            validation = self.validate_playlist(require_endlist=True)
+            validation["preserved_temporary_component_count"] = len(preserved_temporary)
+            validation["playlist_temporary_preserved"] = any(
+                Path(path).name.startswith(f"{PLAYLIST_NAME}.tmp") for path in preserved_temporary
+            )
+            validation["temporary_components_preserved"] = bool(preserved_temporary)
+
+        output_complete = (
+            validation["valid"]
+            and not incomplete
+            and not validation["temporary_components_preserved"]
+        )
+        state = "complete" if output_complete else "incomplete"
+        manifest = self.refresh_manifest(state=state, ended_at=ended_at, reason=reason)
+        manifest["entrypoint"] = PLAYLIST_NAME if validation["valid"] else None
+        manifest["playlist_validation"] = validation
+        _atomic_json(self.component_manifest_path, manifest)
+        return manifest
 
     def complete_publication(self) -> None:
         try:
@@ -290,12 +463,13 @@ class HLSRecordingBundle:
     def resolve_component(self, component_path: str) -> Path | None:
         if component_path.startswith(("/", ".")):
             return None
-        candidate = (self.root / component_path).resolve()
         try:
-            candidate.relative_to(self.root.resolve())
-        except ValueError:
+            root = self.root.resolve(strict=True)
+            candidate = (self.root / component_path).resolve(strict=True)
+            candidate.relative_to(root)
+            return candidate if candidate.is_file() else None
+        except (OSError, RuntimeError, ValueError):
             return None
-        return candidate if candidate.is_file() else None
 
     def component_manifest_sha256(self) -> str:
         return _sha256(self.component_manifest_path)

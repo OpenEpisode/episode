@@ -7,7 +7,11 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi import HTTPException
+from fastapi.responses import FileResponse
 
+from episode.api.context import ApiContext
+from episode.api.endpoints.evidence import evidence_router
 from episode.api.routes import create_api
 from episode.api.thumbnails import ThumbnailCache
 from episode.config import EpisodeConfig
@@ -38,12 +42,75 @@ def _write_playable_bundle(bundle: HLSRecordingBundle) -> None:
     (bundle.root / "segments" / "segment-000001.m4s").write_bytes(b"fragment-b")
     bundle.playlist_path.write_text(
         "#EXTM3U\n"
+        '#EXT-X-MAP:URI="init.mp4"\n'
         "#EXT-X-PROGRAM-DATE-TIME:2026-08-27T12:00:00.000Z\n"
         "#EXTINF:4.0,\nsegments/segment-000000.m4s\n"
         "#EXT-X-PROGRAM-DATE-TIME:2026-08-27T12:00:04.000Z\n"
         "#EXTINF:3.5,\nsegments/segment-000001.m4s\n",
         encoding="utf-8",
     )
+
+
+@pytest.mark.parametrize(
+    ("playlist_content", "expected_error"),
+    [
+        (b"", "playlist_header_missing"),
+        (b"#EXTM3U\n#EXT-X-ENDLIST\n", "playlist_initialization_reference_missing"),
+        (
+            b'#EXTM3U\n#EXTINF:4.0,\nsegments/segment-000000.m4s\n#EXT-X-MAP:URI="init.mp4"\n',
+            "playlist_initialization_reference_missing",
+        ),
+    ],
+)
+def test_invalid_playlist_is_incomplete_and_is_not_repaired(
+    tmp_path, playlist_content, expected_error
+):
+    bundle = _bundle(tmp_path)
+    (bundle.root / "init.mp4").write_bytes(b"initialization")
+    (bundle.root / "segments" / "segment-000000.m4s").write_bytes(b"fragment")
+    bundle.playlist_path.write_bytes(playlist_content)
+
+    manifest = bundle.finalize(ended_at=datetime(2026, 8, 27, 12, 0, 8, tzinfo=timezone.utc))
+
+    assert bundle.playlist_path.read_bytes() == playlist_content
+    assert manifest["state"] == "incomplete"
+    assert manifest["entrypoint"] is None
+    assert manifest["playlist_validation"]["valid"] is False
+    assert manifest["playlist_validation"]["error"] == expected_error
+    assert manifest["playlist_validation"]["referenced_fragment_count"] == 0
+    assert (bundle.root / "init.mp4").exists()
+    assert (bundle.root / "segments" / "segment-000000.m4s").exists()
+
+
+def test_valid_fmp4_playlist_is_completed_with_endlist(tmp_path):
+    bundle = _bundle(tmp_path)
+    _write_playable_bundle(bundle)
+
+    manifest = bundle.finalize(ended_at=datetime(2026, 8, 27, 12, 0, 8, tzinfo=timezone.utc))
+
+    assert manifest["state"] == "complete"
+    assert manifest["entrypoint"] == "index.m3u8"
+    assert manifest["playlist_validation"]["valid"] is True
+    assert manifest["playlist_validation"]["referenced_fragment_count"] == 2
+    assert "#EXT-X-ENDLIST" in bundle.playlist_path.read_text(encoding="utf-8")
+
+
+def test_uncommitted_temporary_components_are_preserved_as_incomplete(tmp_path):
+    bundle = _bundle(tmp_path)
+    _write_playable_bundle(bundle)
+    temporary_segment = bundle.root / "segments" / "segment-000002.m4s.tmp"
+    temporary_segment.write_bytes(b"partial fragment")
+
+    manifest = bundle.finalize(ended_at=datetime(2026, 8, 27, 12, 0, 8, tzinfo=timezone.utc))
+
+    assert manifest["state"] == "incomplete"
+    assert manifest["entrypoint"] == "index.m3u8"
+    assert manifest["playlist_validation"]["valid"] is True
+    assert manifest["playlist_validation"]["temporary_components_preserved"] is True
+    incomplete = next(item for item in manifest["components"] if item["kind"] == "incomplete")
+    assert incomplete["path"] == "incomplete/segment-000002.m4s.tmp"
+    assert incomplete["byte_size"] == len(b"partial fragment")
+    assert not temporary_segment.exists()
 
 
 def test_component_manifest_inventories_immutable_hls_fragments(tmp_path):
@@ -123,6 +190,54 @@ async def test_recording_route_serves_only_bundle_components(tmp_path):
         assert capture_state.status_code == 404
     finally:
         await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_hls_evidence_serves_its_manifest_not_a_playlist_redirect(tmp_path):
+    bundle = _bundle(tmp_path)
+    (bundle.root / "segments" / "segment-000000.m4s").write_bytes(b"unreferenced fragment")
+    bundle.playlist_path.write_bytes(b"")
+    manifest = bundle.finalize(ended_at=datetime(2026, 8, 27, 12, 0, 8, tzinfo=timezone.utc))
+    evidence = Evidence(
+        id="evidence-hls",
+        device_id="camera-hls",
+        area_id="area-hls",
+        timestamp=bundle.state.started_at,
+        evidence_type="incomplete_recording",
+        file_path=str(bundle.component_manifest_path),
+        mime_type="application/json",
+        original_filename="manifest.json",
+        episode_id="episode-hls",
+        metadata={
+            "format": "hls-fmp4",
+            "started_at": bundle.state.started_at.isoformat(),
+            "recording_session_id": "session-hls",
+            "bundle_bytes": manifest["total_bytes"],
+            "component_manifest_sha256": bundle.component_manifest_sha256(),
+            "playlist_validation": manifest["playlist_validation"],
+        },
+    )
+
+    class EvidenceRepository:
+        async def get_evidence(self, evidence_id):
+            return evidence if evidence_id == evidence.id else None
+
+    repository = EvidenceRepository()
+    router = evidence_router(ApiContext(repository=repository, data_dir=str(tmp_path)))
+    endpoints = {
+        route.path: route.endpoint for route in router.routes if hasattr(route, "endpoint")
+    }
+
+    response = await endpoints["/api/v1/evidence/{evidence_id}/file"]("evidence-hls")
+    assert isinstance(response, FileResponse)
+    assert response.path == str(bundle.component_manifest_path)
+    assert response.media_type == "application/json"
+    with pytest.raises(HTTPException, match="Recording playlist failed validation") as error:
+        await endpoints["/api/v1/recordings/{evidence_id}/{component_path:path}"](
+            "evidence-hls",
+            "index.m3u8",
+        )
+    assert error.value.status_code == 404
 
 
 @pytest.mark.asyncio

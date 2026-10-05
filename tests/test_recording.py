@@ -444,6 +444,59 @@ async def test_hls_fragments_remain_one_evidence_bundle(repo, bus, config):
 
 
 @pytest.mark.asyncio
+async def test_invalid_hls_playlist_is_published_as_incomplete_with_exit_code(tmp_path, bus):
+    class JournalRepository:
+        async def append_episode_journal(self, episode_id, entry_type, data):
+            return None
+
+    repository = JournalRepository()
+    device = _video_device("camera-x", "area-1", "on_episode")
+    release = asyncio.Event()
+    published = []
+
+    async def hold_recording(recording, rtsp_url):
+        await release.wait()
+
+    async def persist_evidence(evidence):
+        published.append(evidence)
+        return evidence
+
+    recorder = RecordingEngine(
+        repository,
+        bus,
+        str(tmp_path),
+        evidence_sink=persist_evidence,
+    )
+    recorder._record_episode = hold_recording
+    await recorder._start_recording(
+        "episode-1",
+        device,
+        "rtsp://camera-x/stream",
+    )
+    recording = recorder._recordings[("episode-1", "camera-x")]
+    (recording.bundle.root / "init.mp4").write_bytes(b"init")
+    (recording.bundle.root / "segments" / "segment-000000.m4s").write_bytes(b"fragment")
+    recording.bundle.playlist_path.write_bytes(b"")
+    recording.last_exit_code = 1
+
+    await recorder._finalize_bundle(recording)
+
+    assert len(published) == 1
+    evidence = published[0]
+    assert evidence.evidence_type == "incomplete_recording"
+    assert evidence.file_path == str(recording.bundle.component_manifest_path)
+    assert evidence.mime_type == "application/json"
+    assert evidence.metadata["reason"] == "invalid_hls_playlist"
+    assert evidence.metadata["ffmpeg_exit_code"] == 1
+    assert evidence.metadata["playlist_validation"]["error"] == "playlist_header_missing"
+    assert recording.bundle.playlist_path.read_bytes() == b""
+
+    release.set()
+    await recording.task
+    await recorder.stop()
+
+
+@pytest.mark.asyncio
 async def test_recorder_diagnostics_report_progress_without_stream_credentials(repo, bus, config):
     await repo.initialize()
     recorder = RecordingEngine(repo, bus, config.data_dir)
@@ -472,8 +525,16 @@ async def test_recorder_diagnostics_report_progress_without_stream_credentials(r
     assert diagnostic["state"] == "recording"
     assert diagnostic["fragment_count"] == 1
     assert diagnostic["last_fragment_at"] is not None
+    assert diagnostic["ready"] is False
     assert "rtsp" not in str(diagnostic)
     assert "private-password" not in str(status)
+
+    (recording.bundle.root / "init.mp4").write_bytes(b"init")
+    recording.bundle.playlist_path.write_text(
+        '#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:4.0,\nsegments/segment-000000.m4s\n',
+        encoding="utf-8",
+    )
+    assert recorder.status()["recordings"][0]["ready"] is True
 
     recording.state = "reconnecting"
     recording.last_error = "FFmpeg exited with code 1; reconnecting"

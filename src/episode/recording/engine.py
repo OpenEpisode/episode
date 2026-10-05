@@ -1152,6 +1152,7 @@ class RecordingEngine:
                 flags += "+discont_start"
 
             returncode = -1
+            rec.ffmpeg_stderr = ""
             wait_task: asyncio.Task | None = None
             stderr_task: asyncio.Task | None = None
             stall_signaled = False
@@ -1171,7 +1172,6 @@ class RecordingEngine:
                         stderr=asyncio.subprocess.PIPE,
                     )
                 rec.proc = proc
-                rec.ffmpeg_stderr = ""
                 stderr_task = asyncio.create_task(self._drain_stderr(rec, proc))
                 if piped:
                     self._start_handler(rec, proc)
@@ -1232,6 +1232,8 @@ class RecordingEngine:
                     rec.device_id,
                 )
             finally:
+                if rec.proc is not None and rec.proc.returncode is not None:
+                    rec.last_exit_code = rec.proc.returncode
                 rec.proc = None
                 if stderr_task is not None:
                     # Always drain and join stderr: an unconsumed child pipe can block
@@ -1459,13 +1461,22 @@ class RecordingEngine:
         if rec.published:
             return
         ended_at = datetime.now(tz=timezone.utc)
-        manifest = rec.bundle.prepare_finalize(ended_at=ended_at, reason=reason)
-        playable = manifest["fragment_count"] > 0 and rec.bundle.playlist_path.exists()
-        evidence_type = "recording" if playable and not incomplete else "incomplete_recording"
+        manifest = rec.bundle.prepare_finalize(
+            ended_at=ended_at,
+            reason=reason,
+            incomplete=incomplete,
+        )
+        playlist_validation = manifest.get("playlist_validation", {})
+        playable = playlist_validation.get("valid") is True
+        capture_complete = manifest.get("state") == "complete"
+        evidence_type = "recording" if capture_complete else "incomplete_recording"
+        evidence_reason = reason
+        if not playable:
+            evidence_reason = "invalid_hls_playlist"
+        elif not capture_complete and evidence_reason is None:
+            evidence_reason = "incomplete_hls_finalization"
         file_path = (
-            str(rec.bundle.playlist_path)
-            if rec.bundle.playlist_path.exists()
-            else str(rec.bundle.component_manifest_path)
+            str(rec.bundle.playlist_path) if playable else str(rec.bundle.component_manifest_path)
         )
         duration = max(0, int((ended_at - rec.start_time).total_seconds()))
         playlist_sha = next(
@@ -1491,6 +1502,7 @@ class RecordingEngine:
                 "duration_seconds": duration,
                 "fragment_seconds": self._fragment_seconds,
                 "fragment_count": manifest["fragment_count"],
+                "playlist_validation": playlist_validation,
                 "component_count": manifest["component_count"],
                 "bundle_bytes": manifest["total_bytes"],
                 "component_manifest": "manifest.json",
@@ -1498,9 +1510,12 @@ class RecordingEngine:
                 "integrity_scope": "recording_bundle_manifest",
                 "playlist_sha256": playlist_sha,
                 **(
-                    {"status": "incomplete", "reason": reason}
+                    {"status": "incomplete", "reason": evidence_reason}
                     if evidence_type != "recording"
                     else {}
+                ),
+                **(
+                    {"ffmpeg_exit_code": rec.last_exit_code} if evidence_type != "recording" else {}
                 ),
             },
         )
@@ -1532,12 +1547,35 @@ class RecordingEngine:
                 "recording_session_id": rec.session_id,
                 "evidence_id": rec.evidence_id,
                 "fragment_count": manifest["fragment_count"],
-                **({"reason": reason} if reason else {}),
+                **({"reason": evidence_reason} if evidence_reason else {}),
+                **(
+                    {"playlist_validation": playlist_validation}
+                    if evidence_type != "recording"
+                    else {}
+                ),
             },
         )
+        if not playable or playlist_validation.get("preserved_temporary_component_count", 0):
+            logger.warning(
+                "Recording finalization left incomplete Evidence for episode %s camera %s: "
+                "playlist valid=%s, validation=%s; "
+                "%d referenced fragments, %d bundle fragments, %d empty fragments, "
+                "%d temporary components preserved; ffmpeg exit %s%s",
+                rec.episode_id[:8],
+                rec.device_id,
+                playable,
+                playlist_validation.get("error") or "passed",
+                playlist_validation.get("referenced_fragment_count", 0),
+                manifest["fragment_count"],
+                playlist_validation.get("empty_fragment_count", 0),
+                playlist_validation.get("preserved_temporary_component_count", 0),
+                rec.last_exit_code,
+                self._stderr_note(rec),
+            )
         logger.info(
-            "Recording Evidence %s complete for episode %s camera %s: %d fragments (%.1f MiB)",
+            "Recording Evidence %s %s for episode %s camera %s: %d fragments (%.1f MiB)",
             rec.evidence_id[:8],
+            "complete" if evidence_type == "recording" else "incomplete",
             rec.episode_id[:8],
             rec.device_id,
             manifest["fragment_count"],

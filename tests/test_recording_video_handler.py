@@ -844,7 +844,9 @@ async def test_corrupt_handler_bytes_are_reported_not_silently_recorded(tmp_path
 
     evidence = await harness.evidence()
     assert evidence.evidence_type == "incomplete_recording"
-    assert evidence.metadata["reason"] in {"video_handler_ended", "video_handler_failed"}
+    assert evidence.metadata["reason"] == "invalid_hls_playlist"
+    assert evidence.metadata["playlist_validation"]["valid"] is False
+    assert evidence.metadata["ffmpeg_exit_code"] != 0
     assert recording.bundle.next_segment_index() == 0
 
     await harness.close()

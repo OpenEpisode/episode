@@ -125,7 +125,11 @@ def evidence_router(context: ApiContext) -> APIRouter:
             raise HTTPException(410, "Evidence expired under the retention policy")
         if not os.path.exists(evidence.file_path):
             raise HTTPException(404, "File not found on disk")
-        if evidence.metadata.get("format") == "hls-fmp4":
+        playlist_validation = evidence.metadata.get("playlist_validation")
+        invalid_playlist = (
+            isinstance(playlist_validation, dict) and playlist_validation.get("valid") is False
+        )
+        if evidence.metadata.get("format") == "hls-fmp4" and not invalid_playlist:
             return RedirectResponse(
                 f"/api/v1/recordings/{evidence.id}/index.m3u8",
                 status_code=307,
@@ -149,6 +153,12 @@ def evidence_router(context: ApiContext) -> APIRouter:
                 raise HTTPException(410, "Recording expired under the retention policy")
             if evidence.metadata.get("format") != "hls-fmp4":
                 raise HTTPException(404, "Recording is not an HLS bundle")
+            playlist_validation = evidence.metadata.get("playlist_validation")
+            invalid_playlist = (
+                isinstance(playlist_validation, dict) and playlist_validation.get("valid") is False
+            )
+            if component_path == "index.m3u8" and invalid_playlist:
+                raise HTTPException(404, "Recording playlist failed validation")
             try:
                 bundle = HLSRecordingBundle.load_from_evidence(Path(evidence.file_path), evidence)
             except (KeyError, TypeError, ValueError) as error:
