@@ -5,8 +5,9 @@ import {
   attachMediaSource,
   evidenceMediaUrl,
   isHlsEvidence,
+  isPlayableVideoEvidence,
   updateMediaStatus,
-} from "./media-player.js?v=7";
+} from "./media-player.js?v=8";
 
 let carouselItems = [];
 let carouselIndex = 0;
@@ -47,7 +48,7 @@ function renderExpiredEvidence(evidence) {
 }
 
 function renderEvidenceItem(evidence, index) {
-  const isVideo = evidence.mime_type?.startsWith("video/") || isHlsEvidence(evidence);
+  const isVideo = isPlayableVideoEvidence(evidence);
   const isImage = evidence.mime_type?.startsWith("image/");
   const isExpired = evidence.availability === "expired";
   const duration = evidence.metadata?.duration_seconds;
@@ -115,7 +116,7 @@ function renderEvidenceBundle(group, items, deviceNames, areaNames) {
     <div class="evidence-archive-grid">
       ${group.evidence.map(evidence => {
         const index = items.indexOf(evidence);
-        const isVideo = evidence.mime_type?.startsWith("video/") || isHlsEvidence(evidence);
+        const isVideo = isPlayableVideoEvidence(evidence);
         const isImage = evidence.mime_type?.startsWith("image/");
         const isExpired = evidence.availability === "expired";
         const deviceName = deviceNames.get(evidence.device_id) || evidence.device_id;
@@ -199,7 +200,7 @@ function renderCarousel() {
   if (!evidence) return;
   stopCurrentMedia();
 
-  const isVideo = evidence.mime_type?.startsWith("video/") || isHlsEvidence(evidence);
+  const isVideo = isPlayableVideoEvidence(evidence);
   const isImage = evidence.mime_type?.startsWith("image/");
   const isExpired = evidence.availability === "expired";
   let mediaHtml = "";

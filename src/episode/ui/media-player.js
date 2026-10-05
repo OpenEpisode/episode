@@ -155,6 +155,11 @@ export function isHlsEvidence(evidence) {
     || evidence?.mime_type === "application/vnd.apple.mpegurl";
 }
 
+export function isPlayableVideoEvidence(evidence) {
+  if (evidence?.mime_type?.startsWith("video/")) return true;
+  return isHlsEvidence(evidence) && evidence.metadata?.playlist_validation?.valid !== false;
+}
+
 export function evidenceMediaUrl(evidence) {
   return isHlsEvidence(evidence)
     ? `/api/v1/recordings/${encodeURIComponent(evidence.id)}/index.m3u8`

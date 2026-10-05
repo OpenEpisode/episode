@@ -10,6 +10,22 @@ const source = await readFile(
 );
 const media = await import(moduleUrl(source));
 
+test("only validated HLS evidence is presented as playable", () => {
+  assert.equal(media.isPlayableVideoEvidence({ mime_type: "video/mp4" }), true);
+  assert.equal(media.isPlayableVideoEvidence({
+    mime_type: "application/vnd.apple.mpegurl",
+    metadata: { format: "hls-fmp4", playlist_validation: { valid: true } },
+  }), true);
+  assert.equal(media.isPlayableVideoEvidence({
+    mime_type: "application/vnd.apple.mpegurl",
+    metadata: { format: "hls-fmp4", playlist_validation: { valid: false } },
+  }), false);
+  assert.equal(media.isPlayableVideoEvidence({
+    mime_type: "application/vnd.apple.mpegurl",
+    metadata: { format: "hls-fmp4" },
+  }), true);
+});
+
 function fakeVideo({ nativeHls = false } = {}) {
   const listeners = new Map();
   return {

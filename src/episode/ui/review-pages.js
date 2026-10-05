@@ -27,8 +27,9 @@ import {
   attachMediaSource,
   evidenceMediaUrl,
   isHlsEvidence,
+  isPlayableVideoEvidence,
   updateMediaStatus,
-} from "./media-player.js?v=7";
+} from "./media-player.js?v=8";
 import {
   originBadge,
   renderEvidenceArchive,
@@ -67,19 +68,25 @@ let eventDeliveries = [];
 
 function incompleteRecordingGuidance(item) {
   if (item.evidence_type !== "incomplete_recording") return null;
+  const invalidPlaylist = item.metadata?.playlist_validation?.valid === false;
   const reason = {
+    invalid_hls_playlist: "The HLS playlist failed validation and was not marked playable.",
     startup_recovery: "The application restarted before this recording could be finalized.",
     retry_limit_exceeded: "The camera stream could not be recovered after repeated attempts.",
     episode_closed: "The Episode closed while the camera stream was reconnecting.",
+    incomplete_hls_finalization: "FFmpeg left temporary output or the capture ended before finalization completed.",
     application_shutdown: "The application stopped while this recording was active.",
     recording_task_cancelled: "The recording task ended before capture was finalized.",
   }[item.metadata?.reason] || "Capture ended before this recording could be finalized.";
   const legacy = !isHlsEvidence(item);
   return {
     legacy,
+    invalidPlaylist,
     reason,
     format: legacy ? "Legacy partial MP4" : "Partial HLS recording",
-    explanation: legacy
+    explanation: invalidPlaylist
+      ? "The playlist or one of its referenced components was incomplete. The original fragments and component manifest were preserved for diagnosis; playback is unavailable."
+      : legacy
       ? "The incomplete MP4 index was never written, so browsers cannot play this older partial file. The original bytes remain available for forensic recovery, but no action is required."
       : "Completed HLS fragments were preserved and can be reviewed below. No action is required.",
   };
@@ -536,7 +543,7 @@ export async function evidenceDetail(id) {
   showLoading();
   try {
     const item = await api("/evidence/" + id);
-    const isVideo = item.mime_type?.startsWith("video/") || isHlsEvidence(item);
+    const isVideo = isPlayableVideoEvidence(item);
     const isImage = item.mime_type?.startsWith("image/");
     const isText = item.mime_type?.startsWith("text/") || item.mime_type === "application/xml";
     const expired = item.availability === "expired";
@@ -590,8 +597,10 @@ export async function evidenceDetail(id) {
     } else if (interruption) {
       media = `<div class="evidence-detail-file evidence-interrupted-file">
         <svg><use href="icons.svg?v=2#clock"></use></svg>
-        <strong>Partial recording preserved</strong>
-        <span>This legacy capture is not directly playable.</span>
+        <strong>${interruption.invalidPlaylist ? "No playable playlist" : "Partial recording preserved"}</strong>
+        <span>${interruption.invalidPlaylist
+          ? "The original media components and manifest remain available for diagnosis."
+          : "This legacy capture is not directly playable."}</span>
       </div>`;
     } else if (isImage) {
       media = `<div class="review-media-image">
@@ -679,7 +688,9 @@ export async function evidenceDetail(id) {
             : interruption
             ? interruption.legacy
               ? "Original partial bytes preserved · not directly playable"
-              : "Completed recording fragments preserved"
+              : interruption.invalidPlaylist
+                ? "Original media components preserved · no playable playlist"
+                : "Completed recording fragments preserved"
             : item.sha256
             ? isHlsEvidence(item) ? "Bundle manifest fingerprint recorded" : "SHA-256 fingerprint recorded"
             : "No integrity fingerprint recorded"}</span>

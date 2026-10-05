@@ -50,6 +50,7 @@ const emptyUrl = moduleUrl(`
   export function attachMediaSource() {}
   export function evidenceMediaUrl() { return ""; }
   export function isHlsEvidence() { return false; }
+  export function isPlayableVideoEvidence() { return false; }
   export function updateMediaStatus() {}
   export function originBadge() { return ""; }
   export function renderEvidenceArchive() { return ""; }
@@ -111,7 +112,7 @@ const module = await import(moduleUrl(
     .replace('"./dom.js"', JSON.stringify(domUrl))
     .replace('"./current-views.js?v=12"', JSON.stringify(emptyUrl))
     .replace('"./episode-list.js?v=3"', JSON.stringify(emptyUrl))
-    .replace('"./media-player.js?v=7"', JSON.stringify(emptyUrl))
+    .replace('"./media-player.js?v=8"', JSON.stringify(emptyUrl))
     .replace('"./evidence-gallery.js?v=9"', JSON.stringify(emptyUrl))
     .replace('"./episode-view.js?v=15"', JSON.stringify(emptyUrl))
     .replace('"./format.js?v=3"', JSON.stringify(formatUrl))

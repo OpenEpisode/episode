@@ -21,6 +21,7 @@ const mediaUrl = moduleUrl(
   "export function attachMediaSource() { return () => {}; } "
   + "export function evidenceMediaUrl() { return '/media'; } "
   + "export function isHlsEvidence(item) { return item?.metadata?.format === 'hls-fmp4'; } "
+  + "export function isPlayableVideoEvidence(item) { return item?.mime_type?.startsWith('video/') || (item?.metadata?.format === 'hls-fmp4' && item?.metadata?.playlist_validation?.valid !== false); } "
   + "export function updateMediaStatus() {}",
 );
 const galleryUrl = moduleUrl(
@@ -28,7 +29,7 @@ const galleryUrl = moduleUrl(
     .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
     .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
-    .replace('"./media-player.js?v=7"', JSON.stringify(mediaUrl)),
+    .replace('"./media-player.js?v=8"', JSON.stringify(mediaUrl)),
 );
 const { renderEvidenceGrid } = await import(galleryUrl);
 
@@ -49,6 +50,13 @@ test("Evidence collections use cached thumbnails while viewers retain originals"
       metadata: {},
     },
     {
+      id: "invalid-recording",
+      device_id: "camera",
+      evidence_type: "incomplete_recording",
+      mime_type: "application/json",
+      metadata: { format: "hls-fmp4", playlist_validation: { valid: false } },
+    },
+    {
       id: "expired-snapshot",
       device_id: "camera",
       evidence_type: "snapshot",
@@ -60,6 +68,8 @@ test("Evidence collections use cached thumbnails while viewers retain originals"
 
   assert.match(html, /evidence\/snapshot-1\/thumbnail/);
   assert.match(html, /evidence\/recording-1\/thumbnail/);
+  assert.doesNotMatch(html, /evidence\/invalid-recording\/thumbnail/);
+  assert.match(html, /Incomplete Recording/);
   assert.match(html, /this\.src='\/api\/v1\/evidence\/snapshot-1\/file'/);
   assert.match(html, /this\.hidden=true/);
   assert.doesNotMatch(html, /<video/);
