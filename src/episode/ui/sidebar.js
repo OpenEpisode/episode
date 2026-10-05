@@ -10,6 +10,23 @@ function statusIndicator(state) {
   return "offline";
 }
 
+function hasAlerts(alerts) {
+  return Array.isArray(alerts) ? alerts.length > 0 : Number(alerts) > 0;
+}
+
+function sidebarAlertContent(mobile = false) {
+  return `<span class="dot warning" aria-hidden="true"></span>
+    <span class="label">${mobile ? "Alerts" : "Recording alerts need attention"}</span>
+    <span class="sidebar-status-action" aria-hidden="true">Review ›</span>`;
+}
+
+export function sidebarAlertsView(alerts = []) {
+  if (!hasAlerts(alerts)) return "";
+  return `<a class="sidebar-status sidebar-alert-link" href="#system/alerts" title="Review recording alerts" aria-label="Recording alerts need attention. Review alerts.">
+    ${sidebarAlertContent()}
+  </a>`;
+}
+
 export function sidebarStatusView(status) {
   const indicator = statusIndicator(status.state);
   const label = ({
@@ -57,8 +74,39 @@ export async function updateSidebarStatus() {
   }
 }
 
+export async function updateSidebarAlerts() {
+  const desktop = $("#sidebar-alerts");
+  const mobile = $("#mobile-alert-status");
+  if (!desktop && !mobile) return false;
+  try {
+    const alerts = await api("/alerts?limit=1&offset=0");
+    const present = hasAlerts(alerts);
+    if (desktop) desktop.innerHTML = sidebarAlertsView(alerts);
+    if (mobile) {
+      mobile.className = `sidebar-status sidebar-alert-status mobile-alert-status${present ? "" : " hidden"}`;
+      mobile.title = present ? "Review recording alerts" : "";
+      mobile.setAttribute("aria-label", present
+        ? "Recording alerts need attention. Review alerts."
+        : "Review recording alerts");
+      mobile.innerHTML = present ? sidebarAlertContent(true) : "";
+    }
+    return present;
+  } catch {
+    // A failed alerts request must not hide or degrade the existing system
+    // health indicator. Leave the alert affordance empty until the next poll.
+    if (desktop) desktop.innerHTML = "";
+    if (mobile) {
+      mobile.className = "sidebar-status sidebar-alert-status mobile-alert-status hidden";
+      mobile.innerHTML = "";
+    }
+    return false;
+  }
+}
+
 export function startSidebar() {
   updateSidebarStatus();
+  updateSidebarAlerts();
   updateRecentEpisodes();
   window.setInterval(updateSidebarStatus, 10000);
+  window.setInterval(updateSidebarAlerts, 10000);
 }

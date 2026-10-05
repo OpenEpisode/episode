@@ -5,12 +5,13 @@ import os
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from episode import __version__
 from episode.api.context import ApiContext
 from episode.api.errors import PUBLIC_ERROR_RESPONSES
 from episode.api.schemas import (
+    AlertResponse,
     DiagnosticsExportResponse,
     DiagnosticsResponse,
     EpisodeLifecycleSettingsResponse,
@@ -34,6 +35,39 @@ _RETENTION_NOTICE = (
     "this policy. Requirements vary by jurisdiction and use case. Exported or externally "
     "stored copies are not managed by Episode."
 )
+
+_ALERT_VALIDATION_KEYS = (
+    "valid",
+    "error",
+    "fragment_count",
+    "referenced_fragment_count",
+    "unreferenced_fragment_count",
+    "empty_fragment_count",
+    "preserved_temporary_component_count",
+    "temporary_components_preserved",
+    "playlist_temporary_preserved",
+)
+
+
+def _safe_alert_playlist_validation(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, object] = {}
+    for key in _ALERT_VALIDATION_KEYS:
+        item = value.get(key)
+        if key == "error":
+            if isinstance(item, str):
+                result[key] = item[:120]
+        elif key == "valid" or key.endswith("_preserved"):
+            if isinstance(item, bool):
+                result[key] = item
+        elif isinstance(item, int) and not isinstance(item, bool) and item >= 0:
+            result[key] = item
+    return result
+
+
+def _safe_exit_code(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _storage_summary(data_dir: str) -> dict[str, int | None]:
@@ -150,6 +184,70 @@ def system_router(context: ApiContext) -> APIRouter:
     @router.get("/api/v1/status", response_model=SystemStatusResponse)
     async def system_status():
         return current_status()
+
+    @router.get("/api/v1/alerts", response_model=list[AlertResponse])
+    async def alerts(
+        limit: int = Query(
+            default=50,
+            ge=1,
+            le=50,
+            description="Maximum number of active recording alerts to return.",
+        ),
+        offset: int = Query(
+            default=0,
+            ge=0,
+            description="Number of alerts to skip in newest-first order.",
+        ),
+    ):
+        evidence_items = await context.repository.list_finalization_alerts(
+            limit=limit,
+            offset=offset,
+        )
+        alerts = []
+        for evidence in evidence_items:
+            reason = evidence.metadata.get("reason")
+            validation = evidence.metadata.get("playlist_validation")
+            validation = _safe_alert_playlist_validation(validation)
+            fragment_count = evidence.metadata.get("fragment_count")
+            if (
+                isinstance(fragment_count, int)
+                and not isinstance(fragment_count, bool)
+                and fragment_count >= 0
+            ):
+                validation["fragment_count"] = fragment_count
+            if reason == "invalid_hls_playlist":
+                code = "invalid_hls_playlist"
+                title = "Recording playlist failed validation"
+                error = validation.get("error")
+                message = (
+                    "The recording was preserved as incomplete because its HLS playlist "
+                    f"could not be validated{f' ({error})' if error else ''}."
+                )
+            else:
+                code = "incomplete_hls_finalization"
+                title = "Recording finalization was incomplete"
+                message = (
+                    "The recording was preserved as incomplete because finalization left "
+                    "temporary or otherwise incomplete recording components."
+                )
+            alerts.append(
+                {
+                    "id": evidence.id,
+                    "severity": "warning",
+                    "code": code,
+                    "title": title,
+                    "message": message,
+                    "created_at": evidence.timestamp,
+                    "device_id": evidence.device_id,
+                    "episode_id": evidence.episode_id,
+                    "evidence_id": evidence.id,
+                    "playlist_validation": {
+                        key: validation[key] for key in _ALERT_VALIDATION_KEYS if key in validation
+                    },
+                    "ffmpeg_exit_code": _safe_exit_code(evidence.metadata.get("ffmpeg_exit_code")),
+                }
+            )
+        return alerts
 
     @router.get(
         "/api/v1/settings/retention",

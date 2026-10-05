@@ -198,6 +198,34 @@ class RecordingIssueResponse(ApiModel):
     reason: str | None = None
 
 
+class AlertPlaylistDiagnosticsResponse(ApiModel):
+    valid: bool | None = None
+    error: str | None = None
+    fragment_count: int = 0
+    referenced_fragment_count: int = 0
+    unreferenced_fragment_count: int = 0
+    empty_fragment_count: int = 0
+    preserved_temporary_component_count: int = 0
+    temporary_components_preserved: bool = False
+    playlist_temporary_preserved: bool = False
+
+
+class AlertResponse(ApiModel):
+    id: str
+    severity: Literal["warning"]
+    code: Literal["invalid_hls_playlist", "incomplete_hls_finalization"]
+    title: str
+    message: str
+    created_at: datetime
+    device_id: str
+    episode_id: str | None = None
+    evidence_id: str
+    playlist_validation: AlertPlaylistDiagnosticsResponse = Field(
+        default_factory=AlertPlaylistDiagnosticsResponse
+    )
+    ffmpeg_exit_code: int | None = None
+
+
 class RetentionSettingsUpdate(ApiModel):
     enabled: bool
     retention_days: int = Field(ge=1, le=3650)

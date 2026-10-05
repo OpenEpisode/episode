@@ -940,6 +940,34 @@ class Repository:
         )
         return [self._row_to_evidence(r) for r in rows]
 
+    async def list_finalization_alerts(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Evidence]:
+        """Return unexpired recording Evidence that needs finalization attention.
+
+        These alerts are deliberately derived from Evidence instead of stored in
+        another table.  The query keeps the bounded alert projection focused on
+        the two recording-finalization outcomes that operators can act on.
+        """
+        rows = await self._conn.execute_fetchall(
+            f"""{_EVIDENCE_SELECT}
+                WHERE e.evidence_type = 'incomplete_recording'
+                  AND x.evidence_id IS NULL
+                  AND json_extract(e.metadata, '$.reason') IN (?, ?)
+                ORDER BY e.timestamp DESC, e.id DESC
+                LIMIT ? OFFSET ?""",
+            (
+                "invalid_hls_playlist",
+                "incomplete_hls_finalization",
+                limit,
+                offset,
+            ),
+        )
+        return [self._row_to_evidence(row) for row in rows]
+
     async def episode_covers(self, episode_ids: list[str]) -> dict[str, str]:
         if not episode_ids:
             return {}

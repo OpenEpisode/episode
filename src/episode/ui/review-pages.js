@@ -51,7 +51,7 @@ import {
   groupEvidenceBundlesByDay,
   groupEvidenceByEpisode,
 } from "./review-lists.js?v=3";
-import { updateRecentEpisodes } from "./sidebar.js?v=4";
+import { updateRecentEpisodes } from "./sidebar.js?v=5";
 import {
   eventParticipationBadge,
   eventParticipationNotice,

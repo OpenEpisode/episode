@@ -10,7 +10,12 @@ const source = await readFile(
 );
 
 const emptyUrl = moduleUrl("export function episodeStateBadge() { return ''; }");
-const apiUrl = moduleUrl("export async function api() { return {}; }");
+const apiUrl = moduleUrl(`
+  export async function api(path) {
+    if (path.startsWith("/alerts")) return globalThis.sidebarAlertResponse;
+    return {};
+  }
+`);
 const domUrl = moduleUrl("export function $(selector) { return globalThis.sidebarElements[selector]; }");
 const formatUrl = moduleUrl(`
   export function plural(value, label) { return value + " " + label + (value === 1 ? "" : "s"); }
@@ -18,7 +23,16 @@ const formatUrl = moduleUrl(`
 `);
 
 globalThis.window = { setInterval() {} };
-globalThis.sidebarElements = {};
+globalThis.sidebarElements = {
+  "#sidebar-alerts": { innerHTML: "" },
+  "#mobile-alert-status": {
+    className: "sidebar-status sidebar-alert-status mobile-alert-status hidden",
+    innerHTML: "",
+    title: "",
+    setAttribute(name, value) { this[name] = value; },
+  },
+};
+globalThis.sidebarAlertResponse = [];
 
 const module = await import(moduleUrl(
   source
@@ -42,4 +56,25 @@ test("healthy sidebar health remains an actionable System summary", () => {
   assert.match(html, /All systems operational/);
   assert.match(html, /2 recs/);
   assert.doesNotMatch(html, /#system\/integrations/);
+});
+
+test("sidebar alerts provide a distinct review link", () => {
+  const html = module.sidebarAlertsView([{ id: "alert-1" }, { id: "alert-2" }]);
+  assert.match(html, /href="#system\/alerts"/);
+  assert.match(html, /Recording alerts need attention/);
+  assert.doesNotMatch(html, />2</);
+});
+
+test("sidebar alert polling updates desktop and mobile affordances", async () => {
+  globalThis.sidebarAlertResponse = [{ id: "alert-1" }];
+  await module.updateSidebarAlerts();
+  assert.match(globalThis.sidebarElements["#sidebar-alerts"].innerHTML, /#system\/alerts/);
+  assert.doesNotMatch(globalThis.sidebarElements["#mobile-alert-status"].className, /hidden/);
+  assert.match(globalThis.sidebarElements["#mobile-alert-status"].innerHTML, />Alerts</);
+  assert.equal(globalThis.sidebarElements["#mobile-alert-status"]["aria-label"], "Recording alerts need attention. Review alerts.");
+
+  globalThis.sidebarAlertResponse = null;
+  await module.updateSidebarAlerts();
+  assert.equal(globalThis.sidebarElements["#sidebar-alerts"].innerHTML, "");
+  assert.match(globalThis.sidebarElements["#mobile-alert-status"].className, /hidden/);
 });

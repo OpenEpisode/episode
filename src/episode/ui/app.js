@@ -1,9 +1,10 @@
 import { $, $$ } from "./dom.js";
+import { alerts } from "./alerts.js?v=1";
 import { closeCarousel } from "./evidence-gallery.js?v=9";
-import { captureProfiles, refreshCaptureProfileNotice } from "./capture-profiles.js?v=4";
-import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=25";
+import { captureProfiles, refreshCaptureProfileNotice } from "./capture-profiles.js?v=5";
+import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=26";
 import { onboardingNeeded, welcome } from "./onboarding.js?v=10";
-import { notifications } from "./notifications.js?v=3";
+import { notifications } from "./notifications.js?v=4";
 import {
   activity,
   closeReviewOverlays,
@@ -12,8 +13,8 @@ import {
   evidence,
   evidenceDetail,
   event,
-} from "./review-pages.js?v=29";
-import { startSidebar } from "./sidebar.js?v=4";
+} from "./review-pages.js?v=40";
+import { startSidebar } from "./sidebar.js?v=5";
 import { startRetentionPolicy } from "./retention-policy.js?v=1";
 import { toggleCollapse } from "./view.js?v=1";
 
@@ -86,6 +87,8 @@ function navigate() {
       ? captureProfiles()
       : args[0] === "notifications"
       ? notifications()
+      : args[0] === "alerts"
+      ? alerts(page)
       : systemStatus(args[0]),
     welcome,
   };

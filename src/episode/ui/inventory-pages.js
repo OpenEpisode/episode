@@ -584,6 +584,7 @@ function systemNavigation(active) {
     ["overview", "Overview"],
     ["recordings", "Recordings"],
     ["integrations", "Integrations"],
+    ["alerts", "Alerts"],
     ["notifications", "Notifications"],
     ["capture-profiles", "Capture profiles"],
     ["storage", "Storage"],
