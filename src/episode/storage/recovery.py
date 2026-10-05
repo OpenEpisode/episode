@@ -13,6 +13,7 @@ from episode.storage.files import async_move_to_episode, sha256_file
 from episode.storage.provenance import ProvenanceStore
 
 logger = logging.getLogger(__name__)
+_HLS_COMPONENT_MANIFEST = "manifest.json"
 
 
 async def reconcile_episode_counts(
@@ -138,11 +139,29 @@ async def _recover_hls_entrypoint(
         return None
     recordings_dir = Path(data_dir) / "episodes" / episode_id / "recordings"
     bundle_root = recordings_dir / evidence_id
+    current = Path(recorded_path)
+    if current.name == _HLS_COMPONENT_MANIFEST:
+        target = bundle_root / _HLS_COMPONENT_MANIFEST
+        if (
+            not current.is_file()
+            or not bundle_root.is_dir()
+            or not _checksum_matches(
+                current,
+                checksum,
+            )
+        ):
+            return None
+        if current.resolve() == target.resolve():
+            return str(target)
+        if target.exists():
+            return str(target) if _checksum_matches(target, checksum) else None
+        await asyncio.to_thread(os.replace, current, target)
+        return str(target)
+
     expected = bundle_root / "index.m3u8"
     if expected.is_file() and _checksum_matches(expected, checksum):
         return str(expected)
 
-    current = Path(recorded_path)
     if (
         not current.is_file()
         or not bundle_root.is_dir()

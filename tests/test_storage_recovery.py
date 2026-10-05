@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 
@@ -17,6 +18,7 @@ from episode.domain.models import (
 )
 from episode.storage import repository as repository_module
 from episode.storage.files import describe_artifact
+from episode.storage.recovery import _recover_hls_entrypoint
 from episode.storage.repository import Repository
 
 
@@ -43,6 +45,27 @@ async def _repository_with_episode(tmp_path) -> tuple[EpisodeConfig, Repository,
     )
     await repository.create_episode(episode)
     return config, repository, episode
+
+
+@pytest.mark.asyncio
+async def test_hls_path_recovery_does_not_rename_component_manifest_to_playlist(tmp_path):
+    bundle_root = tmp_path / "episodes" / "episode" / "recordings" / "evidence"
+    bundle_root.mkdir(parents=True)
+    component_manifest = bundle_root / "manifest.json"
+    component_manifest.write_text('{"state":"incomplete"}\n', encoding="utf-8")
+    checksum = hashlib.sha256(component_manifest.read_bytes()).hexdigest()
+
+    recovered = await _recover_hls_entrypoint(
+        str(tmp_path),
+        "episode",
+        "evidence",
+        str(component_manifest),
+        checksum,
+    )
+
+    assert recovered == str(component_manifest)
+    assert component_manifest.exists()
+    assert not (bundle_root / "index.m3u8").exists()
 
 
 @pytest.mark.asyncio
