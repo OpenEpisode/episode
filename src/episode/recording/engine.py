@@ -109,6 +109,7 @@ class _EpisodeRecording:
     capture_lease_deadline: float | None = None
     finalize_reason: str | None = None
     proc: asyncio.subprocess.Process | None = None
+    stop_signaled_proc: asyncio.subprocess.Process | None = field(default=None, repr=False)
     task: asyncio.Task | None = None
     stop_reason: str | None = None
     continued: bool = False
@@ -786,11 +787,16 @@ class RecordingEngine:
 
     @staticmethod
     def _signal_child_process(rec: _EpisodeRecording) -> None:
-        if rec.proc and rec.proc.returncode is None:
-            try:
-                rec.proc.terminate()
-            except ProcessLookupError:
-                pass
+        process = rec.proc
+        if process is None or process.returncode is not None or rec.stop_signaled_proc is process:
+            return
+        # Set the identity before the syscall: lease expiry and normal finalization can
+        # both request teardown while the same child is still waiting to exit.
+        rec.stop_signaled_proc = process
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
 
     @staticmethod
     def _graceful_signal_process(rec: _EpisodeRecording) -> None:
