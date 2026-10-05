@@ -76,6 +76,7 @@ def test_public_api_has_no_duplicate_routes_and_keeps_expected_surface():
     assert set(app.openapi()["paths"]) == {
         "/health",
         "/api/v1/status",
+        "/api/v1/alerts",
         "/api/v1/diagnostics",
         "/api/v1/diagnostics/export",
         "/api/v1/settings/retention",
