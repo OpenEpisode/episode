@@ -1,12 +1,12 @@
-import { API } from "./api.js?v=3";
-import { eventSourceBadges } from "./components.js?v=6";
+import { API } from "./api.js";
+import { eventSourceBadges } from "./components.js";
 import { $, $$, escHtml } from "./dom.js";
-import { fmtDuration, fmtTime, titleCase, trunc } from "./format.js?v=3";
+import { fmtDuration, fmtTime, titleCase, trunc } from "./format.js";
 import {
   buildEpisodeTimeline,
   detectionForMoment,
   eventTitle,
-} from "./timeline.js?v=6";
+} from "./timeline.js";
 import {
   attachMediaSource,
   evidenceMediaUrl,

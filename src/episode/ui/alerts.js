@@ -1,8 +1,8 @@
-import { api } from "./api.js?v=3";
-import { pageHeader } from "./components.js?v=4";
+import { api } from "./api.js";
+import { pageHeader } from "./components.js";
 import { escHtml } from "./dom.js";
-import { fmtShort, plural, titleCase, trunc } from "./format.js?v=4";
-import { showContent, showError, showLoading } from "./view.js?v=1";
+import { fmtShort, plural, titleCase, trunc } from "./format.js";
+import { showContent, showError, showLoading } from "./view.js";
 
 export const ALERT_PAGE_SIZE = 50;
 

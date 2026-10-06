@@ -137,16 +137,16 @@ globalThis.systemResponses = {
 
 const module = await import(moduleUrl(
   source
-    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
-    .replace('"./components.js?v=4"', JSON.stringify(componentsUrl))
-    .replace('"./dialogs.js?v=1"', JSON.stringify(dialogsUrl))
+    .replace('"./api.js"', JSON.stringify(apiUrl))
+    .replace('"./components.js"', JSON.stringify(componentsUrl))
+    .replace('"./dialogs.js"', JSON.stringify(dialogsUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./event-filter.js?v=3"', JSON.stringify(eventFilterUrl))
-    .replace('"./format.js?v=4"', JSON.stringify(formatUrl))
-    .replace('"./timeline.js?v=6"', JSON.stringify(timelineUrl))
-    .replace('"./inventory.js?v=10"', JSON.stringify(inventoryUrl))
-    .replace('"./retention-policy.js?v=1"', JSON.stringify(retentionPolicyUrl))
-    .replace('"./view.js?v=1"', JSON.stringify(viewUrl)),
+    .replace('"./event-filter.js"', JSON.stringify(eventFilterUrl))
+    .replace('"./format.js"', JSON.stringify(formatUrl))
+    .replace('"./timeline.js"', JSON.stringify(timelineUrl))
+    .replace('"./inventory.js"', JSON.stringify(inventoryUrl))
+    .replace('"./retention-policy.js"', JSON.stringify(retentionPolicyUrl))
+    .replace('"./view.js"', JSON.stringify(viewUrl)),
 ));
 
 test("System separates overview, recording, and storage concerns", async () => {

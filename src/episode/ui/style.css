@@ -1,7 +1,8 @@
-@import url("foundation.css?v=4");
-@import url("shell-gallery.css?v=3");
-@import url("inventory.css?v=16");
-@import url("episode-workspace.css?v=10");
-@import url("episode-history.css?v=2");
-@import url("review-archive.css?v=9");
-@import url("review-detail.css?v=3");
+@import url("foundation.css");
+@import url("shell-gallery.css");
+@import url("inventory.css");
+@import url("episode-workspace.css");
+@import url("episode-history.css");
+@import url("review-archive.css");
+@import url("review-detail.css");
+@import url("timeline-view.css");

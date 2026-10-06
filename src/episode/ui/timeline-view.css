@@ -1,0 +1,781 @@
+/* NVR Playback & Detections — Timeline view.
+   4-region layout: camera list · vertical timeline · player · detections.
+   Uses the real project theme variables from foundation.css (--accent, --surface, ...). */
+
+/* Trim main chrome so the timeline can fill the viewport. */
+main:has(> #view-content > .timeline-view) {
+  padding-top: 1.25rem;
+  padding-bottom: 1.25rem;
+}
+
+.timeline-view {
+  /* The top row sizes to its content: the video takes its full natural
+     height at full column width (any aspect ratio), and the cameras/timeline
+     bodies scroll internally. The detections pane may extend below the
+     viewport. --det-rows (updated by JS) drives the detection body height. */
+  --det-rows: 4;
+  --det-row-height: 128px;
+  display: grid;
+  grid-template-columns: 180px 150px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  grid-template-areas:
+    "cams timeline player"
+    "det  det      det";
+  gap: 8px;
+  height: auto;
+  min-height: calc(100vh - 4.5rem);
+}
+
+/* Region shells. Each is a bordered surface matching episode-workspace panels. */
+.tl-region {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.tl-region > .tl-region-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.tl-region > .tl-region-head svg {
+  width: 15px;
+  height: 15px;
+  color: var(--text-muted);
+}
+
+.tl-region-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.tl-cams { grid-area: cams; }
+.tl-timeline { grid-area: timeline; }
+.tl-player { grid-area: player; }
+.tl-detections { grid-area: det; }
+
+/* The top row is content-sized (driven by the video's natural height); the
+   tall 24h canvas and long camera list scroll internally within it. */
+.tl-timeline .tl-region-body,
+.tl-cams .tl-region-body {
+  max-height: 890px;
+}
+
+/* Zoom bar pinned to the bottom of the vertical timeline region. */
+.tl-zoom-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface);
+}
+
+.tl-zoom-label {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  min-width: 40px;
+  text-align: center;
+}
+
+/* Vertical 24h timeline axis. */
+.tl-axis {
+  position: relative;
+  width: 100%;
+  outline: none;
+}
+
+.tl-axis:focus-visible .tl-axis-canvas {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tl-axis-canvas {
+  display: block;
+  width: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* Camera list panel. */
+.tl-cam-list { display: flex; flex-direction: column; gap: 6px; }
+
+.tl-cam-actions {
+  display: flex;
+  gap: 4px;
+  padding: 0 2px 2px;
+}
+
+.tl-cam-action {
+  flex: 1 1 auto;
+  padding: 4px 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  cursor: pointer;
+}
+
+.tl-cam-action:hover { color: var(--text-primary); background: var(--surface-hover); }
+.tl-cam-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.tl-cam {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.tl-cam-toggle {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  left: 10px;
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.tl-cam:hover { background: var(--surface-hover); }
+
+.tl-cam.selected {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.tl-cam:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tl-cam-thumb {
+  position: relative;
+  flex: 0 0 auto;
+  width: 56px;
+  height: 48px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2, color-mix(in srgb, var(--text-muted) 12%, var(--surface)));
+}
+
+.tl-cam-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.tl-cam-thumb .status-indicator {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid var(--surface);
+}
+
+.tl-cam.offline .tl-cam-img { filter: grayscale(1); opacity: 0.55; }
+
+.tl-cam-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.tl-cam-name {
+  font-size: 0.8rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-cam-model {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Empty-state content shown while a region has no data. */
+.tl-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.tl-placeholder svg { width: 26px; height: 26px; opacity: 0.5; }
+
+/* Player region. */
+.tl-player .tl-region-body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tl-player-wrap {
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  min-height: 0;
+}
+
+.tl-player-stage {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  /* Plain black box sized by the video: full column width, and the height
+     the video actually needs at its own aspect ratio (16:9, 4:3, ...).
+     No cap, no side letterbox bars, no clipping. min-height only matters
+     before any video has an intrinsic size (empty/loading state). */
+  min-height: 240px;
+  background: #000;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+/* 4/3 placeholder ratio before any video has an intrinsic size. */
+.tl-player-stage:has(.tl-player-empty:not(.hidden)) {
+  aspect-ratio: 4 / 3;
+  background: var(--surface);
+}
+
+.tl-player-stage:has(.tl-player-empty:not(.hidden)) .tl-player-video {
+  display: none;
+}
+
+.tl-player-video {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* Keyboard focus lands on the video after a timeline/detection click. */
+.tl-player-video:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tl-player-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
+.tl-player-empty svg { width: 28px; height: 28px; opacity: 0.4; }
+
+/* Episode link sits in the controls row (right side). */
+.tl-episode-link {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  font-weight: 500;
+  text-decoration: none;
+  pointer-events: auto;
+  white-space: nowrap;
+}
+
+.tl-episode-link:hover { color: var(--accent); }
+.tl-episode-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.tl-media-status {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* Controls row: custom controls + episode link on the same line. */
+.tl-controls-row {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+/* 48 px control bar. */
+.tl-controls-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 48px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface);
+}
+
+.tl-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding: 0 8px;
+}
+
+.tl-ctl-btn {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.tl-ctl-btn:hover { color: var(--text-primary); background: var(--surface-hover); }
+.tl-ctl-btn.active { color: var(--accent); }
+.tl-ctl-btn svg { width: 18px; height: 18px; }
+
+.tl-ctl-time {
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  min-width: 48px;
+  text-align: center;
+  flex: 0 0 auto;
+}
+
+.tl-ctl-speed {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.tl-ctl-speed:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Detection grid region. */
+.tl-detections .tl-region-body {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.tl-det-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tl-det-filters {
+  display: flex;
+  gap: 4px;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+}
+
+.tl-det-filter {
+  padding: 4px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tl-det-filter:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.tl-det-filter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tl-det-filter.active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border-subtle));
+}
+
+/* Date group: arrows + text input + calendar button, right-aligned in head. */
+.tl-date-group {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  position: relative;
+}
+
+.tl-date-nav,
+.tl-date-cal {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  padding: 0;
+}
+
+.tl-date-nav:hover,
+.tl-date-cal:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.tl-date-nav:focus-visible,
+.tl-date-cal:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.tl-detections > .tl-region-head { flex-wrap: wrap; }
+
+.tl-date-nav svg,
+.tl-date-cal svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tl-date-picker-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Date selector in the timeline region head (replaces the "Timeline" label;
+   commits on Enter, wired in timeline-view.js). */
+.tl-tl-date {
+  flex: 0 0 auto;
+  width: 7em;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  cursor: text;
+}
+
+.tl-tl-date:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Rows selector in the detections region title bar. */
+.tl-det-rows-wrap {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.tl-det-rows-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tl-det-rows {
+  height: 26px;
+  padding: 0 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.tl-det-rows:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.tl-det-body {
+  flex: 0 0 auto;
+  /* Height = visible rows * row pitch + the body's 10px top/bottom padding.
+     No viewport cap: the pane is allowed to extend below the fold. */
+  height: calc(var(--det-rows, 4) * var(--det-row-height, 128px) + 20px);
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+/* "ALL" rows: the body grows to its content height. */
+.tl-det-all .tl-det-body { height: auto; }
+
+.tl-det-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 8px;
+}
+
+.tl-det-tile {
+  position: relative;
+  aspect-ratio: 1;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--surface);
+  padding: 0;
+  display: block;
+  width: 100%;
+}
+
+.tl-det-tile:hover {
+  border-color: var(--accent);
+}
+
+/* Click feedback: the detection the playhead landed on. */
+.tl-det-tile.tl-det-selected {
+  border-color: var(--accent);
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--accent), 0 2px 8px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.tl-det-tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tl-det-thumb {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: var(--surface-2, color-mix(in srgb, var(--text-muted) 8%, var(--surface)));
+}
+
+.tl-det-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.tl-det-thumb svg {
+  width: 24px;
+  height: 24px;
+  color: var(--text-muted);
+  opacity: 0.4;
+}
+
+.tl-det-time {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, #000 60%, transparent);
+  color: #fff;
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.tl-det-type {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  color: var(--text-primary);
+  font-size: 0.65rem;
+  font-weight: 500;
+  pointer-events: none;
+}
+
+.tl-det-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  min-height: 120px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.tl-det-empty svg {
+  width: 26px;
+  height: 26px;
+  opacity: 0.5;
+}
+
+.tl-det-sentinel {
+  height: 1px;
+  grid-column: 1 / -1;
+}
+
+@keyframes tl-det-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tl-det-new {
+  animation: tl-det-fade-in 0.3s ease-out;
+}
+
+.tl-det-new-pill {
+  position: sticky;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  z-index: 1;
+  border: none;
+}
+
+/* Virtual scroll spacer for > 200 detections. */
+.tl-det-virtual-spacer {
+  width: 100%;
+}
+
+/* Responsive: collapse camera list to icon-only below 1280px. */
+@media (max-width: 1279px) {
+  .timeline-view {
+    grid-template-columns: 96px 130px minmax(0, 1fr);
+  }
+  .tl-cam { flex-direction: column; gap: 4px; padding: 6px; }
+  .tl-cam-thumb { width: 100%; height: 56px; }
+  .tl-cam-meta { display: none; }
+}
+
+@media (max-width: 1023px) {
+  main:has(> #view-content > .timeline-view) {
+    padding: 0 1rem 1.5rem;
+  }
+  .timeline-view {
+    grid-template-columns: 84px 110px minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    height: auto;
+    min-height: calc(100vh - 5.5rem);
+  }
+}
+
+@media (max-width: 767px) {
+  main:has(> #view-content > .timeline-view) {
+    padding: 0 0.5rem 1rem;
+  }
+  .timeline-view {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto minmax(200px, auto) minmax(200px, auto) auto;
+    grid-template-areas:
+      "cams"
+      "timeline"
+      "player"
+      "det";
+    height: auto;
+    min-height: 0;
+    gap: 6px;
+  }
+  .tl-timeline .tl-region-body {
+    max-height: 300px;
+  }
+  .tl-player .tl-region-body {
+    max-height: 250px;
+  }
+  .tl-detections .tl-region-body {
+    max-height: 200px;
+  }
+}
+
+/* Dark theme: timeline icons render at full white. */
+[data-theme="dark"] .tl-region > .tl-region-head svg,
+[data-theme="dark"] .tl-date-nav,
+[data-theme="dark"] .tl-date-cal,
+[data-theme="dark"] .tl-placeholder,
+[data-theme="dark"] .tl-player-empty {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .tl-ctl-btn:not(.active) {
+  color: var(--text-primary);
+}

@@ -1,6 +1,6 @@
-import { API } from "./api.js?v=3";
+import { API } from "./api.js";
 import { escHtml } from "./dom.js";
-import { fmt, titleCase } from "./format.js?v=3";
+import { fmt, titleCase } from "./format.js";
 
 const PREVIEW_LIMIT = 1024 * 1024;
 

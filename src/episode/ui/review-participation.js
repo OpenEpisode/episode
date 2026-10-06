@@ -1,5 +1,5 @@
 import { escHtml } from "./dom.js";
-import { fmtShort, titleCase } from "./format.js?v=3";
+import { fmtShort, titleCase } from "./format.js";
 
 function participationProfileName(participation) {
   return participation?.profile_name || participation?.profile_id || "active profile";

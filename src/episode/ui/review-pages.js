@@ -1,4 +1,4 @@
-import { API, api, apiAll, apiBlob } from "./api.js?v=3";
+import { API, api, apiAll, apiBlob } from "./api.js";
 import {
   detailMetric,
   episodeStateBadge,
@@ -9,20 +9,20 @@ import {
   pageHeader,
   sectionHeading,
   stateBadge,
-} from "./components.js?v=6";
-import { activity } from "./activity-page.js?v=1";
-import { closeDeliveryViewer, openDeliveryViewer } from "./delivery-viewer.js?v=1";
+} from "./components.js";
+import { activity } from "./activity-page.js";
+import { closeDeliveryViewer, openDeliveryViewer } from "./delivery-viewer.js";
 import { escHtml } from "./dom.js";
 import {
   activateCurrentViews,
   deactivateCurrentViews,
   renderCurrentViews,
-} from "./current-views.js?v=12";
+} from "./current-views.js";
 import {
   episodeDisplayEnd,
   episodeRailTime,
   groupEpisodesByTime,
-} from "./episode-list.js?v=3";
+} from "./episode-list.js";
 import {
   attachMediaSource,
   evidenceMediaUrl,
@@ -36,8 +36,8 @@ import {
   renderEpisodeEvidence,
   renderEvidenceGrid,
   showCarousel,
-} from "./evidence-gallery.js?v=9";
-import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js?v=15";
+} from "./evidence-gallery.js";
+import { activateEpisodeWorkspace, renderEpisodeWorkspace } from "./episode-view.js";
 import {
   fmt,
   fmtBytes,
@@ -46,21 +46,21 @@ import {
   plural,
   titleCase,
   trunc,
-} from "./format.js?v=3";
+} from "./format.js";
 import {
   groupEvidenceBundlesByDay,
   groupEvidenceByEpisode,
-} from "./review-lists.js?v=3";
-import { updateRecentEpisodes } from "./sidebar.js?v=5";
+} from "./review-lists.js";
+import { updateRecentEpisodes } from "./sidebar.js";
 import {
   eventParticipationBadge,
   eventParticipationNotice,
   participationAttachmentNote,
-} from "./review-participation.js?v=1";
-import { filterValues, filteredHash, option } from "./review-filters.js?v=1";
-import { calendarTimeBounds, TIME_RANGE_OPTIONS } from "./time-range.js?v=1";
-import { showContent, showError, showLoading } from "./view.js?v=1";
-import { eventTitle } from "./timeline.js?v=6";
+} from "./review-participation.js";
+import { filterValues, filteredHash, option } from "./review-filters.js";
+import { calendarTimeBounds, TIME_RANGE_OPTIONS } from "./time-range.js";
+import { showContent, showError, showLoading } from "./view.js";
+import { eventTitle } from "./timeline.js";
 
 const PAGE_SIZES = Object.freeze({ episodes: 48, evidence: 60 });
 const COMMON_EVIDENCE_TYPES = ["recording", "snapshot", "payload", "event_attachment"];
@@ -176,7 +176,7 @@ export async function episodes(page = 1) {
                     <div class="episode-history-body">
                       <div class="episode-card-heading">
                         <div class="episode-card-area">
-                          <svg><use href="icons.svg?v=2#areas"></use></svg>
+                          <svg><use href="icons.svg#areas"></use></svg>
                           <div>
                             <span class="episode-area-kicker">Area</span>
                             <h3>${escHtml(trunc(areaNames.get(item.primary_area_id) || item.primary_area_id || "Unknown", 36))}</h3>
@@ -188,12 +188,12 @@ export async function episodes(page = 1) {
                         </div>
                       </div>
                       <div class="episode-history-summary">
-                        <span title="Activity"><svg><use href="icons.svg?v=2#activity"></use></svg>${plural(item.event_count, "event")}</span>
-                        <span title="Evidence"><svg><use href="icons.svg?v=2#evidence"></use></svg>${plural(item.evidence_count, "evidence")}</span>
-                        <span title="Duration"><svg><use href="icons.svg?v=2#clock"></use></svg>${fmtDuration(item.start_time, episodeDisplayEnd(item)) || "Ongoing"}</span>
+                        <span title="Activity"><svg><use href="icons.svg#activity"></use></svg>${plural(item.event_count, "event")}</span>
+                        <span title="Evidence"><svg><use href="icons.svg#evidence"></use></svg>${plural(item.evidence_count, "evidence")}</span>
+                        <span title="Duration"><svg><use href="icons.svg#clock"></use></svg>${fmtDuration(item.start_time, episodeDisplayEnd(item)) || "Ongoing"}</span>
                       </div>
                       <div class="episode-history-range">
-                        <svg><use href="icons.svg?v=2#clock"></use></svg>
+                        <svg><use href="icons.svg#clock"></use></svg>
                         <span>${fmtShort(item.start_time)}
                           ${episodeDisplayEnd(item) ? `→ ${fmtShort(episodeDisplayEnd(item))}` : ""}</span>
                       </div>
@@ -245,14 +245,14 @@ export async function episode(id) {
     const supportingContent = `
       <section class="section episode-secondary review-disclosure">
         <button type="button" class="collapse-header collapsed" onclick="toggleCollapse(this)">
-          <span><svg><use href="icons.svg?v=2#evidence"></use></svg><span><strong>All evidence</strong><small>Browse every artifact preserved in this Episode</small></span></span>
+          <span><svg><use href="icons.svg#evidence"></use></svg><span><strong>All evidence</strong><small>Browse every artifact preserved in this Episode</small></span></span>
           <span class="review-disclosure-count">${evidence.length}</span>
         </button>
         <div class="collapse-body collapsed">${renderEpisodeEvidence(evidence)}</div>
       </section>
       <section class="section episode-secondary review-disclosure">
         <button type="button" class="collapse-header collapsed" onclick="toggleCollapse(this)">
-          <span><svg><use href="icons.svg?v=2#activity"></use></svg><span><strong>Raw activity</strong><small>Inspect the normalized Events and their sources</small></span></span>
+          <span><svg><use href="icons.svg#activity"></use></svg><span><strong>Raw activity</strong><small>Inspect the normalized Events and their sources</small></span></span>
           <span class="review-disclosure-count">${events.length}</span>
         </button>
         <div class="collapse-body collapsed">
@@ -283,7 +283,7 @@ export async function episode(id) {
       <div class="breadcrumbs"><a href="#episodes">Episodes</a> <span class="sep">›</span> <span>${escHtml(trunc(areaName, 40))}</span></div>
       <header class="review-detail-hero episode-detail-header">
         <div class="review-detail-identity">
-          <div class="review-detail-icon"><svg><use href="icons.svg?v=2#episodes"></use></svg></div>
+          <div class="review-detail-icon"><svg><use href="icons.svg#episodes"></use></svg></div>
           <div>
             <div class="eyebrow">Episode</div>
             <h2>${escHtml(trunc(areaName, 48))}</h2>
@@ -418,7 +418,7 @@ export async function event(id) {
       <div class="breadcrumbs"><a href="#activity">Activity</a> <span class="sep">›</span> <span>Event</span></div>
       <header class="review-detail-hero event-detail-header">
         <div class="review-detail-identity">
-          <div class="review-detail-icon"><svg><use href="icons.svg?v=2#activity"></use></svg></div>
+          <div class="review-detail-icon"><svg><use href="icons.svg#activity"></use></svg></div>
           <div>
             <div class="eyebrow">Event</div>
             <h2>${escHtml(eventTitle(item))}</h2>
@@ -591,7 +591,7 @@ export async function evidenceDetail(id) {
 
     let media = "";
     if (expired) {
-      media = `<div class="evidence-detail-file"><svg><use href="icons.svg?v=2#clock"></use></svg><strong>Expired</strong><span>Visual Evidence expired under the retention policy.</span></div>`;
+      media = `<div class="evidence-detail-file"><svg><use href="icons.svg#clock"></use></svg><strong>Expired</strong><span>Visual Evidence expired under the retention policy.</span></div>`;
     } else if (isVideo) {
       media = `<video controls preload="metadata"></video><div class="media-playback-status hidden" role="status"></div>`;
     } else if (interruption) {
@@ -612,7 +612,7 @@ export async function evidenceDetail(id) {
     } else if (isText && textContent) {
       media = `<pre class="payload-xml evidence-text-preview">${escHtml(textContent)}</pre>`;
     } else {
-      media = `<div class="evidence-detail-file"><svg><use href="icons.svg?v=2#file"></use></svg><strong>${escHtml(titleCase(item.evidence_type))}</strong><span>${escHtml(item.mime_type || "Unknown format")}</span></div>`;
+      media = `<div class="evidence-detail-file"><svg><use href="icons.svg#file"></use></svg><strong>${escHtml(titleCase(item.evidence_type))}</strong><span>${escHtml(item.mime_type || "Unknown format")}</span></div>`;
     }
 
     let associationHtml = "";
@@ -651,7 +651,7 @@ export async function evidenceDetail(id) {
       <div class="breadcrumbs">${breadcrumbs.map((crumb, index) => `${index ? ' <span class="sep">›</span> ' : ""}${crumb}`).join("")}</div>
       <header class="review-detail-hero evidence-detail-header">
         <div class="review-detail-identity">
-          <div class="review-detail-icon"><svg><use href="icons.svg?v=2#evidence"></use></svg></div>
+          <div class="review-detail-icon"><svg><use href="icons.svg#evidence"></use></svg></div>
           <div>
             <div class="eyebrow">Evidence</div>
             <h2>${escHtml(interruption ? "Interrupted recording" : titleCase(item.evidence_type))}</h2>

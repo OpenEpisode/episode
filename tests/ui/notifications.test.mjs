@@ -57,11 +57,11 @@ globalThis.document = {
 
 const module = await import(moduleUrl(
   source
-    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
-    .replace('"./components.js?v=4"', JSON.stringify(componentsUrl))
-    .replace('"./dialogs.js?v=1"', JSON.stringify(dialogsUrl))
+    .replace('"./api.js"', JSON.stringify(apiUrl))
+    .replace('"./components.js"', JSON.stringify(componentsUrl))
+    .replace('"./dialogs.js"', JSON.stringify(dialogsUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./view.js?v=1"', JSON.stringify(viewUrl)),
+    .replace('"./view.js"', JSON.stringify(viewUrl)),
 ));
 
 test("notification request preserves, replaces, or clears the write-only URL", () => {

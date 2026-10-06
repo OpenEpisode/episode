@@ -36,10 +36,10 @@ globalThis.sidebarAlertResponse = [];
 
 const module = await import(moduleUrl(
   source
-    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
-    .replace('"./components.js?v=6"', JSON.stringify(emptyUrl))
+    .replace('"./api.js"', JSON.stringify(apiUrl))
+    .replace('"./components.js"', JSON.stringify(emptyUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./format.js?v=3"', JSON.stringify(formatUrl)),
+    .replace('"./format.js"', JSON.stringify(formatUrl)),
 ));
 
 test("degraded sidebar health links directly to integration diagnostics", () => {

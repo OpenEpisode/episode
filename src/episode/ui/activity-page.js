@@ -1,17 +1,17 @@
-import { api } from "./api.js?v=3";
+import { api } from "./api.js";
 import {
   eventSourceBadges,
   pageControls,
   pageHeader,
-} from "./components.js?v=6";
+} from "./components.js";
 import { escHtml } from "./dom.js";
-import { eventParticipationBadge } from "./review-participation.js?v=1";
-import { filterValues, filteredHash, option } from "./review-filters.js?v=1";
-import { fmtTime, plural, titleCase } from "./format.js?v=3";
-import { groupActivityByDay } from "./review-lists.js?v=3";
-import { calendarTimeBounds, TIME_RANGE_OPTIONS } from "./time-range.js?v=1";
-import { showContent, showError, showLoading } from "./view.js?v=1";
-import { eventTitle } from "./timeline.js?v=6";
+import { eventParticipationBadge } from "./review-participation.js";
+import { filterValues, filteredHash, option } from "./review-filters.js";
+import { fmtTime, plural, titleCase } from "./format.js";
+import { groupActivityByDay } from "./review-lists.js";
+import { calendarTimeBounds, TIME_RANGE_OPTIONS } from "./time-range.js";
+import { showContent, showError, showLoading } from "./view.js";
+import { eventTitle } from "./timeline.js";
 
 const PAGE_SIZE = 100;
 const COMMON_EVENT_TYPES = [

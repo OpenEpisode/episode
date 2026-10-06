@@ -74,16 +74,16 @@ const timelineUrl = moduleUrl(`
 
 const module = await import(moduleUrl(
   source
-    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
-    .replace('"./components.js?v=6"', JSON.stringify(componentsUrl))
+    .replace('"./api.js"', JSON.stringify(apiUrl))
+    .replace('"./components.js"', JSON.stringify(componentsUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./review-participation.js?v=1"', JSON.stringify(participationUrl))
-    .replace('"./review-filters.js?v=1"', JSON.stringify(filtersUrl))
-    .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
-    .replace('"./review-lists.js?v=3"', JSON.stringify(reviewListsUrl))
-    .replace('"./time-range.js?v=1"', JSON.stringify(timeRangeUrl))
-    .replace('"./view.js?v=1"', JSON.stringify(viewUrl))
-    .replace('"./timeline.js?v=6"', JSON.stringify(timelineUrl)),
+    .replace('"./review-participation.js"', JSON.stringify(participationUrl))
+    .replace('"./review-filters.js"', JSON.stringify(filtersUrl))
+    .replace('"./format.js"', JSON.stringify(formatUrl))
+    .replace('"./review-lists.js"', JSON.stringify(reviewListsUrl))
+    .replace('"./time-range.js"', JSON.stringify(timeRangeUrl))
+    .replace('"./view.js"', JSON.stringify(viewUrl))
+    .replace('"./timeline.js"', JSON.stringify(timelineUrl)),
 ));
 
 function reset(responses = {}) {

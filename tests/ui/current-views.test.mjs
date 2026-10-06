@@ -13,7 +13,7 @@ const source = await readFile(
 );
 const currentViewsUrl = moduleUrl(
   source
-    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
+    .replace('"./api.js"', JSON.stringify(apiUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
     .replace('"./media-player.js?v=8"', JSON.stringify(mediaUrl)),
 );

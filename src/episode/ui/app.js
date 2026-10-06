@@ -1,10 +1,10 @@
 import { $, $$ } from "./dom.js";
-import { alerts } from "./alerts.js?v=1";
-import { closeCarousel } from "./evidence-gallery.js?v=9";
-import { captureProfiles, refreshCaptureProfileNotice } from "./capture-profiles.js?v=5";
-import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js?v=26";
-import { onboardingNeeded, welcome } from "./onboarding.js?v=10";
-import { notifications } from "./notifications.js?v=4";
+import { alerts } from "./alerts.js";
+import { closeCarousel } from "./evidence-gallery.js";
+import { captureProfiles, refreshCaptureProfileNotice } from "./capture-profiles.js";
+import { areas, devices, deviceView, systemStatus } from "./inventory-pages.js";
+import { onboardingNeeded, welcome } from "./onboarding.js";
+import { notifications } from "./notifications.js";
 import {
   activity,
   closeReviewOverlays,
@@ -13,10 +13,11 @@ import {
   evidence,
   evidenceDetail,
   event,
-} from "./review-pages.js?v=40";
-import { startSidebar } from "./sidebar.js?v=5";
-import { startRetentionPolicy } from "./retention-policy.js?v=1";
-import { toggleCollapse } from "./view.js?v=1";
+} from "./review-pages.js";
+import { startSidebar } from "./sidebar.js";
+import { cleanupTimeline, renderTimeline } from "./timeline-view.js";
+import { startRetentionPolicy } from "./retention-policy.js";
+import { toggleCollapse } from "./view.js";
 
 const THEME_STORAGE_KEY = "episode-theme";
 
@@ -49,9 +50,10 @@ function pageNumber(parameters) {
 
 function navigate() {
   closeReviewOverlays();
+  cleanupTimeline();
   if (!$("#evidence-carousel")?.classList.contains("hidden")) closeCarousel();
 
-  const rawHash = location.hash.slice(1) || "episodes";
+  const rawHash = location.hash.slice(1) || "timeline";
   const [hash, query = ""] = rawHash.split("?", 2);
   const parameters = new URLSearchParams(query);
   const segments = hash.split("/");
@@ -83,6 +85,7 @@ function navigate() {
     devices,
     device: () => deviceView(args[0]),
     areas,
+    timeline: () => renderTimeline(),
     system: () => args[0] === "capture-profiles"
       ? captureProfiles()
       : args[0] === "notifications"
@@ -92,7 +95,7 @@ function navigate() {
       : systemStatus(args[0]),
     welcome,
   };
-  (routes[view] || routes.episodes)();
+  (routes[view] || routes.timeline)();
 }
 
 window.toggleTheme = toggleTheme;
@@ -118,7 +121,7 @@ async function startApplication() {
       refreshCaptureProfileNotice(),
     ]);
     const initialView = location.hash.slice(1).split(/[/?]/, 1)[0];
-    if (needsOnboarding && (!initialView || initialView === "episodes")) {
+    if (needsOnboarding && (!initialView || initialView === "timeline")) {
       location.hash = "welcome";
       return;
     }
