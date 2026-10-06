@@ -14,7 +14,7 @@ const formatUrl = moduleUrl(await uiFile("format.js"));
 const componentsUrl = moduleUrl(
   (await uiFile("components.js"))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./format.js?v=3"', JSON.stringify(formatUrl)),
+    .replace('"./format.js"', JSON.stringify(formatUrl)),
 );
 const {
   detailMetric,

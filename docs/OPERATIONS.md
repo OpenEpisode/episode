@@ -215,6 +215,26 @@ trail the newest captured frame by a small buffering interval. When the Episode
 closes, the preview is marked complete and the resulting Evidence remains
 available through the normal Evidence player for review.
 
+### Timeline
+
+**Timeline** is the default view and the first item in the left navigation.
+For a selected date and camera it shows a camera list, a vertical 24-hour
+axis, the player, and a detection grid of snapshot Evidence.
+
+The date field uses `DD/MM/YYYY` and is stepped with the adjacent arrows or
+the calendar picker. The axis zoom covers 24 h, 12 h, 6 h, 1 h, and 15 min.
+Clicking the axis seeks the player; dragging scrubs within the current
+recording without re-attaching the stream. The player provides play/pause,
+±10 s, speed (0.5×–16×), mute, fullscreen, and an export button that opens
+the clip's HLS playlist in a new tab. An Episode link appears while the
+current segment belongs to an Episode. The detection grid shows 4, 8, 16, or
+32 rows, or ALL rows with virtualized scrolling; selecting a detection seeks
+the player and highlights the tile.
+
+Keyboard: `Space` plays/pauses, `←`/`→` seek ±5 s, `Shift+←`/`Shift+→` pause
+and step one frame, `↑`/`↓` jump to the previous/next snapshot, `+`/`-`
+zoom, `[`/`]` step speed, `m` mutes, and `f` toggles fullscreen.
+
 Current camera views are operational previews. They become Evidence only
 through an explicit preservation action.
 

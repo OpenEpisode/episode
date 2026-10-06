@@ -1,5 +1,5 @@
-import { apiRequest } from "./api.js?v=3";
-import { closeDialog, confirmDialog, notify, openDialog } from "./dialogs.js?v=1";
+import { apiRequest } from "./api.js";
+import { closeDialog, confirmDialog, notify, openDialog } from "./dialogs.js";
 import { escHtml } from "./dom.js";
 import {
   deviceEventFilterSelect,
@@ -7,7 +7,7 @@ import {
   normalizeEventFilter,
   resolveEventFilter,
   wireEventFilterSummary,
-} from "./event-filter.js?v=3";
+} from "./event-filter.js";
 import { titleCase } from "./format.js";
 
 const selected = value => value ? " selected" : "";

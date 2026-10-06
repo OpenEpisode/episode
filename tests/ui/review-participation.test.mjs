@@ -81,21 +81,21 @@ const formatUrl = moduleUrl(`
 globalThis.window = {};
 const module = await import(moduleUrl(
   source
-    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
-    .replace('"./components.js?v=6"', JSON.stringify(componentsUrl))
-    .replace('"./delivery-viewer.js?v=1"', JSON.stringify(emptyUrl))
+    .replace('"./api.js"', JSON.stringify(apiUrl))
+    .replace('"./components.js"', JSON.stringify(componentsUrl))
+    .replace('"./delivery-viewer.js"', JSON.stringify(emptyUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./current-views.js?v=12"', JSON.stringify(emptyUrl))
-    .replace('"./episode-list.js?v=3"', JSON.stringify(emptyUrl))
-    .replace('"./media-player.js?v=7"', JSON.stringify(emptyUrl))
-    .replace('"./evidence-gallery.js?v=9"', JSON.stringify(emptyUrl))
-    .replace('"./episode-view.js?v=15"', JSON.stringify(emptyUrl))
-    .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
-    .replace('"./review-lists.js?v=3"', JSON.stringify(emptyUrl))
-    .replace('"./sidebar.js?v=4"', JSON.stringify(emptyUrl))
-    .replace('"./time-range.js?v=1"', JSON.stringify(timeRangeUrl))
-    .replace('"./view.js?v=1"', JSON.stringify(emptyUrl))
-    .replace('"./timeline.js?v=6"', JSON.stringify(emptyUrl)),
+    .replace('"./current-views.js"', JSON.stringify(emptyUrl))
+    .replace('"./episode-list.js"', JSON.stringify(emptyUrl))
+    .replace('"./media-player.js"', JSON.stringify(emptyUrl))
+    .replace('"./evidence-gallery.js"', JSON.stringify(emptyUrl))
+    .replace('"./episode-view.js"', JSON.stringify(emptyUrl))
+    .replace('"./format.js"', JSON.stringify(formatUrl))
+    .replace('"./review-lists.js"', JSON.stringify(emptyUrl))
+    .replace('"./sidebar.js"', JSON.stringify(emptyUrl))
+    .replace('"./time-range.js"', JSON.stringify(timeRangeUrl))
+    .replace('"./view.js"', JSON.stringify(emptyUrl))
+    .replace('"./timeline.js"', JSON.stringify(emptyUrl)),
 ));
 
 test("capture participation stays absent for allowed and legacy Events", () => {

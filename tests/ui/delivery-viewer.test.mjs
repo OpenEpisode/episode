@@ -14,9 +14,9 @@ const domUrl = moduleUrl(await uiFile("dom.js"));
 const formatUrl = moduleUrl(await uiFile("format.js"));
 const viewerUrl = moduleUrl(
   (await uiFile("delivery-viewer.js"))
-    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
+    .replace('"./api.js"', JSON.stringify(apiUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./format.js?v=3"', JSON.stringify(formatUrl)),
+    .replace('"./format.js"', JSON.stringify(formatUrl)),
 );
 const { formatTextPayload, prettyXml } = await import(viewerUrl);
 

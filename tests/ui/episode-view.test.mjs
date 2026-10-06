@@ -19,7 +19,7 @@ const apiUrl = moduleUrl(
 const componentsUrl = moduleUrl(
   (await uiFile("components.js"))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./format.js?v=3"', JSON.stringify(formatUrl)),
+    .replace('"./format.js"', JSON.stringify(formatUrl)),
 );
 const mediaUrl = moduleUrl(
   "export function attachMediaSource() { return () => {}; } "
@@ -28,12 +28,12 @@ const mediaUrl = moduleUrl(
 );
 const episodeViewUrl = moduleUrl(
   (await uiFile("episode-view.js"))
-    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
-    .replace('"./components.js?v=6"', JSON.stringify(componentsUrl))
+    .replace('"./api.js"', JSON.stringify(apiUrl))
+    .replace('"./components.js"', JSON.stringify(componentsUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
-    .replace('"./timeline.js?v=6"', JSON.stringify(timelineUrl))
-    .replace('"./media-player.js?v=7"', JSON.stringify(mediaUrl)),
+    .replace('"./format.js"', JSON.stringify(formatUrl))
+    .replace('"./timeline.js"', JSON.stringify(timelineUrl))
+    .replace('"./media-player.js"', JSON.stringify(mediaUrl)),
 );
 const { renderEpisodeWorkspace } = await import(episodeViewUrl);
 

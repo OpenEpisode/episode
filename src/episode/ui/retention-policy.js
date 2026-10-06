@@ -1,4 +1,4 @@
-import { api } from "./api.js?v=3";
+import { api } from "./api.js";
 
 function renderPolicyNotice(policy) {
   const host = document.getElementById("policy-banner");

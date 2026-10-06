@@ -25,10 +25,10 @@ const mediaUrl = moduleUrl(
 );
 const galleryUrl = moduleUrl(
   (await uiFile("evidence-gallery.js"))
-    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
+    .replace('"./api.js"', JSON.stringify(apiUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./format.js?v=3"', JSON.stringify(formatUrl))
-    .replace('"./media-player.js?v=7"', JSON.stringify(mediaUrl)),
+    .replace('"./format.js"', JSON.stringify(formatUrl))
+    .replace('"./media-player.js"', JSON.stringify(mediaUrl)),
 );
 const { renderEvidenceGrid } = await import(galleryUrl);
 

@@ -1,6 +1,6 @@
-import { api } from "./api.js?v=3";
+import { api } from "./api.js";
 import { escHtml } from "./dom.js";
-import { attachMediaSource } from "./media-player.js?v=7";
+import { attachMediaSource } from "./media-player.js";
 
 let refreshTimer = null;
 let refreshGeneration = 0;

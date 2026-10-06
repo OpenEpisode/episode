@@ -1,23 +1,23 @@
-import { API, api, apiRequest } from "./api.js?v=3";
+import { API, api, apiRequest } from "./api.js";
 import {
   detailMetric,
   eventSourceBadges,
   pageHeader,
   sectionHeading,
-} from "./components.js?v=4";
-import { closeDialog, confirmDialog, notify } from "./dialogs.js?v=1";
-import { describeDeviceEventFilter, deviceEventFilterBadge } from "./event-filter.js?v=3";
+} from "./components.js";
+import { closeDialog, confirmDialog, notify } from "./dialogs.js";
+import { describeDeviceEventFilter, deviceEventFilterBadge } from "./event-filter.js";
 import { escHtml } from "./dom.js";
-import { fmtBytes, fmtShort, plural, titleCase } from "./format.js?v=4";
-import { eventTitle } from "./timeline.js?v=6";
+import { fmtBytes, fmtShort, plural, titleCase } from "./format.js";
+import { eventTitle } from "./timeline.js";
 import {
   confirmAreaDelete,
   confirmDeviceDelete,
   openAreaEditor,
   openDeviceEditor,
-} from "./inventory.js?v=10";
-import { refreshRetentionPolicy } from "./retention-policy.js?v=1";
-import { showContent, showError, showLoading } from "./view.js?v=1";
+} from "./inventory.js";
+import { refreshRetentionPolicy } from "./retention-policy.js";
+import { showContent, showError, showLoading } from "./view.js";
 
 let inventoryAreas = [];
 let inventoryDevices = [];
@@ -448,7 +448,7 @@ export async function deviceView(id) {
       <div class="breadcrumbs"><a href="#devices">Devices</a> <span class="sep">›</span> <span>${escHtml(deviceName)}</span></div>
       <header class="review-detail-hero device-review-hero">
         <div class="review-detail-identity">
-          <div class="review-detail-icon"><svg><use href="icons.svg?v=2#devices"></use></svg></div>
+          <div class="review-detail-icon"><svg><use href="icons.svg#devices"></use></svg></div>
           <div>
             <div class="eyebrow">Device</div>
             <h2>${escHtml(deviceName)}</h2>
@@ -531,7 +531,7 @@ export async function deviceView(id) {
       </section>
       ${topics.length ? `<section class="section episode-secondary review-disclosure">
         <button type="button" class="collapse-header collapsed" onclick="toggleCollapse(this)">
-          <span><svg><use href="icons.svg?v=2#file"></use></svg><span><strong>Technical details</strong><small>Identifiers and ONVIF event topics</small></span></span>
+          <span><svg><use href="icons.svg#file"></use></svg><span><strong>Technical details</strong><small>Identifiers and ONVIF event topics</small></span></span>
           <span class="review-disclosure-count">${topics.length}</span>
         </button>
         <div class="collapse-body collapsed"><dl class="review-fact-grid technical-facts">

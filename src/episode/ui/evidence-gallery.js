@@ -1,12 +1,12 @@
-import { API, api } from "./api.js?v=3";
+import { API, api } from "./api.js";
 import { $, escHtml } from "./dom.js";
-import { fmtBytes, fmtShort, fmtTime, plural, titleCase, trunc } from "./format.js?v=3";
+import { fmtBytes, fmtShort, fmtTime, plural, titleCase, trunc } from "./format.js";
 import {
   attachMediaSource,
   evidenceMediaUrl,
   isHlsEvidence,
   updateMediaStatus,
-} from "./media-player.js?v=7";
+} from "./media-player.js";
 
 let carouselItems = [];
 let carouselIndex = 0;
@@ -43,7 +43,7 @@ function renderEvidenceThumbnail(evidence, isImage) {
 }
 
 function renderExpiredEvidence(evidence) {
-  return `<div class="evidence-item-file"><svg><use href="icons.svg?v=2#clock"></use></svg><strong>Expired</strong><span>Visual Evidence expired under the retention policy.</span></div>`;
+  return `<div class="evidence-item-file"><svg><use href="icons.svg#clock"></use></svg><strong>Expired</strong><span>Visual Evidence expired under the retention policy.</span></div>`;
 }
 
 function renderEvidenceItem(evidence, index) {
@@ -55,15 +55,15 @@ function renderEvidenceItem(evidence, index) {
   return `<article class="evidence-item" tabindex="0" role="button" onclick="showCarousel(null, ${index})" onkeydown="if(event.key==='Enter'||event.key===' ')showCarousel(null, ${index})">
     <div class="evidence-item-preview">
       ${isExpired ? renderExpiredEvidence(evidence) : isVideo || isImage ? renderEvidenceThumbnail(evidence, isImage) : ""}
-      ${!isExpired && !isVideo && !isImage ? `<div class="evidence-item-file"><svg><use href="icons.svg?v=2#file"></use></svg><strong>${escHtml(titleCase(evidence.evidence_type))}</strong><span>${escHtml(evidence.mime_type || "Unknown format")}</span></div>` : ""}
+      ${!isExpired && !isVideo && !isImage ? `<div class="evidence-item-file"><svg><use href="icons.svg#file"></use></svg><strong>${escHtml(titleCase(evidence.evidence_type))}</strong><span>${escHtml(evidence.mime_type || "Unknown format")}</span></div>` : ""}
       <span class="evidence-type-chip">${escHtml(titleCase(evidence.evidence_type))}</span>
     </div>
     <div class="evidence-item-body">
       <div class="evidence-item-heading">${originBadge(evidence)}<strong>${escHtml(titleCase(label))}</strong></div>
       <div class="evidence-item-context">
-        <span title="Device"><svg><use href="icons.svg?v=2#devices"></use></svg>${escHtml(evidence.device_id || "Unknown Device")}</span>
-        <span title="Captured"><svg><use href="icons.svg?v=2#clock"></use></svg>${fmtShort(evidence.timestamp)}</span>
-        ${duration ? `<span title="Duration"><svg><use href="icons.svg?v=2#clock"></use></svg>${shortDuration(duration)}</span>` : ""}
+        <span title="Device"><svg><use href="icons.svg#devices"></use></svg>${escHtml(evidence.device_id || "Unknown Device")}</span>
+        <span title="Captured"><svg><use href="icons.svg#clock"></use></svg>${fmtShort(evidence.timestamp)}</span>
+        ${duration ? `<span title="Duration"><svg><use href="icons.svg#clock"></use></svg>${shortDuration(duration)}</span>` : ""}
       </div>
       <a href="#evidence/${evidence.id}" onclick="event.stopPropagation()">Evidence details</a>
     </div>
@@ -98,14 +98,14 @@ function renderEvidenceBundle(group, items, deviceNames, areaNames) {
       <div class="evidence-bundle-heading">
         ${group.attention
           ? `<span class="eyebrow">Needs attention</span>
-            <h3><svg><use href="icons.svg?v=2#evidence"></use></svg>Unassigned evidence</h3>
+            <h3><svg><use href="icons.svg#evidence"></use></svg>Unassigned evidence</h3>
             <p>These captured artifacts are not associated with an Episode.</p>`
-          : `<h3><svg><use href="icons.svg?v=2#episodes"></use></svg><span><small>Episode</small><code>${escHtml(group.episodeId)}</code></span></h3>`}
+          : `<h3><svg><use href="icons.svg#episodes"></use></svg><span><small>Episode</small><code>${escHtml(group.episodeId)}</code></span></h3>`}
         <div class="evidence-bundle-meta">
-          ${group.episodeId ? `<span title="Area"><svg><use href="icons.svg?v=2#areas"></use></svg><span><small>Area</small><strong>${escHtml(areaName)}</strong></span></span>` : ""}
-          <span title="Bundle contents"><svg><use href="icons.svg?v=2#evidence"></use></svg><span><small>Contents</small><strong>${plural(group.evidence.length, "artifact")}</strong></span></span>
-          <span title="Contributing Devices"><svg><use href="icons.svg?v=2#devices"></use></svg><span><small>Devices</small><strong>${plural(group.deviceCount, "Device")}</strong></span></span>
-          <span title="Capture period"><svg><use href="icons.svg?v=2#clock"></use></svg><span><small>Captured</small><strong>${captureRange(group)}</strong></span></span>
+          ${group.episodeId ? `<span title="Area"><svg><use href="icons.svg#areas"></use></svg><span><small>Area</small><strong>${escHtml(areaName)}</strong></span></span>` : ""}
+          <span title="Bundle contents"><svg><use href="icons.svg#evidence"></use></svg><span><small>Contents</small><strong>${plural(group.evidence.length, "artifact")}</strong></span></span>
+          <span title="Contributing Devices"><svg><use href="icons.svg#devices"></use></svg><span><small>Devices</small><strong>${plural(group.deviceCount, "Device")}</strong></span></span>
+          <span title="Capture period"><svg><use href="icons.svg#clock"></use></svg><span><small>Captured</small><strong>${captureRange(group)}</strong></span></span>
         </div>
       </div>
       ${group.episodeId
@@ -126,10 +126,10 @@ function renderEvidenceBundle(group, items, deviceNames, areaNames) {
             <span class="evidence-type-chip">${escHtml(titleCase(evidence.evidence_type))}</span>
           </div>
           <div class="evidence-archive-body">
-            <div class="evidence-device"><svg><use href="icons.svg?v=2#devices"></use></svg><strong>${escHtml(deviceName || "Unknown Device")}</strong></div>
+            <div class="evidence-device"><svg><use href="icons.svg#devices"></use></svg><strong>${escHtml(deviceName || "Unknown Device")}</strong></div>
             <div class="evidence-item-meta">
-              <span title="Captured"><svg><use href="icons.svg?v=2#clock"></use></svg>${fmtShort(evidence.timestamp)}</span>
-              <span title="${isHlsEvidence(evidence) ? "Recording bundle size" : "File size"}"><svg><use href="icons.svg?v=2#file"></use></svg>${fmtBytes(evidence.byte_size)}</span>
+              <span title="Captured"><svg><use href="icons.svg#clock"></use></svg>${fmtShort(evidence.timestamp)}</span>
+              <span title="${isHlsEvidence(evidence) ? "Recording bundle size" : "File size"}"><svg><use href="icons.svg#file"></use></svg>${fmtBytes(evidence.byte_size)}</span>
             </div>
             <div class="evidence-archive-links">
               <a href="#evidence/${evidence.id}" onclick="event.stopPropagation()">Details</a>
@@ -204,7 +204,7 @@ function renderCarousel() {
   const isExpired = evidence.availability === "expired";
   let mediaHtml = "";
   if (isExpired) {
-    mediaHtml = `<div class="carousel-file-preview"><svg><use href="icons.svg?v=2#clock"></use></svg><strong>Expired</strong><span>Visual Evidence expired under the retention policy.</span></div>`;
+    mediaHtml = `<div class="carousel-file-preview"><svg><use href="icons.svg#clock"></use></svg><strong>Expired</strong><span>Visual Evidence expired under the retention policy.</span></div>`;
   } else if (isVideo) {
     mediaHtml = `<video controls autoplay></video><div class="media-playback-status hidden" role="status"></div>`;
   } else if (isImage) {
@@ -217,7 +217,7 @@ function renderCarousel() {
       </svg>
     </div>`;
   } else {
-    mediaHtml = `<div class="carousel-file-preview"><svg><use href="icons.svg?v=2#file"></use></svg><strong>${escHtml(titleCase(evidence.evidence_type))}</strong><span>${escHtml(evidence.mime_type || "Unknown format")}</span></div>`;
+    mediaHtml = `<div class="carousel-file-preview"><svg><use href="icons.svg#file"></use></svg><strong>${escHtml(titleCase(evidence.evidence_type))}</strong><span>${escHtml(evidence.mime_type || "Unknown format")}</span></div>`;
   }
 
   $("#carousel-slide").innerHTML = mediaHtml;
@@ -240,8 +240,8 @@ function renderCarousel() {
   const info = $("#carousel-info");
   info.innerHTML = `<div class="carousel-evidence-context">
       ${originBadge(evidence)}
-      <span><svg><use href="icons.svg?v=2#devices"></use></svg>${escHtml(trunc(evidence.device_id || "Unknown Device", 28))}</span>
-      <span><svg><use href="icons.svg?v=2#clock"></use></svg>${fmtShort(evidence.timestamp)}</span>
+      <span><svg><use href="icons.svg#devices"></use></svg>${escHtml(trunc(evidence.device_id || "Unknown Device", 28))}</span>
+      <span><svg><use href="icons.svg#clock"></use></svg>${fmtShort(evidence.timestamp)}</span>
     </div>
     <nav class="carousel-links">
       <a href="#evidence/${evidence.id}" onclick="closeCarousel()">Evidence details</a>
