@@ -91,7 +91,7 @@ export function mountPlayer(container, { onStateChange = () => {}, onExport = ()
   container.innerHTML = `
     <div class="tl-player-wrap">
       <div class="tl-player-stage">
-        <video class="tl-player-video" playsinline controls></video>
+        <video class="tl-player-video" playsinline controls tabindex="0"></video>
         <div class="tl-media-status hidden"></div>
       <div class="tl-player-empty"><svg><use href="icons.svg#clock"></use></svg><span role="status" aria-live="polite">Click a recording on the timeline</span></div>
       </div>
@@ -258,6 +258,8 @@ export function mountPlayer(container, { onStateChange = () => {}, onExport = ()
     video.focus({ preventScroll: true });
   }
 
+  const onVideoClick = () => focus();
+
   /** Absolute playhead time in ms (segment start + video offset), or null. */
   function now() {
     if (!currentSegment) return null;
@@ -358,6 +360,7 @@ export function mountPlayer(container, { onStateChange = () => {}, onExport = ()
   };
   video.addEventListener("play", onPlay);
   video.addEventListener("pause", onPause);
+  video.addEventListener("click", onVideoClick);
   document.addEventListener("fullscreenchange", onFsChange);
 
   // Time display update
@@ -393,6 +396,7 @@ export function mountPlayer(container, { onStateChange = () => {}, onExport = ()
     metadataCleanup = null;
     video.removeEventListener("play", onPlay);
     video.removeEventListener("pause", onPause);
+    video.removeEventListener("click", onVideoClick);
     document.removeEventListener("fullscreenchange", onFsChange);
     clearInterval(timeTimer);
     if (mediaCleanup) {

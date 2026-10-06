@@ -36,6 +36,7 @@ const {
   findSegment,
   formatTime,
   renderControls,
+  mountPlayer,
   SPEEDS,
 } = await import(playerUrl);
 
@@ -118,4 +119,65 @@ test("renderControls toggles play/pause icon and active states", () => {
   assert.ok(playing.includes('class="tl-ctl-btn active" data-ctl="mute"'));
   assert.ok(playing.includes('value="4" selected'));
   assert.ok(!playing.includes('data-ctl="live"'));
+});
+
+test("clicking the video gives it keyboard focus for playback shortcuts", () => {
+  const listeners = new Map();
+  const focusCalls = [];
+  const video = {
+    paused: true,
+    currentTime: 0,
+    playbackRate: 1,
+    muted: false,
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    focus: options => focusCalls.push(options),
+    removeAttribute() {},
+    load() {},
+  };
+  const classList = { add() {}, remove() {} };
+  const emptyMessage = { textContent: "" };
+  const empty = { classList, querySelector: () => emptyMessage };
+  const controls = { addEventListener() {}, querySelector: () => null, innerHTML: "" };
+  const episodeLink = { classList };
+  const stage = { offsetHeight: 0, style: { removeProperty() {} } };
+  const container = {
+    innerHTML: "",
+    querySelector(selector) {
+      return {
+        ".tl-player-video": video,
+        ".tl-media-status": {},
+        ".tl-controls-wrap": controls,
+        ".tl-player-empty": empty,
+        ".tl-episode-link": episodeLink,
+        ".tl-player-stage": stage,
+      }[selector] || null;
+    },
+  };
+  const oldGlobals = {
+    document: globalThis.document,
+    setInterval: globalThis.setInterval,
+    clearInterval: globalThis.clearInterval,
+  };
+  globalThis.document = {
+    fullscreenElement: null,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  globalThis.setInterval = () => 1;
+  globalThis.clearInterval = () => {};
+
+  try {
+    const player = mountPlayer(container);
+    assert.match(container.innerHTML, /<video[^>]*tabindex="0"/);
+    listeners.get("click")();
+    assert.deepEqual(focusCalls, [{ preventScroll: true }]);
+    player.cleanup();
+    assert.equal(listeners.has("click"), false);
+  } finally {
+    for (const [key, value] of Object.entries(oldGlobals)) {
+      if (value === undefined) delete globalThis[key];
+      else globalThis[key] = value;
+    }
+  }
 });

@@ -40,7 +40,7 @@ const tlUrl = moduleUrl(
     .replace('"./media-player.js?v=8"', JSON.stringify(mediaUrl)),
 );
 
-const { keyToAction } = await import(tlUrl);
+const { keyToAction, handleKeydown } = await import(tlUrl);
 
 // Helper: create a mock KeyboardEvent.
 function key(k, { target, shiftKey = false } = {}) {
@@ -54,6 +54,18 @@ function key(k, { target, shiftKey = false } = {}) {
 
 test("Space → play", () => {
   assert.equal(keyToAction(key(" ")), "play");
+});
+
+test("Space on the focused video is left to native media controls", () => {
+  const video = { closest: selector => selector === ".tl-player-video" ? video : null };
+  assert.equal(keyToAction(key(" ", { target: video })), null);
+
+  let defaultPrevented = false;
+  handleKeydown({
+    ...key(" ", { target: video }),
+    preventDefault: () => { defaultPrevented = true; },
+  });
+  assert.equal(defaultPrevented, false);
 });
 
 test("ArrowLeft → back-5", () => {

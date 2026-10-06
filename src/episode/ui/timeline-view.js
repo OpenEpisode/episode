@@ -9,9 +9,16 @@ import { showContent, showLoading, showError } from "./view.js";
 import { mountCameraList } from "./camera-list.js";
 import { mountTimelineAxis, normalizeTimeRange, ZOOM_LEVELS, ZOOM_LABELS } from "./timeline-axis.js";
 import { mountPlayer, SPEEDS } from "./player-controls.js";
-import { recordingBounds } from "./timeline.js";
-import { mountDetectionGrid, DETECTION_TYPE_LABELS } from "./detection-grid.js";
+import * as timelineModel from "./timeline.js";
+import * as detectionGridModule from "./detection-grid.js";
 import { isPlayableVideoEvidence } from "./media-player.js?v=8";
+
+const {
+  mountDetectionGrid,
+  DETECTION_TYPE_LABELS,
+  DEFAULT_DETECTION_LIMIT = 50,
+  DETECTION_LIMIT_OPTIONS = [25, 50, 100, 200, "ALL"],
+} = detectionGridModule;
 
 export { DETECTION_TYPE_LABELS };
 
@@ -64,7 +71,7 @@ function defaultState() {
     isFullscreen: false,
     activeFilters: new Set(Object.keys(DETECTION_TYPE_LABELS)),
     zoomLevel: 0, // 0=24h 1=12h 2=6h 3=1h 4=15min
-    detRows: 4, // visible rows in the detections grid (configurable)
+    detectionLimit: DEFAULT_DETECTION_LIMIT,
     timelineCollapsed: false,
     detectionPage: 0,
     newEventCount: 0,
@@ -72,6 +79,8 @@ function defaultState() {
     preferredSegmentId: null,
     initialPlaybackPending: true,
     selectedTimeRange: null,
+    rangeClearedPlayer: false,
+    episodeContextId: null,
   };
 }
 
@@ -86,8 +95,7 @@ export function keyToAction(event) {
   const target = event.target;
   if (target?.closest?.("input, select, textarea, [contenteditable]")) return null;
   if (target?.closest?.("button")) return null;
-  // The view-level handler handles Space for the focused player explicitly;
-  // don't run the generic shortcut as a second toggle.
+  // The browser's native video controls handle their own keyboard shortcuts.
   if (target?.closest?.(".tl-player-video")) return null;
   if (target?.closest?.(".tl-axis")) return null;
   const key = event.key;
@@ -112,6 +120,9 @@ let axis = null;
 let player = null;
 let detectionGrid = null;
 let loadToken = 0;
+let episodeContextToken = 0;
+const episodeCache = new Map();
+let areaNamesPromise = null;
 const cleanups = [];
 
 function registerCleanup(fn) {
@@ -130,6 +141,7 @@ function teardownAll() {
 
 export function cleanupTimeline() {
   loadToken += 1;
+  episodeContextToken += 1;
   teardownAll();
   axis = null;
   player = null;
@@ -144,6 +156,20 @@ async function loadCameras() {
 function ts(value) {
   const result = new Date(value).getTime();
   return Number.isFinite(result) ? result : 0;
+}
+
+function formatEpisodeTimestamp(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "-";
+  const pad = part => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function formatEpisodeLabel(value) {
+  return String(value || "")
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, letter => letter.toUpperCase());
 }
 
 function localDayStart(dateStr) {
@@ -207,6 +233,7 @@ async function buildDayModel(cameras, dateStr) {
   });
   const segments = [];
   const detections = [];
+  const episodeDetails = new Map();
   const segmentIds = new Set();
   const selectedIds = new Set(selectedCameras.map(camera => camera?.id).filter(Boolean));
   const selectedAreaIds = new Set(selectedCameras.map(camera => camera?.area_id).filter(Boolean));
@@ -218,13 +245,23 @@ async function buildDayModel(cameras, dateStr) {
     ]);
     const snapshotsByDevice = new Map();
     const eventsByDevice = new Map();
+    const details = {
+      eventTypes: new Set(),
+      recordingCount: 0,
+      snapshotCount: 0,
+      deviceIds: new Set(),
+    };
+    episodeDetails.set(episode.id, details);
     for (const item of evidence) {
+      if (item.device_id) details.deviceIds.add(item.device_id);
+      if (item.evidence_type === "snapshot") details.snapshotCount += 1;
+      else if (item.evidence_type === "recording") details.recordingCount += 1;
       if (!selectedIds.has(item.device_id)) continue;
       if (item.evidence_type === "snapshot") {
         if (!snapshotsByDevice.has(item.device_id)) snapshotsByDevice.set(item.device_id, []);
         snapshotsByDevice.get(item.device_id).push(item);
       } else if (isTimelineRecordingPlayable(item)) {
-        const bounds = recordingBounds(item);
+        const bounds = timelineModel.recordingBounds(item);
         const key = recordingKey(item, episode.id);
         if (segmentIds.has(key)) continue;
         segmentIds.add(key);
@@ -236,6 +273,8 @@ async function buildDayModel(cameras, dateStr) {
       }
     }
     for (const event of events) {
+      if (event.device_id) details.deviceIds.add(event.device_id);
+      if (event.event_type) details.eventTypes.add(event.event_type);
       if (!selectedIds.has(event.device_id)) continue;
       const time = ts(event.timestamp);
       if (time < dayStart || time > dayEnd || time > Date.now()) continue;
@@ -275,7 +314,7 @@ async function buildDayModel(cameras, dateStr) {
   const selectEnd = Math.max(dayStart, Math.min(dayEnd, now));
   detections.sort((a, b) => a.time - b.time || String(a.id).localeCompare(String(b.id)));
   segments.sort((a, b) => a.start - b.start || String(a.id).localeCompare(String(b.id)));
-  return { dayStart, dayEnd, now, selectEnd, playhead: selectEnd, segments, detections };
+  return { dayStart, dayEnd, now, selectEnd, playhead: selectEnd, segments, detections, episodeDetails };
 }
 
 function placeholder(icon, text) {
@@ -295,16 +334,76 @@ function zoomBar() {
     </div>`;
 }
 
-const DET_ROWS_OPTIONS = [4, 8, 16, 32, "ALL"];
-
-function detRowsSelect() {
+function detectionLimitSelect() {
   return `
-    <label class="tl-det-rows-wrap">
-      <span class="tl-det-rows-label">Rows</span>
-      <select class="tl-det-rows" data-tl-det-rows aria-label="Visible detection rows">
-        ${DET_ROWS_OPTIONS.map(n => `<option value="${n}"${n === 4 ? " selected" : ""}>${n}</option>`).join("")}
+    <label class="tl-det-limit-wrap">
+      <span class="tl-det-limit-label">Show</span>
+      <select class="tl-det-limit" data-tl-det-limit aria-label="Maximum detections to show">
+        ${DETECTION_LIMIT_OPTIONS.map(limit => `<option value="${limit}"${limit === DEFAULT_DETECTION_LIMIT ? " selected" : ""}>${limit === "ALL" ? "All" : limit}</option>`).join("")}
       </select>
+      <span class="tl-det-limit-label">detections</span>
     </label>`;
+}
+
+function episodeContextState(kind, message) {
+  const icon = kind === "error" ? "system" : kind === "loading" ? "clock" : "episodes";
+  return `<div class="tl-episode-context-state${kind === "error" ? " is-error" : ""}">
+    <svg><use href="icons.svg#${icon}"></use></svg><span>${escHtml(message)}</span>
+  </div>`;
+}
+
+/** Render the compact context card for the recording currently in the player. */
+export function renderEpisodeContext(episode, areaName = null, options = {}) {
+  const { recordingSelected = false } = options;
+  if (!episode) {
+    return episodeContextState(
+      "empty",
+      recordingSelected
+        ? "This recording isn't linked to an Episode"
+        : "Select a recording to see its Episode details",
+    );
+  }
+  const area = areaName || episode.primary_area_id || "Unknown area";
+  const state = formatEpisodeLabel(episode.state || "unknown");
+  const trigger = formatEpisodeLabel(episode.trigger_type || "activity");
+  const started = formatEpisodeTimestamp(episode.start_time);
+  const ended = episode.end_time
+    ? formatEpisodeTimestamp(episode.end_time)
+    : ["active", "quiescent"].includes(String(episode.state || "").toLowerCase())
+      ? "Ongoing"
+      : "—";
+  const summary = episode.summary || "No summary available";
+  const eventTypes = [...new Set(options.eventTypes || episode.eventTypes || [])].filter(Boolean);
+  const deviceNames = [...new Set(options.deviceNames || episode.deviceNames || [])].filter(Boolean);
+  const eventTypesText = eventTypes.length
+    ? eventTypes.map(formatEpisodeLabel).join(" · ")
+    : "No classified events";
+  const deviceNamesText = deviceNames.length
+    ? deviceNames.join(" · ")
+    : "No participating devices listed";
+  const recordingCountValue = options.recordingCount ?? episode.recordingCount;
+  const snapshotCountValue = options.snapshotCount ?? episode.snapshotCount;
+  const recordingCount = Number.isFinite(Number(recordingCountValue)) ? Number(recordingCountValue) : null;
+  const snapshotCount = Number.isFinite(Number(snapshotCountValue)) ? Number(snapshotCountValue) : null;
+  return `<div class="tl-episode-context-card">
+    <div class="tl-episode-context-title">
+      <span><svg><use href="icons.svg#episodes"></use></svg><span>Episode details</span></span>
+    </div>
+    <div class="tl-episode-context-id" title="${escHtml(episode.id)}">${escHtml(episode.id)}</div>
+    <div class="tl-episode-context-meta">
+      <span title="Area"><svg><use href="icons.svg#areas"></use></svg>${escHtml(area)}</span>
+      <span title="State"><svg><use href="icons.svg#activity"></use></svg>${escHtml(state)}</span>
+      <span title="Trigger"><svg><use href="icons.svg#activity"></use></svg>${escHtml(trigger)}</span>
+    </div>
+    <div class="tl-episode-context-time"><span>${escHtml(started)}</span><span>→ ${escHtml(ended)}</span></div>
+    <p class="tl-episode-context-summary">${escHtml(summary)}</p>
+    <div class="tl-episode-context-counts"><span>${episode.event_count ?? 0} events</span><span>${episode.evidence_count ?? 0} artifacts</span></div>
+    <div class="tl-episode-context-breakdown">
+      <span title="Event types"><svg><use href="icons.svg#activity"></use></svg><span>${escHtml(eventTypesText)}</span></span>
+      <span title="Evidence breakdown"><svg><use href="icons.svg#evidence"></use></svg><span>${recordingCount === null ? "Recording count unavailable" : `${recordingCount} recordings`} · ${snapshotCount === null ? "snapshot count unavailable" : `${snapshotCount} snapshots`}</span></span>
+    </div>
+    <div class="tl-episode-context-devices" title="Participating devices"><svg><use href="icons.svg#devices"></use></svg><span>${escHtml(deviceNamesText)}</span></div>
+  </div>`;
 }
 
 function renderLayout() {
@@ -336,12 +435,17 @@ function renderLayout() {
       </section>
       <section class="tl-region tl-player">
         <div class="tl-region-head"><svg><use href="icons.svg#clock"></use></svg>Player</div>
-        <div class="tl-region-body" data-tl-player>${placeholder("clock", "Nothing to play")}</div>
+        <div class="tl-region-body">
+          <div class="tl-player-media" data-tl-player>${placeholder("clock", "Nothing to play")}</div>
+          <section class="tl-episode-context" data-tl-episode-context aria-live="polite">
+            ${episodeContextState("empty", "Select a recording to see its Episode details")}
+          </section>
+        </div>
       </section>
       <section class="tl-region tl-detections">
         <div class="tl-region-head">
           <svg><use href="icons.svg#activity"></use></svg>Detections
-          ${detRowsSelect()}
+          ${detectionLimitSelect()}
         </div>
         <div class="tl-region-body" data-tl-detections>${placeholder("activity", "No detections")}</div>
       </section>
@@ -368,6 +472,7 @@ function setSelectedTimeRange(range) {
     axis?.setModel(state.dayModel);
   }
   detectionGrid?.setTimeRange(state.selectedTimeRange);
+  applySelectedRangePlayback(state.dayModel);
 }
 
 function onRangeChange(range) {
@@ -392,23 +497,84 @@ function wireRangeSelection() {
   });
 }
 
-function wireDetRows() {
-  const select = $("[data-tl-det-rows]");
-  const view = $("[data-tl-view]");
-  if (!select || !view) return;
-  const handler = () => {
-    if (select.value === "ALL") {
-      // Show every detection: the pane grows to its content height.
-      state.detRows = "ALL";
-      view.classList.add("tl-det-all");
-      view.style.removeProperty("--det-rows");
-      return;
+async function loadAreaNames() {
+  if (!areaNamesPromise) {
+    areaNamesPromise = api("/areas?include_disabled=true")
+      .then(areas => new Map(areas.map(area => [area.id, area.name || area.id])))
+      .catch(error => {
+        areaNamesPromise = null;
+        throw error;
+      });
+  }
+  return areaNamesPromise;
+}
+
+function episodeContextDetails(model, episodeId) {
+  const raw = model?.episodeDetails?.get(episodeId);
+  if (!raw) return null;
+  const knownNames = new Map(state.cameras.map(camera => [camera.id, camera.name || camera.id]));
+  return {
+    eventTypes: [...raw.eventTypes],
+    recordingCount: raw.recordingCount,
+    snapshotCount: raw.snapshotCount,
+    deviceNames: [...raw.deviceIds].map(deviceId => knownNames.get(deviceId)).filter(Boolean),
+  };
+}
+
+function setEpisodeContext(episodeId, { recordingSelected = false, details = null } = {}) {
+  const container = $("[data-tl-episode-context]");
+  if (!container) return;
+  const normalizedId = episodeId || null;
+  if (normalizedId && state.episodeContextId === normalizedId && container.dataset.episodeContextState !== "error") {
+    const cached = episodeCache.get(normalizedId);
+    if (cached && details) {
+      cached.details = details;
+      container.innerHTML = renderEpisodeContext(cached.episode, cached.areaName, details);
     }
-    const rows = Number(select.value) || 4;
-    state.detRows = rows;
-    view.classList.remove("tl-det-all");
-    // Set on the grid container so the detection body height can react.
-    view.style.setProperty("--det-rows", String(rows));
+    return;
+  }
+  state.episodeContextId = normalizedId;
+  const token = ++episodeContextToken;
+  if (!normalizedId) {
+    container.dataset.episodeContextState = "empty";
+    container.innerHTML = renderEpisodeContext(null, null, { recordingSelected });
+    return;
+  }
+  const cached = episodeCache.get(normalizedId);
+  if (cached) {
+    container.dataset.episodeContextState = "ready";
+    cached.details = details || cached.details || {};
+    container.innerHTML = renderEpisodeContext(cached.episode, cached.areaName, cached.details);
+    return;
+  }
+  container.dataset.episodeContextState = "loading";
+  container.innerHTML = episodeContextState("loading", "Loading Episode details…");
+  Promise.all([
+    api(`/episodes/${encodeURIComponent(normalizedId)}`),
+    loadAreaNames().catch(() => new Map()),
+  ]).then(([episode, areas]) => {
+    if (token !== episodeContextToken || state.episodeContextId !== normalizedId) return;
+    const areaName = areas.get(episode.primary_area_id) || episode.primary_area_id || "Unknown area";
+    if (episodeCache.size >= 50) {
+      episodeCache.delete(episodeCache.keys().next().value);
+    }
+    episodeCache.set(normalizedId, { episode, areaName, details: details || {} });
+    container.dataset.episodeContextState = "ready";
+    container.innerHTML = renderEpisodeContext(episode, areaName, details || {});
+  }).catch(error => {
+    if (token !== episodeContextToken || state.episodeContextId !== normalizedId) return;
+    container.dataset.episodeContextState = "error";
+    container.innerHTML = episodeContextState("error", error?.message || "Episode details unavailable");
+  });
+}
+
+function wireDetectionLimit() {
+  const select = $("[data-tl-det-limit]");
+  if (!select) return;
+  const handler = () => {
+    const limit = select.value === "ALL" ? "ALL" : Number(select.value);
+    state.detectionLimit = DETECTION_LIMIT_OPTIONS.includes(limit) ? limit : DEFAULT_DETECTION_LIMIT;
+    detectionGrid?.setLimit(state.detectionLimit);
   };
   handler();
   select.addEventListener("change", handler);
@@ -494,12 +660,14 @@ function shouldPreferGlobalLatest(selectedIds) {
 
 function clearExcludedPlayer(selectedIds) {
   if (!selectedIds.size) {
+    setEpisodeContext(null);
     player?.loadSegment?.(null);
     player?.setEmptyMessage?.("Select at least one camera to view recordings");
     return;
   }
   const segment = player?.currentSegment?.();
   if (segment && !selectedIds.has(segment.deviceId)) {
+    setEpisodeContext(null);
     player.loadSegment?.(null);
     player?.setEmptyMessage?.("Loading recordings for the selected cameras…");
   }
@@ -512,30 +680,120 @@ function movePlayhead(time) {
   axis?.setModel(state.dayModel);
 }
 
+function applySelectedRangePlayback(model) {
+  if (!model || !player) return;
+  const range = state.selectedTimeRange;
+  if (!range) {
+    const current = player.currentSegment?.();
+    if (!state.rangeClearedPlayer || current) {
+      state.rangeClearedPlayer = false;
+      return;
+    }
+    const around = timelineModel.selectRecordingForTime(
+      model.segments,
+      model.playhead ?? state.playheadTime,
+    );
+    if (around) {
+      const targetTime = around.exact ? (model.playhead ?? state.playheadTime) : around.segment.start;
+      movePlayhead(targetTime);
+      setEpisodeContext(around.segment.episodeId, {
+        recordingSelected: true,
+        details: episodeContextDetails(model, around.segment.episodeId),
+      });
+      player.loadSegment(around.segment, targetTime);
+    } else {
+      const targetTime = model.playhead ?? state.playheadTime ?? model.selectEnd;
+      movePlayhead(targetTime);
+      setEpisodeContext(null);
+      player.loadSegment(null, targetTime);
+      player.setEmptyMessage?.("No recordings available for the selected cameras");
+    }
+    state.rangeClearedPlayer = false;
+    return;
+  }
+
+  const selection = timelineModel.selectRecordingForRange(
+    model.segments,
+    range,
+    player.currentSegment?.(),
+    model.playhead ?? state.playheadTime,
+  );
+  if (!selection) {
+    const targetTime = Math.max(
+      model.dayStart,
+      Math.min(model.selectEnd ?? model.dayEnd, range.start),
+    );
+    movePlayhead(targetTime);
+    setEpisodeContext(null);
+    player.loadSegment(null, targetTime);
+    player.setEmptyMessage?.("No recordings in the selected period");
+    state.rangeClearedPlayer = true;
+    return;
+  }
+
+  const targetTime = selection.playhead;
+  movePlayhead(targetTime);
+  setEpisodeContext(selection.segment.episodeId, {
+    recordingSelected: true,
+    details: episodeContextDetails(model, selection.segment.episodeId),
+  });
+  if (selection.preservedCurrent) {
+    player.pause?.();
+    player.seekTo(targetTime);
+  } else {
+    player.loadSegment(selection.segment, targetTime);
+  }
+  state.rangeClearedPlayer = false;
+}
+
 function onSeek(time) {
   const model = state.dayModel;
   if (!model || time > Date.now() || time > (model.selectEnd ?? model.dayEnd)) return;
   const clamped = Math.max(model.dayStart, Math.min(model.selectEnd ?? model.dayEnd, time));
-  movePlayhead(clamped);
-  const segment = model.segments.find(candidate => clamped >= candidate.start && clamped < candidate.end);
-  if (segment && player) {
-    player.playSegment(segment, clamped);
+  const range = state.selectedTimeRange;
+  const seekTime = range
+    ? Math.max(range.start, Math.min(range.end, clamped))
+    : clamped;
+  const selection = range
+    ? timelineModel.selectRecordingForTimeInRange(model.segments, seekTime, range)
+    : timelineModel.selectRecordingForTime(model.segments, seekTime);
+  if (selection && player) {
+    const segment = selection.segment;
+    const targetTime = selection.time ?? (selection.exact ? seekTime : segment.start);
+    movePlayhead(targetTime);
+    setEpisodeContext(segment.episodeId, {
+      recordingSelected: true,
+      details: episodeContextDetails(model, segment.episodeId),
+    });
+    player.playSegment(segment, targetTime);
+    detectionGrid?.highlightNearest(targetTime);
+    state.rangeClearedPlayer = false;
   } else {
-    player?.loadSegment?.(null, clamped);
-    player?.setEmptyMessage?.("No recording available for the selected time");
+    movePlayhead(seekTime);
+    setEpisodeContext(null);
+    player?.loadSegment?.(null, seekTime);
+    player?.setEmptyMessage?.(
+      state.selectedTimeRange
+        ? "No recordings in the selected period"
+        : "No recording available for the selected time",
+    );
+    if (state.selectedTimeRange) state.rangeClearedPlayer = true;
+    detectionGrid?.highlightNearest(seekTime);
   }
   // Move focus to the video so space/arrows control playback without
   // re-clicking the video (timeline/detection clicks land focus elsewhere).
   player?.focus();
   // A click (or keyboard seek) highlights the matching detection below.
-  detectionGrid?.highlightNearest(clamped);
 }
 
 function onScrub(time) {
   const model = state.dayModel;
   if (time > Date.now()) return;
+  const range = state.selectedTimeRange;
+  const lowerBound = range?.start ?? model?.dayStart;
+  const upperBound = range?.end ?? (model?.selectEnd ?? model?.dayEnd);
   const clamped = model
-    ? Math.max(model.dayStart, Math.min(model.selectEnd ?? model.dayEnd, time))
+    ? Math.max(lowerBound, Math.min(upperBound, time))
     : time;
   movePlayhead(clamped);
   const currentSegment = player?.currentSegment?.();
@@ -555,7 +813,13 @@ function seekDelta(deltaMs) {
   const base = player?.now?.() ?? state.playheadTime ?? state.dayModel?.playhead ?? 0;
   const model = state.dayModel;
   const target = model
-    ? Math.max(model.dayStart, Math.min(model.selectEnd ?? model.dayEnd, base + deltaMs))
+    ? Math.max(
+      state.selectedTimeRange?.start ?? model.dayStart,
+      Math.min(
+        state.selectedTimeRange?.end ?? (model.selectEnd ?? model.dayEnd),
+        base + deltaMs,
+      ),
+    )
     : base + deltaMs;
   movePlayhead(target);
   if (player) player.seekTo(target);
@@ -583,6 +847,7 @@ async function loadDay({ preferGlobalLatest = false } = {}) {
     state.dayModel = model;
     axis?.setModel(model);
     detectionGrid?.update([]);
+    setEpisodeContext(null);
     player?.loadSegment?.(null, model.playhead);
     player?.setEmptyMessage?.("Select at least one camera to view recordings");
     return;
@@ -647,10 +912,19 @@ async function loadDay({ preferGlobalLatest = false } = {}) {
     state.dayModel = model;
     axis.setModel(model);
     detectionGrid?.update(model.detections);
-    if (!currentStillAvailable) {
+    const selectedSegment = autoSegment || (currentStillAvailable ? currentSegment : null);
+    setEpisodeContext(selectedSegment?.episodeId || null, {
+      recordingSelected: Boolean(selectedSegment),
+      details: episodeContextDetails(model, selectedSegment?.episodeId),
+    });
+    if (state.selectedTimeRange) {
+      applySelectedRangePlayback(model);
+      state.initialPlaybackPending = false;
+    } else if (!currentStillAvailable) {
       if (autoSegment) {
         player?.loadSegment?.(autoSegment, autoSegment.start);
       } else {
+        setEpisodeContext(null);
         player?.loadSegment?.(null, model.playhead);
         player?.setEmptyMessage?.("No recordings available for the selected cameras");
       }
@@ -661,6 +935,7 @@ async function loadDay({ preferGlobalLatest = false } = {}) {
     const fallback = emptyDayModel(state.selectedDate);
     state.dayModel = fallback;
     detectionGrid?.update([]);
+    setEpisodeContext(null);
     if (axis) axis.setModel(fallback);
     player?.loadSegment?.(null, fallback.playhead);
     player?.setEmptyMessage?.("Unable to load recordings for the selected cameras");
@@ -694,7 +969,7 @@ async function findLatestPlayableRecording(cameras) {
     const evidence = await api(`/evidence?evidence_type=recording&limit=${pageSize}&offset=${offset}`);
     const playable = evidence
       .filter(item => cameraIds.has(item.device_id) && isTimelineRecordingPlayable(item))
-      .map(item => ({ item, bounds: recordingBounds(item), episodeId: item.episode_id }))
+      .map(item => ({ item, bounds: timelineModel.recordingBounds(item), episodeId: item.episode_id }))
       .filter(recording => Number.isFinite(recording.bounds.start) && recording.bounds.start <= Date.now());
     if (playable.length) return { recording: playable[0] };
     if (evidence.length < pageSize) return null;
@@ -729,6 +1004,7 @@ function mountDetectionGridInstance() {
     activeFilters: state.activeFilters,
     timeRange: state.selectedTimeRange,
     nowMs: Date.now(),
+    limit: state.detectionLimit,
     onSelect: time => onSeek(time),
     onFilterChange: filters => { state.activeFilters = filters; },
   });
@@ -767,18 +1043,14 @@ function changeSpeed(direction) {
   player?.setSpeed(SPEEDS[next]);
 }
 
-function handleKeydown(event) {
-  if (event.key === " " && event.target?.closest?.(".tl-player-video")) {
-    event.preventDefault();
-    if (!event.repeat) player?.togglePlay();
-    return;
-  }
-  if (event.key === " " && event.repeat) {
-    event.preventDefault();
-    return;
-  }
+export function handleKeydown(event) {
   const action = keyToAction(event);
-  if (!action) return;
+  if (!action) {
+    if (event.key === " " && event.repeat && !event.target?.closest?.(".tl-player-video")) {
+      event.preventDefault();
+    }
+    return;
+  }
   event.preventDefault();
   switch (action) {
     case "play":
@@ -844,7 +1116,7 @@ export async function renderTimeline() {
   wireActionButtons();
   mountPlayerInstance();
   mountDetectionGridInstance();
-  wireDetRows();
+  wireDetectionLimit();
   wireDate();
   wireRangeSelection();
 

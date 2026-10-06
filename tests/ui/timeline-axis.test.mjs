@@ -41,6 +41,14 @@ test("time<->pixel mapping round-trips", () => {
   }
 });
 
+test("vertical mapping places latest time at the top and earliest at the bottom", () => {
+  const dayEnd = DAY_START + 24 * HOUR;
+  assert.equal(timeToY(dayEnd, DAY_START, 0, dayEnd), 0);
+  assert.equal(timeToY(DAY_START, DAY_START, 0, dayEnd), 24 * ZOOM_LEVELS[0]);
+  assert.equal(yToTime(0, DAY_START, 0, dayEnd), dayEnd);
+  assert.equal(yToTime(24 * ZOOM_LEVELS[0], DAY_START, 0, dayEnd), DAY_START);
+});
+
 test("canvasHeight is 24 hours at the chosen zoom", () => {
   const dayEnd = DAY_START + 24 * HOUR;
   assert.equal(canvasHeight(DAY_START, dayEnd, 0), 24 * ZOOM_LEVELS[0]);
@@ -203,7 +211,7 @@ test("renderAxis shades the selected range without changing the timeline scale",
   renderAxis(ctx, 130, model, 0, palette);
 
   assert.ok(ctx.calls.fillRect.some(rect =>
-    rect.x === 0 && rect.y === 2 * ZOOM_LEVELS[0] && rect.w === 130
+    rect.x === 0 && rect.y === 20 * ZOOM_LEVELS[0] && rect.w === 130
     && rect.h === 2 * ZOOM_LEVELS[0] && rect.color === "#444" && rect.alpha === 0.14
   ));
   assert.equal(canvasHeight(model.dayStart, model.dayEnd, 0), 24 * ZOOM_LEVELS[0]);
@@ -225,9 +233,11 @@ test("dragging the timeline commits a period instead of seeking", () => {
     onSeek: time => soughtTimes.push(time),
   });
   const wrap = container.child;
-  wrap.listeners.pointerdown({ pointerId: 1, clientX: 60, clientY: 2 * ZOOM_LEVELS[0], shiftKey: false });
-  wrap.listeners.pointermove({ pointerId: 1, clientX: 60, clientY: 3 * ZOOM_LEVELS[0] });
-  wrap.listeners.pointerup({ pointerId: 1, clientX: 60, clientY: 3 * ZOOM_LEVELS[0] });
+  const startY = timeToY(DAY_START + 2 * HOUR, DAY_START, 0);
+  const endY = timeToY(DAY_START + 3 * HOUR, DAY_START, 0);
+  wrap.listeners.pointerdown({ pointerId: 1, clientX: 60, clientY: startY, shiftKey: false });
+  wrap.listeners.pointermove({ pointerId: 1, clientX: 60, clientY: endY });
+  wrap.listeners.pointerup({ pointerId: 1, clientX: 60, clientY: endY });
 
   assert.deepEqual(selectedRanges, [{ start: DAY_START + 2 * HOUR, end: DAY_START + 3 * HOUR }]);
   assert.deepEqual(soughtTimes, []);
@@ -280,6 +290,35 @@ test("clicking outside the selected interval clears it and still seeks", () => {
 
   assert.deepEqual(rangeChanges, [null]);
   assert.deepEqual(soughtTimes, [DAY_START + 5 * HOUR]);
+  axis.cleanup();
+  restore();
+});
+
+test("keyboard navigation follows the reversed vertical time direction", () => {
+  const scrubbedTimes = [];
+  const { axis, container, restore } = mountAxisWithMockDom({
+    dayStart: DAY_START,
+    dayEnd: DAY_START + 24 * HOUR,
+    now: DAY_START + 12 * HOUR,
+    selectEnd: DAY_START + 12 * HOUR,
+    playhead: DAY_START + 6 * HOUR,
+    segments: [],
+    detections: [],
+  }, { onScrub: time => scrubbedTimes.push(time) });
+  const wrap = container.child;
+  const keydown = key => wrap.listeners.keydown({ key, preventDefault() {} });
+
+  keydown("ArrowUp");
+  keydown("PageUp");
+  keydown("ArrowDown");
+  keydown("PageDown");
+
+  assert.deepEqual(scrubbedTimes, [
+    DAY_START + 6 * HOUR + 60_000,
+    DAY_START + 6 * HOUR + HOUR,
+    DAY_START + 6 * HOUR - 60_000,
+    DAY_START + 6 * HOUR - HOUR,
+  ]);
   axis.cleanup();
   restore();
 });

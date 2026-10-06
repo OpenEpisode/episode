@@ -40,8 +40,11 @@ const gridUrl = moduleUrl(
 
 const {
   PAGE_SIZE,
+  DEFAULT_DETECTION_LIMIT,
+  DETECTION_LIMIT_OPTIONS,
   DETECTION_TYPE_LABELS,
   filterDetections,
+  limitDetections,
   relativeTime,
   renderDetectionTile,
   renderFilterBar,
@@ -53,8 +56,10 @@ const DET_A = { id: "ev-1", type: "human_detection", time: NOW - 30000, snapshot
 const DET_B = { id: "ev-2", type: "vehicle_detection", time: NOW - 60000, snapshot: null };
 const DET_C = { id: "ev-3", type: "motion_detection", time: NOW - 120000 };
 
-test("PAGE_SIZE is 60", () => {
-  assert.equal(PAGE_SIZE, 60);
+test("detection count defaults to 50 with supported limits", () => {
+  assert.equal(PAGE_SIZE, 50);
+  assert.equal(DEFAULT_DETECTION_LIMIT, 50);
+  assert.deepEqual(DETECTION_LIMIT_OPTIONS, [25, 50, 100, 200, "ALL"]);
 });
 
 test("DETECTION_TYPE_LABELS maps canonical types to display labels", () => {
@@ -92,6 +97,24 @@ test("filterDetections can restrict results to a selected time interval", () => 
   assert.ok(renderDetectionGrid([], all, NOW, {
     timeRange: { start: NOW - 80000, end: NOW - 40000 },
   }).includes("No detections in the selected period"));
+});
+
+test("limitDetections keeps newest grouped results after filtering", () => {
+  const all = new Set(Object.keys(DETECTION_TYPE_LABELS));
+  const detections = Array.from({ length: 75 }, (_, index) => ({
+    id: `ev-${index}`,
+    type: index % 2 ? "vehicle_detection" : "human_detection",
+    time: NOW - index * 1000,
+  }));
+  const filtered = filterDetections(detections, new Set(["human_detection"]), NOW);
+  const limited = limitDetections(filtered, 25);
+  assert.equal(filtered.length, 38);
+  assert.equal(limited.length, 25);
+  assert.equal(limited[0].id, "ev-0");
+  assert.equal(limited.at(-1).id, "ev-48");
+  assert.equal(limitDetections(filtered, "ALL").length, filtered.length);
+  assert.equal(limitDetections(filtered, 100).length, filtered.length);
+  assert.ok(all.has(limited[0].type));
 });
 
 test("relativeTime formats seconds, minutes, hours, days", () => {
@@ -161,6 +184,21 @@ test("renderDetectionGrid respects active filters", () => {
   assert.ok(!html.includes('data-det-id="ev-1"'));
   assert.ok(html.includes('data-det-id="ev-2"'));
   assert.ok(!html.includes('data-det-id="ev-3"'));
+});
+
+test("renderDetectionGrid applies the count limit after filters", () => {
+  const detections = Array.from({ length: 60 }, (_, index) => ({
+    id: `human-${index}`,
+    type: "human_detection",
+    time: NOW - index * 1000,
+  }));
+  const html = renderDetectionGrid(detections, new Set(["human_detection"]), NOW, {
+    limit: 25,
+    visibleCount: 10,
+  });
+  assert.equal((html.match(/data-det-id=/g) || []).length, 10);
+  assert.ok(!html.includes('data-det-id="human-25"'));
+  assert.ok(html.includes("data-det-sentinel"));
 });
 
 test("VIRTUAL_THRESHOLD is 200", async () => {

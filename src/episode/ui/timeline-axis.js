@@ -16,13 +16,14 @@ const RECORDING_MARKER_RADIUS = 8;
 const RECORDING_MARKER_HIT_X = 18;
 const RECORDING_MARKER_HIT_Y = 11;
 const RANGE_DRAG_THRESHOLD = 5;
+const DEFAULT_DAY_END_OFFSET_MS = 24 * MS_PER_HOUR;
 
-export function timeToY(time, dayStart, zoom) {
-  return ((time - dayStart) / MS_PER_HOUR) * ZOOM_LEVELS[zoom];
+export function timeToY(time, dayStart, zoom, dayEnd = dayStart + DEFAULT_DAY_END_OFFSET_MS) {
+  return ((dayEnd - time) / MS_PER_HOUR) * ZOOM_LEVELS[zoom];
 }
 
-export function yToTime(y, dayStart, zoom) {
-  return dayStart + (y / ZOOM_LEVELS[zoom]) * MS_PER_HOUR;
+export function yToTime(y, dayStart, zoom, dayEnd = dayStart + DEFAULT_DAY_END_OFFSET_MS) {
+  return dayEnd - (y / ZOOM_LEVELS[zoom]) * MS_PER_HOUR;
 }
 
 export function canvasHeight(dayStart, dayEnd, zoom) {
@@ -43,7 +44,7 @@ export function renderAxis(ctx, width, model, zoom, palette) {
   const { dayStart, dayEnd } = model;
   const selectEnd = Math.max(dayStart, Math.min(dayEnd, model.selectEnd ?? Math.min(dayEnd, model.now ?? dayEnd)));
   const height = canvasHeight(dayStart, dayEnd, zoom);
-  const t2y = time => timeToY(time, dayStart, zoom);
+  const t2y = time => timeToY(time, dayStart, zoom, dayEnd);
 
   ctx.clearRect(0, 0, width, height);
 
@@ -52,8 +53,10 @@ export function renderAxis(ctx, width, model, zoom, palette) {
   if (model.selectedRange) {
     const rangeStart = Math.max(dayStart, Math.min(selectEnd, model.selectedRange.start));
     const rangeEnd = Math.max(dayStart, Math.min(selectEnd, model.selectedRange.end));
-    const top = t2y(Math.min(rangeStart, rangeEnd));
-    const bottom = t2y(Math.max(rangeStart, rangeEnd));
+    const rangeYStart = t2y(rangeStart);
+    const rangeYEnd = t2y(rangeEnd);
+    const top = Math.min(rangeYStart, rangeYEnd);
+    const bottom = Math.max(rangeYStart, rangeYEnd);
     ctx.fillStyle = palette.playhead;
     ctx.globalAlpha = 0.14;
     ctx.fillRect(0, top, width, Math.max(2, bottom - top));
@@ -220,7 +223,7 @@ export function mountTimelineAxis(container, {
     const rect = canvas.getBoundingClientRect();
     const localX = event.clientX - rect.left;
     const localY = event.clientY - rect.top;
-    const raw = yToTime(localY, currentModel.dayStart, currentZoom);
+    const raw = yToTime(localY, currentModel.dayStart, currentZoom, currentModel.dayEnd);
     const end = currentModel.selectEnd ?? Math.min(currentModel.dayEnd, currentModel.now ?? currentModel.dayEnd);
     const clamped = Math.max(currentModel.dayStart, Math.min(end, raw));
     if (!snapToRecording) return clamped;
@@ -230,7 +233,12 @@ export function mountTimelineAxis(container, {
     const markerX = LABEL_W + 32;
     for (const segment of currentModel.segments || []) {
       if (segment.start > end) continue;
-      const markerY = timeToY(Math.max(segment.start, currentModel.dayStart), currentModel.dayStart, currentZoom);
+      const markerY = timeToY(
+        Math.max(segment.start, currentModel.dayStart),
+        currentModel.dayStart,
+        currentZoom,
+        currentModel.dayEnd,
+      );
       if (Math.abs(localX - markerX) <= RECORDING_MARKER_HIT_X
           && Math.abs(localY - markerY) <= RECORDING_MARKER_HIT_Y) {
         return Math.max(currentModel.dayStart, Math.min(end, segment.start));
@@ -240,7 +248,7 @@ export function mountTimelineAxis(container, {
   }
 
   function playheadY() {
-    return timeToY(currentModel.playhead, currentModel.dayStart, currentZoom);
+    return timeToY(currentModel.playhead, currentModel.dayStart, currentZoom, currentModel.dayEnd);
   }
 
   // A click seeks; a vertical drag selects a shaded interval without resizing
@@ -304,7 +312,7 @@ export function mountTimelineAxis(container, {
     }
   }
   function onKey(event) {
-    const step = { ArrowDown: 60000, ArrowUp: -60000, PageDown: MS_PER_HOUR, PageUp: -MS_PER_HOUR }[event.key];
+    const step = { ArrowDown: -60000, ArrowUp: 60000, PageDown: -MS_PER_HOUR, PageUp: MS_PER_HOUR }[event.key];
     if (step === undefined) return;
     event.preventDefault();
     const end = currentModel.selectEnd ?? Math.min(currentModel.dayEnd, currentModel.now ?? currentModel.dayEnd);

@@ -11,9 +11,8 @@ main:has(> #view-content > .timeline-view) {
 .timeline-view {
   /* The top row sizes to its content: the video takes its full natural
      height at full column width (any aspect ratio), and the cameras/timeline
-     bodies scroll internally. The detections pane may extend below the
-     viewport. --det-rows (updated by JS) drives the detection body height. */
-  --det-rows: 4;
+     bodies scroll internally. The detections pane remains bounded and
+     scrollable even when the operator selects all detections. */
   --det-row-height: 128px;
   display: grid;
   grid-template-columns: 180px 150px minmax(0, 1fr);
@@ -21,6 +20,7 @@ main:has(> #view-content > .timeline-view) {
   grid-template-areas:
     "cams timeline player"
     "det  det      det";
+  align-content: start;
   gap: 8px;
   height: auto;
   min-height: calc(100vh - 4.5rem);
@@ -255,6 +255,142 @@ main:has(> #view-content > .timeline-view) {
   min-height: 0;
 }
 
+.tl-player-media {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.tl-episode-context {
+  flex: 1 1 auto;
+  min-height: 150px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface);
+}
+
+.tl-episode-context-state {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.tl-episode-context-state svg {
+  width: 18px;
+  height: 18px;
+  opacity: 0.55;
+}
+
+.tl-episode-context-state.is-error { color: var(--danger, #b42318); }
+
+.tl-episode-context-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-width: 0;
+}
+
+.tl-episode-context-title,
+.tl-episode-context-title > span,
+.tl-episode-context-meta,
+.tl-episode-context-meta > span,
+.tl-episode-context-time,
+.tl-episode-context-counts {
+  display: flex;
+  align-items: center;
+}
+
+.tl-episode-context-title {
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.tl-episode-context-title > span,
+.tl-episode-context-meta > span {
+  gap: 5px;
+}
+
+.tl-episode-context-title svg,
+.tl-episode-context-meta svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+}
+
+.tl-episode-context-id {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-episode-context-meta {
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--text-primary);
+  font-size: 0.72rem;
+}
+
+.tl-episode-context-time,
+.tl-episode-context-counts {
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-episode-context-summary {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-episode-context-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 14px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.tl-episode-context-breakdown > span,
+.tl-episode-context-devices {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 0;
+}
+
+.tl-episode-context-breakdown svg,
+.tl-episode-context-devices svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+}
+
+.tl-episode-context-devices {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
 .tl-player-stage {
   position: relative;
   width: 100%;
@@ -272,11 +408,16 @@ main:has(> #view-content > .timeline-view) {
 
 /* 4/3 placeholder ratio before any video has an intrinsic size. */
 .tl-player-stage:has(.tl-player-empty:not(.hidden)) {
-  aspect-ratio: 4 / 3;
+  min-height: 104px;
+  aspect-ratio: auto;
   background: var(--surface);
 }
 
 .tl-player-stage:has(.tl-player-empty:not(.hidden)) .tl-player-video {
+  display: none;
+}
+
+.tl-player-wrap:has(.tl-player-empty:not(.hidden)) .tl-controls-row {
   display: none;
 }
 
@@ -527,8 +668,8 @@ main:has(> #view-content > .timeline-view) {
   outline-offset: 1px;
 }
 
-/* Rows selector in the detections region title bar. */
-.tl-det-rows-wrap {
+/* Detection count selector in the detections region title bar. */
+.tl-det-limit-wrap {
   margin-left: auto;
   display: flex;
   align-items: center;
@@ -537,7 +678,7 @@ main:has(> #view-content > .timeline-view) {
   letter-spacing: 0;
 }
 
-.tl-det-rows-label {
+.tl-det-limit-label {
   font-size: 0.68rem;
   font-weight: 600;
   color: var(--text-muted);
@@ -545,7 +686,7 @@ main:has(> #view-content > .timeline-view) {
   letter-spacing: 0.04em;
 }
 
-.tl-det-rows {
+.tl-det-limit {
   height: 26px;
   padding: 0 4px;
   border: 1px solid var(--border-subtle);
@@ -556,23 +697,21 @@ main:has(> #view-content > .timeline-view) {
   cursor: pointer;
 }
 
-.tl-det-rows:focus-visible {
+.tl-det-limit:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
 .tl-det-body {
-  flex: 0 0 auto;
-  /* Height = visible rows * row pitch + the body's 10px top/bottom padding.
-     No viewport cap: the pane is allowed to extend below the fold. */
-  height: calc(var(--det-rows, 4) * var(--det-row-height, 128px) + 20px);
+  flex: 0 1 auto;
+  /* Let short result sets use only the rows they need. Larger sets retain the
+     four-row cap and scroll inside the panel, including virtualized All. */
+  height: auto;
+  max-height: calc(4 * var(--det-row-height, 128px) + 20px);
   min-height: 0;
   overflow: auto;
   padding: 10px;
 }
-
-/* "ALL" rows: the body grows to its content height. */
-.tl-det-all .tl-det-body { height: auto; }
 
 .tl-det-grid {
   display: grid;
@@ -760,10 +899,14 @@ main:has(> #view-content > .timeline-view) {
     max-height: 300px;
   }
   .tl-player .tl-region-body {
-    max-height: 250px;
+    max-height: none;
   }
   .tl-detections .tl-region-body {
     max-height: 200px;
+  }
+  .tl-episode-context {
+    min-height: 130px;
+    padding: 12px;
   }
 }
 

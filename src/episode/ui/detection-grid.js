@@ -4,8 +4,10 @@
 import { escHtml } from "./dom.js";
 import { fmtTime } from "./format.js";
 
-export const PAGE_SIZE = 60;
+export const PAGE_SIZE = 50;
 export const VIRTUAL_THRESHOLD = 200;
+export const DETECTION_LIMIT_OPTIONS = Object.freeze([25, 50, 100, 200, "ALL"]);
+export const DEFAULT_DETECTION_LIMIT = 50;
 const TILE_HEIGHT = 120; // approximate: 112px tile + 8px gap
 
 export const DETECTION_TYPE_LABELS = {
@@ -62,6 +64,18 @@ export function filterDetections(detections, activeFilters, nowMs = Infinity, ti
     && (!timeRange || (detection.time >= timeRange.start && detection.time <= timeRange.end))
     && (detection.eventTypes?.length ? detection.eventTypes : [detection.type]).some(type => activeFilters.has(type))
   );
+}
+
+/**
+ * Apply the operator's display limit after type/time filtering. Grouped
+ * detections are newest-first, so the slice keeps the most recent results.
+ */
+export function limitDetections(detections, limit = DEFAULT_DETECTION_LIMIT) {
+  if (!Array.isArray(detections)) return [];
+  if (limit === "ALL") return detections;
+  const count = Number(limit);
+  if (!Number.isFinite(count) || count < 0) return detections;
+  return detections.slice(0, Math.floor(count));
 }
 
 /**
@@ -137,16 +151,23 @@ export function renderFilterBar(types, activeFilters) {
  * @param {Set<string>} activeFilters
  * @param {number} nowMs
  * @param {object} [options]
- * @param {number} [options.pageSize=60]
+ * @param {number} [options.pageSize=50]
  * @param {number} [options.visibleCount] - how many tiles to show (infinite scroll)
+ * @param {number|string} [options.limit=50] - maximum filtered detections
  * @returns {string}
  */
 export function renderDetectionGrid(detections, activeFilters, nowMs, options = {}) {
-  const { pageSize = PAGE_SIZE, visibleCount, timeRange = null } = options;
+  const {
+    pageSize = PAGE_SIZE,
+    visibleCount,
+    timeRange = null,
+    limit = DEFAULT_DETECTION_LIMIT,
+  } = options;
   const filtered = filterDetections(detections, activeFilters, nowMs, timeRange);
+  const limited = limitDetections(filtered, limit);
   const count = visibleCount ?? pageSize;
-  const visible = filtered.slice(0, count);
-  const hasMore = filtered.length > count;
+  const visible = limited.slice(0, count);
+  const hasMore = limited.length > count;
 
   if (!filtered.length) {
     const emptyMessage = timeRange ? "No detections in the selected period" : "No detections";
@@ -171,6 +192,7 @@ export function renderDetectionGrid(detections, activeFilters, nowMs, options = 
  * @param {{start: number, end: number}|null} [options.timeRange] - inclusive event-time filter
  * @param {number} [options.nowMs]
  * @param {number} [options.pageSize]
+ * @param {number|string} [options.limit=50] - maximum filtered detections
  * @param {(timeMs: number) => void} [options.onSelect]
  * @param {(types: Set<string>) => void} [options.onFilterChange]
  * @returns {{ update: (detections: Array) => void, setFilters: (filters: Set<string>) => void, setTimeRange: (range: {start: number, end: number}|null) => void, highlightNearest: (timeMs: number) => void, addNew: (detections: Array) => void, cleanup: () => void }}
@@ -182,6 +204,7 @@ export function mountDetectionGrid(container, options = {}) {
     timeRange = null,
     nowMs = Date.now(),
     pageSize = PAGE_SIZE,
+    limit = DEFAULT_DETECTION_LIMIT,
     onSelect = () => {},
     onFilterChange = () => {},
   } = options;
@@ -189,6 +212,7 @@ export function mountDetectionGrid(container, options = {}) {
   let currentDetections = detections;
   let currentFilters = new Set(activeFilters);
   let currentTimeRange = timeRange;
+  let currentLimit = limit;
   let visibleCount = pageSize;
   let observer = null;
   let virtualCleanup = null;
@@ -221,17 +245,18 @@ export function mountDetectionGrid(container, options = {}) {
 
   function render() {
     const filtered = filterDetections(currentDetections, currentFilters, Date.now(), currentTimeRange);
+    const limited = limitDetections(filtered, currentLimit);
     const filterHtml = renderFilterBar([...allTypes], currentFilters);
 
-    if (filtered.length > VIRTUAL_THRESHOLD) {
-      renderVirtual(filtered, filterHtml);
+    if (limited.length > VIRTUAL_THRESHOLD) {
+      renderVirtual(limited, filterHtml);
     } else {
-      renderInfiniteScroll(filtered, filterHtml);
+      renderInfiniteScroll(filterHtml);
     }
     startTimeUpdates();
   }
 
-  function renderInfiniteScroll(filtered, filterHtml) {
+  function renderInfiniteScroll(filterHtml) {
     if (virtualCleanup) {
       virtualCleanup();
       virtualCleanup = null;
@@ -240,6 +265,7 @@ export function mountDetectionGrid(container, options = {}) {
       pageSize,
       visibleCount,
       timeRange: currentTimeRange,
+      limit: currentLimit,
     });
     container.innerHTML = `
       <div class="tl-det-header">${filterHtml}</div>
@@ -379,6 +405,12 @@ export function mountDetectionGrid(container, options = {}) {
     },
     setTimeRange(newRange) {
       currentTimeRange = newRange;
+      visibleCount = pageSize;
+      render();
+    },
+    setLimit(newLimit) {
+      currentLimit = newLimit === "ALL" ? "ALL" : Number(newLimit);
+      if (!DETECTION_LIMIT_OPTIONS.includes(currentLimit)) currentLimit = DEFAULT_DETECTION_LIMIT;
       visibleCount = pageSize;
       render();
     },
