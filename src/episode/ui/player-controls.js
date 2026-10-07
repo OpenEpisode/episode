@@ -167,6 +167,7 @@ export function mountPlayer(container, { onStateChange = () => {}, onExport = ()
       pendingSeek = null;
       video.removeAttribute("src");
       video.load();
+      updateMediaStatus(statusEl, { state: "idle", message: "" });
       updateEpisodeLink();
       if (emptyMessage) emptyMessage.textContent = defaultEmptyMessage;
       emptyEl?.classList.remove("hidden");
@@ -200,6 +201,7 @@ export function mountPlayer(container, { onStateChange = () => {}, onExport = ()
     const url = evidenceMediaUrl(segment);
     mediaCleanup = attachMediaSource(video, url, {
       onState: ({ state, message }) => {
+        if (sequence !== attachSequence) return;
         updateMediaStatus(statusEl, { state, message });
       },
     });

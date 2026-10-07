@@ -196,6 +196,27 @@ test("renderAxis draws an easier-to-hit blue marker per recording segment", () =
   assert.ok(ctx.calls.fillText.includes("NOW"));
 });
 
+test("renderAxis labels rolling windows at actual local hour boundaries", () => {
+  const palette = { accent: "#111", muted: "#222", border: "#333", playhead: "#444", detection: {} };
+  const dayStart = new Date("2026-06-10T11:15:00").getTime();
+  const dayEnd = new Date("2026-06-11T11:15:00").getTime();
+  const ctx = mockCtx();
+  renderAxis(ctx, 130, {
+    dayStart,
+    dayEnd,
+    now: new Date("2026-06-11T10:15:00").getTime(),
+    playhead: dayStart,
+    segments: [],
+    detections: [],
+  }, 0, palette);
+
+  const labels = ctx.calls.fillText.filter(text => /^\d\d:00$/.test(text));
+  assert.equal(labels[0], "12:00");
+  assert.equal(labels.at(-1), "11:00");
+  assert.equal(labels.length, 24);
+  assert.ok(ctx.calls.fillRect.some(rect => rect.w === 31 && rect.y === 31), "NOW is one hour below the top edge");
+});
+
 test("renderAxis shades the selected range without changing the timeline scale", () => {
   const palette = { accent: "#111", muted: "#222", border: "#333", playhead: "#444", detection: {} };
   const model = {

@@ -38,6 +38,18 @@ function pad2(value) {
   return String(value).padStart(2, "0");
 }
 
+function nextLocalHour(time) {
+  return time + MS_PER_HOUR;
+}
+
+function firstLocalHourAtOrAfter(time) {
+  const date = new Date(time);
+  const boundary = date.getTime();
+  date.setMinutes(0, 0, 0);
+  if (date.getTime() < boundary) date.setTime(date.getTime() + MS_PER_HOUR);
+  return date.getTime();
+}
+
 // Draws the axis onto `ctx`. `palette` holds concrete colors (resolved from CSS
 // custom properties at mount; hex fallbacks make this testable headlessly).
 export function renderAxis(ctx, width, model, zoom, palette) {
@@ -69,8 +81,7 @@ export function renderAxis(ctx, width, model, zoom, palette) {
   // Hour labels + ticks.
   ctx.font = "10px system-ui, sans-serif";
   ctx.textBaseline = "middle";
-  for (let hour = 0; hour <= 24; hour += 1) {
-    const t = dayStart + hour * MS_PER_HOUR;
+  for (let t = firstLocalHourAtOrAfter(dayStart); t < dayEnd; t = nextLocalHour(t)) {
     const y = t2y(t);
     ctx.strokeStyle = palette.border;
     ctx.lineWidth = 1;
@@ -78,13 +89,14 @@ export function renderAxis(ctx, width, model, zoom, palette) {
     ctx.moveTo(LABEL_W, y);
     ctx.lineTo(LABEL_W + 10, y);
     ctx.stroke();
-    if (hour < 24) {
-      ctx.fillStyle = palette.muted;
-      ctx.fillText(`${pad2(hour)}:00`, 2, y);
-    }
+    const labelDate = new Date(t);
+    ctx.fillStyle = palette.muted;
+    ctx.fillText(`${pad2(labelDate.getHours())}:00`, 2, y);
     // Minor 10-minute ticks.
     for (let minute = 10; minute < 60; minute += 10) {
-      const ym = t2y(t + minute * 60000);
+      const minorTime = t + minute * 60000;
+      if (minorTime >= dayEnd) break;
+      const ym = t2y(minorTime);
       ctx.beginPath();
       ctx.moveTo(LABEL_W, ym);
       ctx.lineTo(LABEL_W + 6, ym);

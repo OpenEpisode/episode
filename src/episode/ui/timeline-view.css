@@ -61,6 +61,39 @@ main:has(> #view-content > .timeline-view) {
   color: var(--text-muted);
 }
 
+.tl-latest-recording {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tl-latest-recording:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.tl-latest-recording:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.tl-latest-recording:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .tl-region-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -352,10 +385,10 @@ main:has(> #view-content > .timeline-view) {
   overflow: hidden;
 }
 
-/* 4/3 placeholder ratio before any video has an intrinsic size. */
+/* Keep the empty state at the same 16:9 viewing scale as a recording. */
 .tl-player-stage:has(.tl-player-empty:not(.hidden)) {
-  min-height: 104px;
-  aspect-ratio: auto;
+  min-height: 240px;
+  aspect-ratio: 16 / 9;
   background: var(--surface);
 }
 

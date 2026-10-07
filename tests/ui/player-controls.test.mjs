@@ -15,6 +15,9 @@ const mediaUrl = moduleUrl(`
   export function attachMediaSource(video, url, opts) {
     globalThis.mediaAttachCalls = globalThis.mediaAttachCalls || [];
     globalThis.mediaAttachCalls.push({ url, live: opts?.live });
+    globalThis.mediaStateCallbacks = globalThis.mediaStateCallbacks || [];
+    if (opts?.onState) globalThis.mediaStateCallbacks.push(opts.onState);
+    opts?.onState?.({ state: "loading", message: "Loading recording…" });
     return () => {};
   }
   export function evidenceMediaUrl(evidence) {
@@ -23,7 +26,11 @@ const mediaUrl = moduleUrl(`
       : "/api/v1/evidence/" + encodeURIComponent(evidence.id) + "/file";
   }
   export function updateMediaStatus(el, opts) {
-    if (el) el.textContent = opts.message || "";
+    if (el) {
+      const visible = !["ready", "idle"].includes(opts.state);
+      el.className = "media-playback-status media-state-" + opts.state + (visible ? "" : " hidden");
+      el.textContent = opts.message || "";
+    }
   }
 `);
 
@@ -174,6 +181,79 @@ test("clicking the video gives it keyboard focus for playback shortcuts", () => 
     assert.deepEqual(focusCalls, [{ preventScroll: true }]);
     player.cleanup();
     assert.equal(listeners.has("click"), false);
+  } finally {
+    for (const [key, value] of Object.entries(oldGlobals)) {
+      if (value === undefined) delete globalThis[key];
+      else globalThis[key] = value;
+    }
+  }
+});
+
+test("clearing the selected recording hides stale loading status", () => {
+  const listeners = new Map();
+  const video = {
+    paused: true,
+    currentTime: 0,
+    playbackRate: 1,
+    muted: false,
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    focus() {},
+    pause() { this.paused = true; },
+    removeAttribute() {},
+    load() {},
+  };
+  const status = { className: "hidden", textContent: "" };
+  const classList = { add() {}, remove() {} };
+  const emptyMessage = { textContent: "" };
+  const empty = { classList, querySelector: () => emptyMessage };
+  const controls = { addEventListener() {}, querySelector: () => null, innerHTML: "" };
+  const episodeLink = { classList };
+  const stage = { offsetHeight: 0, style: { removeProperty() {} } };
+  const container = {
+    innerHTML: "",
+    querySelector(selector) {
+      return {
+        ".tl-player-video": video,
+        ".tl-media-status": status,
+        ".tl-controls-wrap": controls,
+        ".tl-player-empty": empty,
+        ".tl-episode-link": episodeLink,
+        ".tl-player-stage": stage,
+      }[selector] || null;
+    },
+  };
+  const oldGlobals = {
+    document: globalThis.document,
+    setInterval: globalThis.setInterval,
+    clearInterval: globalThis.clearInterval,
+    mediaStateCallbacks: globalThis.mediaStateCallbacks,
+  };
+  globalThis.mediaStateCallbacks = [];
+  globalThis.document = {
+    fullscreenElement: null,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  globalThis.setInterval = () => 1;
+  globalThis.clearInterval = () => {};
+
+  try {
+    const player = mountPlayer(container);
+    player.loadSegment(SEG_A, SEG_A.start);
+    const staleStateCallback = globalThis.mediaStateCallbacks.at(-1);
+    assert.match(status.className, /media-state-loading/);
+    assert.equal(status.textContent, "Loading recording…");
+
+    player.loadSegment(null);
+    player.setEmptyMessage("No recordings available for the selected cameras");
+    assert.match(status.className, /media-state-idle hidden/);
+    assert.equal(status.textContent, "");
+    assert.equal(emptyMessage.textContent, "No recordings available for the selected cameras");
+    staleStateCallback({ state: "loading", message: "Loading recording…" });
+    assert.match(status.className, /media-state-idle hidden/);
+    assert.equal(status.textContent, "");
+    player.cleanup();
   } finally {
     for (const [key, value] of Object.entries(oldGlobals)) {
       if (value === undefined) delete globalThis[key];

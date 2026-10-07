@@ -49,12 +49,21 @@ function changeDate(deltaDays) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
-  state.selectedDate = `${y}-${m}-${d}`;
+  setSelectedDate(`${y}-${m}-${d}`);
+}
+
+function setSelectedDate(dateStr) {
+  setSelectedDateFields(dateStr);
+  loadDay();
+}
+
+function setSelectedDateFields(dateStr) {
+  state.selectedDate = dateStr;
+  state.followingToday = dateStr === localDateForTime(Date.now());
   const input = $("[data-tl-date]");
   if (input) input.value = fmtDateDMY(state.selectedDate);
   const picker = $("[data-tl-date-picker]");
   if (picker) picker.value = state.selectedDate;
-  loadDay();
 }
 
 function defaultState() {
@@ -64,6 +73,7 @@ function defaultState() {
     selectedCameraId: null, // compatibility for callers that select one camera
     selectedCameraIds: new Set(),
     selectedDate: localDate,
+    followingToday: true,
     playheadTime: null, // ms epoch
     isPlaying: false,
     playbackSpeed: 1,
@@ -174,14 +184,23 @@ function formatEpisodeLabel(value) {
     .replace(/\b\w/g, letter => letter.toUpperCase());
 }
 
-function localDayStart(dateStr) {
-  return new Date(`${dateStr}T00:00:00`).getTime();
+function localDayBounds(dateStr) {
+  const start = new Date(`${dateStr}T00:00:00`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { dayStart: start.getTime(), dayEnd: end.getTime() };
 }
 
-function emptyDayModel(dateStr) {
-  const dayStart = localDayStart(dateStr);
-  const dayEnd = dayStart + 86400000;
-  const now = Date.now();
+export function timelineBounds(dateStr, { now = Date.now(), followingToday = false } = {}) {
+  if (followingToday && dateStr === localDateForTime(now)) {
+    return { dayStart: now - 23 * 3600000, dayEnd: now + 3600000 };
+  }
+  return localDayBounds(dateStr);
+}
+
+function emptyDayModel(dateStr, options = {}) {
+  const now = options.now ?? Date.now();
+  const { dayStart, dayEnd } = timelineBounds(dateStr, { ...options, now });
   const selectEnd = Math.max(dayStart, Math.min(dayEnd, now));
   return { dayStart, dayEnd, now, selectEnd, playhead: selectEnd, segments: [], detections: [] };
 }
@@ -224,10 +243,10 @@ function recordingKey(item, episodeId) {
 // Compose one day model for all selected cameras from the real API. Snapshot
 // pairing is deliberately presentation-only: the source Evidence and Events
 // remain untouched, and a snapshot can decorate at most one displayed Event.
-async function buildDayModel(cameras, dateStr) {
+async function buildDayModel(cameras, dateStr, options = {}) {
   const selectedCameras = Array.isArray(cameras) ? cameras : [cameras];
-  const dayStart = localDayStart(dateStr);
-  const dayEnd = dayStart + 86400000;
+  const now = options.now ?? Date.now();
+  const { dayStart, dayEnd } = timelineBounds(dateStr, { ...options, now });
   const episodes = await api("/episodes?limit=200");
   const relevant = episodes.filter(ep => {
     const { start, end } = episodeWindow(ep);
@@ -269,7 +288,7 @@ async function buildDayModel(cameras, dateStr) {
         segmentIds.add(key);
         const start = Math.max(dayStart, bounds.start);
         const end = Math.min(dayEnd, bounds.end);
-        if (end > start && start <= Date.now()) {
+        if (end > start && start <= now) {
           segments.push({ start, end, id: item.id, deviceId: item.device_id, metadata: item.metadata, mime_type: item.mime_type, episodeId: episode.id });
         }
       }
@@ -279,7 +298,7 @@ async function buildDayModel(cameras, dateStr) {
       if (event.event_type) details.eventTypes.add(event.event_type);
       if (!selectedIds.has(event.device_id)) continue;
       const time = ts(event.timestamp);
-      if (time < dayStart || time > dayEnd || time > Date.now()) continue;
+      if (time < dayStart || time > dayEnd || time > now) continue;
       if (!eventsByDevice.has(event.device_id)) eventsByDevice.set(event.device_id, []);
       eventsByDevice.get(event.device_id).push(event);
     }
@@ -312,7 +331,6 @@ async function buildDayModel(cameras, dateStr) {
       }
     }
   }
-  const now = Date.now();
   const selectEnd = Math.max(dayStart, Math.min(dayEnd, now));
   detections.sort((a, b) => a.time - b.time || String(a.id).localeCompare(String(b.id)));
   segments.sort((a, b) => a.start - b.start || String(a.id).localeCompare(String(b.id)));
@@ -427,7 +445,12 @@ function renderLayout() {
         ${zoomBar()}
       </section>
       <section class="tl-region tl-player">
-        <div class="tl-region-head"><svg><use href="icons.svg#clock"></use></svg>Player</div>
+        <div class="tl-region-head">
+          <svg><use href="icons.svg#clock"></use></svg><span>Player</span>
+          <button type="button" class="tl-latest-recording" data-tl-action="latest-recording" title="Find and open the newest recording for selected cameras">
+            Latest recording
+          </button>
+        </div>
         <div class="tl-region-body">
           <div class="tl-player-media" data-tl-player>${placeholder("clock", "Nothing to play")}</div>
           <section class="tl-episode-context" data-tl-episode-context aria-live="polite">
@@ -445,15 +468,48 @@ function renderLayout() {
     </div>`);
 }
 
-// The zoom bar (and any future data-tl-action button) is delegated at the view
-// level so it survives the axis/grid re-rendering their own bodies.
+// Timeline actions are delegated at the view level so they survive axis/grid
+// re-renders of their own bodies.
 function wireActionButtons() {
   const view = $("[data-tl-view]");
-  view?.addEventListener("click", event => {
+  const onClick = async event => {
     const button = event.target.closest("[data-tl-action]");
     if (!button) return;
+    if (button.dataset.tlAction === "latest-recording") {
+      await jumpToLatestRecording(button);
+      return;
+    }
     handleAction(button.dataset.tlAction);
-  });
+  };
+  view?.addEventListener("click", onClick);
+  registerCleanup(() => view?.removeEventListener("click", onClick));
+}
+
+async function jumpToLatestRecording(button) {
+  if (button?.disabled) return;
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
+  try {
+    // Latest is a navigation action outside the current selection, so a
+    // previously drawn range must not constrain its player selection.
+    if (state.selectedTimeRange) {
+      state.selectedTimeRange = null;
+      state.rangeClearedPlayer = false;
+      if (state.dayModel) {
+        state.dayModel = { ...state.dayModel, selectedRange: null };
+        axis?.setModel(state.dayModel);
+      }
+      detectionGrid?.setTimeRange(null);
+    }
+    await loadDay({ preferGlobalLatest: true });
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
+  }
 }
 
 function setSelectedTimeRange(range) {
@@ -590,10 +646,7 @@ function wireDate() {
       event.preventDefault();
       const iso = parseDateDMY(input.value);
       if (!iso || iso === state.selectedDate) return;
-      input.value = fmtDateDMY(iso);
-      if (picker) picker.value = iso;
-      state.selectedDate = iso;
-      loadDay();
+      setSelectedDate(iso);
     };
     input.addEventListener("keydown", onKey);
     registerCleanup(() => input.removeEventListener("keydown", onKey));
@@ -622,9 +675,7 @@ function wireDate() {
 
     const onPickerChange = () => {
       if (!picker.value) return;
-      state.selectedDate = picker.value;
-      if (input) input.value = fmtDateDMY(state.selectedDate);
-      loadDay();
+      setSelectedDate(picker.value);
     };
     picker.addEventListener("change", onPickerChange);
     registerCleanup(() => picker.removeEventListener("change", onPickerChange));
@@ -668,7 +719,7 @@ function clearExcludedPlayer(selectedIds) {
 
 function movePlayhead(time) {
   state.playheadTime = time;
-  const base = state.dayModel ?? emptyDayModel(state.selectedDate);
+  const base = state.dayModel ?? emptyDayModel(state.selectedDate, { followingToday: state.followingToday });
   state.dayModel = { ...base, playhead: time };
   axis?.setModel(state.dayModel);
 }
@@ -830,12 +881,13 @@ function onZoom(zoom) {
   applyZoom(zoom);
 }
 
-async function loadDay({ preferGlobalLatest = false } = {}) {
+async function loadDay({ preferGlobalLatest = false, preservePlayback = false } = {}) {
   const token = ++loadToken;
+  const now = Date.now();
   const cameras = state.cameras.filter(camera => state.selectedCameraIds.has(camera.id));
   const tlBody = $("[data-tl-timeline]");
   if (!cameras.length || !tlBody) {
-    const model = emptyDayModel(state.selectedDate);
+    const model = emptyDayModel(state.selectedDate, { now, followingToday: state.followingToday });
     model.selectedRange = state.selectedTimeRange;
     state.dayModel = model;
     axis?.setModel(model);
@@ -848,7 +900,7 @@ async function loadDay({ preferGlobalLatest = false } = {}) {
 
   if (!axis) {
     axis = mountTimelineAxis(tlBody, {
-      model: emptyDayModel(state.selectedDate),
+      model: emptyDayModel(state.selectedDate, { now, followingToday: state.followingToday }),
       zoom: state.zoomLevel,
       onSeek,
       onScrub,
@@ -869,16 +921,12 @@ async function loadDay({ preferGlobalLatest = false } = {}) {
       if (globalLatest) {
         const targetTime = globalLatest.recording.bounds.start;
         const targetDate = localDateForTime(targetTime);
-        state.selectedDate = targetDate;
+        setSelectedDateFields(targetDate);
         state.playheadTime = targetTime;
         state.preferredSegmentId = globalLatest.recording.item.id;
-        const input = $("[data-tl-date]");
-        const picker = $("[data-tl-date-picker]");
-        if (input) input.value = fmtDateDMY(targetDate);
-        if (picker) picker.value = targetDate;
       }
     }
-    const model = await buildDayModel(cameras, state.selectedDate);
+    const model = await buildDayModel(cameras, state.selectedDate, { now, followingToday: state.followingToday });
     if (!axis || token !== loadToken) return; // view was torn down or superseded
     model.selectedRange = state.selectedTimeRange;
     const initialSegment = state.preferredSegmentId
@@ -894,10 +942,13 @@ async function loadDay({ preferGlobalLatest = false } = {}) {
       model.segments.push(globalSegment);
       model.segments.sort((left, right) => left.start - right.start || String(left.id).localeCompare(String(right.id)));
     }
-    const autoSegment = currentStillAvailable
+    // An explicit jump to the newest recording must override an older player
+    // selection even when both recordings fall on the same day.
+    const preserveCurrent = currentStillAvailable && !preferGlobalLatest;
+    const autoSegment = preserveCurrent
       ? currentSegment
       : (globalSegment || (state.initialPlaybackPending ? (initialSegment || latestSegment) : latestSegment));
-    model.playhead = currentStillAvailable
+    model.playhead = preserveCurrent
       ? (player?.now?.() ?? state.playheadTime ?? currentSegment.start)
       : (autoSegment?.start ?? model.selectEnd);
     model.playhead = Math.max(model.dayStart, Math.min(model.selectEnd, model.playhead));
@@ -905,15 +956,15 @@ async function loadDay({ preferGlobalLatest = false } = {}) {
     state.dayModel = model;
     axis.setModel(model);
     detectionGrid?.update(model.detections);
-    const selectedSegment = autoSegment || (currentStillAvailable ? currentSegment : null);
+    const selectedSegment = autoSegment || (preserveCurrent ? currentSegment : null);
     setEpisodeContext(selectedSegment?.episodeId || null, {
       recordingSelected: Boolean(selectedSegment),
       details: episodeContextDetails(model, selectedSegment?.episodeId),
     });
     if (state.selectedTimeRange) {
-      applySelectedRangePlayback(model);
+      if (!preservePlayback || !currentStillAvailable) applySelectedRangePlayback(model);
       state.initialPlaybackPending = false;
-    } else if (!currentStillAvailable) {
+    } else if (!preserveCurrent) {
       if (autoSegment) {
         player?.loadSegment?.(autoSegment, autoSegment.start);
       } else {
@@ -925,7 +976,7 @@ async function loadDay({ preferGlobalLatest = false } = {}) {
     }
   } catch (error) {
     if (token !== loadToken) return;
-    const fallback = emptyDayModel(state.selectedDate);
+    const fallback = emptyDayModel(state.selectedDate, { now: Date.now(), followingToday: state.followingToday });
     state.dayModel = fallback;
     detectionGrid?.update([]);
     setEpisodeContext(null);
@@ -970,19 +1021,15 @@ async function findLatestPlayableRecording(cameras) {
   }
 }
 
+export function calculateTopRowHeight({ head = 0, stage = 0, controls = 0, context = 0 } = {}, minimum = 420) {
+  return Math.max(minimum, 2 + head + stage + controls + context);
+}
+
 /**
- * Cap the timeline's first grid row at the player's natural content height —
- * the video stage plus the fixed chrome (heads, controls, episode-context
- * band) — so the tall 24h canvas and the camera list scroll inside a row that
- * is exactly as tall as the video. No fixed minimum height, no blank space
- * below the video stage.
- *
- * Every measured input is content-driven and independent of the row height:
- * the video stage is `flex: 0 0 auto` and the episode-context band is
- * `flex: 0 0 auto` (it never stretches with the row). The row is written as a
- * fixed length, not `minmax(_, auto)`, so the tall canvas can only scroll
- * inside it and can never feed back into the measured inputs. The page height
- * is therefore stable and bounded by the video.
+ * Size the timeline's first grid row from the player's natural content height
+ * plus a minimum useful height when no recording is selected. The camera and
+ * timeline panes then scroll inside that row without a measurement feedback
+ * loop.
  */
 function sizeTopRow() {
   const view = $(".timeline-view");
@@ -1003,7 +1050,10 @@ function sizeTopRow() {
     // is its content — it does not stretch with the row and cannot create a
     // resize feedback loop.
     const context = $(".tl-episode-context")?.offsetHeight || 45;
-    const row = 2 /* region border */ + head + stage + controls + context;
+    // An empty-day message has no video dimensions to drive this row. Keep
+    // the camera and timeline panels useful instead of collapsing them to the
+    // compact empty-player placeholder.
+    const row = calculateTopRowHeight({ head, stage, controls, context });
     view.style.gridTemplateRows = `${row}px auto`;
   };
   apply();
@@ -1011,12 +1061,16 @@ function sizeTopRow() {
   // resizes) and the episode-context band (its content swaps when the Episode
   // loads) are the only inputs that change; both are natural-height, so
   // observing them cannot feed back into the fixed row height.
-  const observer = new ResizeObserver(apply);
+  const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(apply);
   const stage = $(".tl-player-stage");
-  if (stage) observer.observe(stage);
+  if (stage) observer?.observe(stage);
   const context = $(".tl-episode-context");
-  if (context) observer.observe(context);
-  registerCleanup(() => observer.disconnect());
+  if (context) observer?.observe(context);
+  window.addEventListener("resize", apply);
+  registerCleanup(() => {
+    observer?.disconnect();
+    window.removeEventListener("resize", apply);
+  });
 }
 
 function mountPlayerInstance() {
@@ -1058,6 +1112,37 @@ function mountDetectionGridInstance() {
 
 function refreshForCamera() {
   loadDay();
+}
+
+function mountTodayRefresh() {
+  if (typeof setInterval !== "function") return;
+  let refreshInFlight = false;
+  const refresh = () => {
+    if (!state.followingToday || (typeof document !== "undefined" && document.visibilityState === "hidden")) return;
+    if (refreshInFlight) return;
+    const today = localDateForTime(Date.now());
+    if (state.selectedDate !== today) setSelectedDateFields(today);
+    refreshInFlight = true;
+    Promise.resolve(loadDay({ preservePlayback: true }))
+      .catch(() => {})
+      .finally(() => {
+        refreshInFlight = false;
+      });
+  };
+
+  const interval = setInterval(refresh, 60_000);
+  const onVisibilityChange = () => {
+    if (typeof document !== "undefined" && document.visibilityState === "visible") refresh();
+  };
+  if (typeof document !== "undefined") {
+    document.addEventListener?.("visibilitychange", onVisibilityChange);
+  }
+  registerCleanup(() => {
+    clearInterval(interval);
+    if (typeof document !== "undefined") {
+      document.removeEventListener?.("visibilitychange", onVisibilityChange);
+    }
+  });
 }
 
 function prevEvent() {
@@ -1179,22 +1264,6 @@ export async function renderTimeline() {
     state.cameras = cameras;
     state.selectedCameraIds = new Set(cameras.map(camera => camera.id));
     state.selectedCameraId = cameras[0]?.id || null;
-    if (cameras.length) {
-      try {
-        const latest = await findLatestPlayableRecording(cameras);
-        if (latest) {
-          const targetTime = latest.recording?.bounds.start || 0;
-          if (targetTime > 0) {
-            state.selectedDate = localDateForTime(targetTime);
-            state.playheadTime = targetTime;
-          }
-          state.preferredSegmentId = latest.recording?.item.id || null;
-        }
-      } catch {
-        // A latest-recording lookup is a startup enhancement. The current local
-        // day remains a useful fallback when the evidence endpoint is unavailable.
-      }
-    }
     const dateInput = $("[data-tl-date]");
     const datePicker = $("[data-tl-date-picker]");
     if (dateInput) dateInput.value = fmtDateDMY(state.selectedDate);
@@ -1209,6 +1278,7 @@ export async function renderTimeline() {
       }));
     }
     refreshForCamera();
+    mountTodayRefresh();
   } catch (error) {
     showError(error.message);
   }
