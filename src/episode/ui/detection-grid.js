@@ -165,7 +165,10 @@ export function renderDetectionGrid(detections, activeFilters, nowMs, options = 
   } = options;
   const filtered = filterDetections(detections, activeFilters, nowMs, timeRange);
   const limited = limitDetections(filtered, limit);
-  const count = visibleCount ?? pageSize;
+  // "ALL" renders every matching detection up front (no pagination cap), so
+  // the operator sees the full result set immediately rather than only the
+  // first page. Numeric limits still page through `visibleCount` tiles.
+  const count = limit === "ALL" ? limited.length : (visibleCount ?? pageSize);
   const visible = limited.slice(0, count);
   const hasMore = limited.length > count;
 

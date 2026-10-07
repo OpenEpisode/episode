@@ -81,7 +81,7 @@ test("timeline excludes expired and invalid recording evidence", () => {
   }), false);
 });
 
-test("episode context renders useful details without a duplicate link", () => {
+test("episode context renders a compact columns card with only the key details", () => {
   const html = renderEpisodeContext({
     id: "episode-1",
     primary_area_id: "area-1",
@@ -99,17 +99,16 @@ test("episode context renders useful details without a duplicate link", () => {
     deviceNames: ["Porta Principal", "Garagem Interior"],
   });
   assert.ok(html.includes("Episode details"));
-  assert.ok(html.includes("episode-1"));
-  assert.ok(html.includes("Front door"));
-  assert.ok(html.includes("Human Detection"));
-  assert.ok(html.includes("Person detected near the entrance"));
-  assert.ok(!html.includes("Open details"));
-  assert.ok(html.includes("3 events"));
-  assert.ok(html.includes("5 artifacts"));
-  assert.ok(html.includes("Human Detection · Motion Detection"));
-  assert.ok(html.includes("2 recordings"));
-  assert.ok(html.includes("3 snapshots"));
-  assert.ok(html.includes("Porta Principal · Garagem Interior"));
+  assert.ok(html.includes("Front door")); // area
+  assert.ok(html.includes("Porta Principal · Garagem Interior")); // cameras
+  assert.ok(html.includes("2026-10-06")); // start date
+  assert.ok(html.includes("2026-10-06")); // end date
+  assert.ok(html.includes("3 events")); // event count
+  assert.ok(html.includes("Human Detection · Motion Detection")); // detection types
+  // The compact layout drops the summary, trigger, artifact counts and episode id.
+  assert.ok(!html.includes("Person detected near the entrance"));
+  assert.ok(!html.includes("5 artifacts"));
+  assert.ok(!html.includes("episode-1"));
 });
 
 test("detections size to their content and cap at four rows", () => {

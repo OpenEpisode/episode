@@ -95,8 +95,10 @@ export function keyToAction(event) {
   const target = event.target;
   if (target?.closest?.("input, select, textarea, [contenteditable]")) return null;
   if (target?.closest?.("button")) return null;
-  // The browser's native video controls handle their own keyboard shortcuts.
-  if (target?.closest?.(".tl-player-video")) return null;
+  // The video stage responds to the timeline keyboard shortcuts too: arrows
+  // seek, Shift+arrows step a frame, Up/Down move between events, Space
+  // toggles play/pause. handleKeydown calls preventDefault() to stop the
+  // native media controls from also handling the same key.
   if (target?.closest?.(".tl-axis")) return null;
   const key = event.key;
   const shift = event.shiftKey;
@@ -352,7 +354,10 @@ function episodeContextState(kind, message) {
   </div>`;
 }
 
-/** Render the compact context card for the recording currently in the player. */
+/**
+ * Render the Episode details for the recording currently in the player, using
+ * the same themed fact-grid table (dl.review-fact-grid) as the Device view.
+ */
 export function renderEpisodeContext(episode, areaName = null, options = {}) {
   const { recordingSelected = false } = options;
   if (!episode) {
@@ -364,15 +369,12 @@ export function renderEpisodeContext(episode, areaName = null, options = {}) {
     );
   }
   const area = areaName || episode.primary_area_id || "Unknown area";
-  const state = formatEpisodeLabel(episode.state || "unknown");
-  const trigger = formatEpisodeLabel(episode.trigger_type || "activity");
   const started = formatEpisodeTimestamp(episode.start_time);
   const ended = episode.end_time
     ? formatEpisodeTimestamp(episode.end_time)
     : ["active", "quiescent"].includes(String(episode.state || "").toLowerCase())
       ? "Ongoing"
       : "—";
-  const summary = episode.summary || "No summary available";
   const eventTypes = [...new Set(options.eventTypes || episode.eventTypes || [])].filter(Boolean);
   const deviceNames = [...new Set(options.deviceNames || episode.deviceNames || [])].filter(Boolean);
   const eventTypesText = eventTypes.length
@@ -381,28 +383,19 @@ export function renderEpisodeContext(episode, areaName = null, options = {}) {
   const deviceNamesText = deviceNames.length
     ? deviceNames.join(" · ")
     : "No participating devices listed";
-  const recordingCountValue = options.recordingCount ?? episode.recordingCount;
-  const snapshotCountValue = options.snapshotCount ?? episode.snapshotCount;
-  const recordingCount = Number.isFinite(Number(recordingCountValue)) ? Number(recordingCountValue) : null;
-  const snapshotCount = Number.isFinite(Number(snapshotCountValue)) ? Number(snapshotCountValue) : null;
+  const eventCount = episode.event_count ?? episode.events?.length ?? 0;
   return `<div class="tl-episode-context-card">
     <div class="tl-episode-context-title">
       <span><svg><use href="icons.svg#episodes"></use></svg><span>Episode details</span></span>
     </div>
-    <div class="tl-episode-context-id" title="${escHtml(episode.id)}">${escHtml(episode.id)}</div>
-    <div class="tl-episode-context-meta">
-      <span title="Area"><svg><use href="icons.svg#areas"></use></svg>${escHtml(area)}</span>
-      <span title="State"><svg><use href="icons.svg#activity"></use></svg>${escHtml(state)}</span>
-      <span title="Trigger"><svg><use href="icons.svg#activity"></use></svg>${escHtml(trigger)}</span>
-    </div>
-    <div class="tl-episode-context-time"><span>${escHtml(started)}</span><span>→ ${escHtml(ended)}</span></div>
-    <p class="tl-episode-context-summary">${escHtml(summary)}</p>
-    <div class="tl-episode-context-counts"><span>${episode.event_count ?? 0} events</span><span>${episode.evidence_count ?? 0} artifacts</span></div>
-    <div class="tl-episode-context-breakdown">
-      <span title="Event types"><svg><use href="icons.svg#activity"></use></svg><span>${escHtml(eventTypesText)}</span></span>
-      <span title="Evidence breakdown"><svg><use href="icons.svg#evidence"></use></svg><span>${recordingCount === null ? "Recording count unavailable" : `${recordingCount} recordings`} · ${snapshotCount === null ? "snapshot count unavailable" : `${snapshotCount} snapshots`}</span></span>
-    </div>
-    <div class="tl-episode-context-devices" title="Participating devices"><svg><use href="icons.svg#devices"></use></svg><span>${escHtml(deviceNamesText)}</span></div>
+    <dl class="review-fact-grid tl-episode-facts">
+      <div><dt>Cameras</dt><dd title="${escHtml(deviceNamesText)}">${escHtml(deviceNamesText)}</dd></div>
+      <div><dt>Area</dt><dd title="${escHtml(area)}">${escHtml(area)}</dd></div>
+      <div><dt>Start</dt><dd>${escHtml(started)}</dd></div>
+      <div><dt>End</dt><dd>${escHtml(ended)}</dd></div>
+      <div><dt>Events</dt><dd>${eventCount} events</dd></div>
+      <div><dt>Detections</dt><dd title="${escHtml(eventTypesText)}">${escHtml(eventTypesText)}</dd></div>
+    </dl>
   </div>`;
 }
 
@@ -977,6 +970,55 @@ async function findLatestPlayableRecording(cameras) {
   }
 }
 
+/**
+ * Cap the timeline's first grid row at the player's natural content height —
+ * the video stage plus the fixed chrome (heads, controls, episode-context
+ * band) — so the tall 24h canvas and the camera list scroll inside a row that
+ * is exactly as tall as the video. No fixed minimum height, no blank space
+ * below the video stage.
+ *
+ * Every measured input is content-driven and independent of the row height:
+ * the video stage is `flex: 0 0 auto` and the episode-context band is
+ * `flex: 0 0 auto` (it never stretches with the row). The row is written as a
+ * fixed length, not `minmax(_, auto)`, so the tall canvas can only scroll
+ * inside it and can never feed back into the measured inputs. The page height
+ * is therefore stable and bounded by the video.
+ */
+function sizeTopRow() {
+  const view = $(".timeline-view");
+  const player = $(".tl-player");
+  if (!view || !player) return;
+  const apply = () => {
+    // Below the stacking breakpoint the regions are full width, so the
+    // side-by-side height match no longer applies and the CSS breakpoints
+    // take over.
+    if (window.matchMedia?.("(max-width: 767px)").matches) {
+      view.style.gridTemplateRows = "";
+      return;
+    }
+    const head = player.querySelector(".tl-region-head")?.offsetHeight || 0;
+    const stage = $(".tl-player-stage")?.offsetHeight || 0;
+    const controls = player.querySelector(".tl-controls-row")?.offsetHeight || 0;
+    // The context band is natural-height (flex: 0 0 auto), so its offsetHeight
+    // is its content — it does not stretch with the row and cannot create a
+    // resize feedback loop.
+    const context = $(".tl-episode-context")?.offsetHeight || 45;
+    const row = 2 /* region border */ + head + stage + controls + context;
+    view.style.gridTemplateRows = `${row}px auto`;
+  };
+  apply();
+  // The video stage (its height changes as a segment loads or the window
+  // resizes) and the episode-context band (its content swaps when the Episode
+  // loads) are the only inputs that change; both are natural-height, so
+  // observing them cannot feed back into the fixed row height.
+  const observer = new ResizeObserver(apply);
+  const stage = $(".tl-player-stage");
+  if (stage) observer.observe(stage);
+  const context = $(".tl-episode-context");
+  if (context) observer.observe(context);
+  registerCleanup(() => observer.disconnect());
+}
+
 function mountPlayerInstance() {
   const body = $("[data-tl-player]");
   if (!body || player) return;
@@ -1052,6 +1094,11 @@ export function handleKeydown(event) {
     return;
   }
   event.preventDefault();
+  // The video's native controls must not also act on the key (e.g. native
+  // arrow-seeking or space toggling) once the timeline handler owns it.
+  if (event.target?.closest?.(".tl-player-video")) {
+    event.stopPropagation();
+  }
   switch (action) {
     case "play":
       player?.togglePlay();
@@ -1116,6 +1163,7 @@ export async function renderTimeline() {
   wireActionButtons();
   mountPlayerInstance();
   mountDetectionGridInstance();
+  sizeTopRow();
   wireDetectionLimit();
   wireDate();
   wireRangeSelection();

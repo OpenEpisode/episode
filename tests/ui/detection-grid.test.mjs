@@ -186,6 +186,22 @@ test("renderDetectionGrid respects active filters", () => {
   assert.ok(!html.includes('data-det-id="ev-3"'));
 });
 
+test("renderDetectionGrid with ALL renders every matching detection", () => {
+  const detections = Array.from({ length: 300 }, (_, index) => ({
+    id: `human-${index}`,
+    type: "human_detection",
+    time: NOW - index * 1000,
+  }));
+  const html = renderDetectionGrid(detections, new Set(["human_detection"]), NOW, {
+    limit: "ALL",
+  });
+  // ALL must not be capped at the default page size (50): every tile shows.
+  assert.equal((html.match(/data-det-id=/g) || []).length, 300);
+  assert.ok(html.includes('data-det-id="human-0"'));
+  assert.ok(html.includes('data-det-id="human-299"'));
+  assert.ok(!html.includes("data-det-sentinel"));
+});
+
 test("renderDetectionGrid applies the count limit after filters", () => {
   const detections = Array.from({ length: 60 }, (_, index) => ({
     id: `human-${index}`,

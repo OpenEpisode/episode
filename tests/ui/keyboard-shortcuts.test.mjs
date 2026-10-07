@@ -56,16 +56,19 @@ test("Space → play", () => {
   assert.equal(keyToAction(key(" ")), "play");
 });
 
-test("Space on the focused video is left to native media controls", () => {
+test("Space on the focused video toggles play via the timeline handler", () => {
   const video = { closest: selector => selector === ".tl-player-video" ? video : null };
-  assert.equal(keyToAction(key(" ", { target: video })), null);
+  assert.equal(keyToAction(key(" ", { target: video })), "play");
 
   let defaultPrevented = false;
+  let stopped = false;
   handleKeydown({
     ...key(" ", { target: video }),
     preventDefault: () => { defaultPrevented = true; },
+    stopPropagation: () => { stopped = true; },
   });
-  assert.equal(defaultPrevented, false);
+  assert.equal(defaultPrevented, true);
+  assert.equal(stopped, true);
 });
 
 test("ArrowLeft → back-5", () => {

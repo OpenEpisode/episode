@@ -16,6 +16,9 @@ main:has(> #view-content > .timeline-view) {
   --det-row-height: 128px;
   display: grid;
   grid-template-columns: 180px 150px minmax(0, 1fr);
+  /* The top row is content-sized: the player column (with the video's natural
+     height) drives the row height, and the cameras/timeline bodies scroll to
+     match it rather than imposing their own fixed height. */
   grid-template-rows: auto auto;
   grid-template-areas:
     "cams timeline player"
@@ -70,12 +73,10 @@ main:has(> #view-content > .timeline-view) {
 .tl-player { grid-area: player; }
 .tl-detections { grid-area: det; }
 
-/* The top row is content-sized (driven by the video's natural height); the
-   tall 24h canvas and long camera list scroll internally within it. */
-.tl-timeline .tl-region-body,
-.tl-cams .tl-region-body {
-  max-height: 890px;
-}
+/* The first grid row is content-sized (driven by the video's natural height,
+   see .timeline-view grid-template-rows). The tall 24h canvas and the camera
+   list scroll inside their regions via .tl-region-body overflow:auto, so they
+   never impose a fixed height that would leave blank space below the video. */
 
 /* Zoom bar pinned to the bottom of the vertical timeline region. */
 .tl-zoom-bar {
@@ -260,16 +261,34 @@ main:has(> #view-content > .timeline-view) {
   min-width: 0;
 }
 
+/* The episode-context band sits under the video. It is natural-height
+   (flex: 0 0 auto) so its measured height is its content, never the row:
+   sizeTopRow() sizes the grid row from this band plus the video stage, and a
+   band that stretched with the row would create a resize feedback loop. */
 .tl-episode-context {
-  flex: 1 1 auto;
-  min-height: 150px;
-  padding: 14px 16px;
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: 12px 16px;
   border-top: 1px solid var(--border-subtle);
   background: var(--surface);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Episode details reuse the Devices view fact-grid table (dl.review-fact-grid,
+   defined in review-detail.css) so the styling stays consistent with the theme.
+   Only compactness under the video stage is tuned here. */
+.tl-episode-facts {
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+}
+.tl-episode-facts > div { padding: 0.5rem 0.7rem; }
+.tl-episode-facts dd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tl-episode-context-state {
-  min-height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -291,16 +310,11 @@ main:has(> #view-content > .timeline-view) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  height: 100%;
   min-width: 0;
 }
 
 .tl-episode-context-title,
-.tl-episode-context-title > span,
-.tl-episode-context-meta,
-.tl-episode-context-meta > span,
-.tl-episode-context-time,
-.tl-episode-context-counts {
+.tl-episode-context-title > span {
   display: flex;
   align-items: center;
 }
@@ -313,82 +327,14 @@ main:has(> #view-content > .timeline-view) {
   font-weight: 600;
 }
 
-.tl-episode-context-title > span,
-.tl-episode-context-meta > span {
+.tl-episode-context-title > span {
   gap: 5px;
 }
 
-.tl-episode-context-title svg,
-.tl-episode-context-meta svg {
+.tl-episode-context-title svg {
   width: 14px;
   height: 14px;
   color: var(--text-muted);
-}
-
-.tl-episode-context-id {
-  overflow: hidden;
-  color: var(--text-muted);
-  font-family: var(--font-mono, monospace);
-  font-size: 0.68rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tl-episode-context-meta {
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  color: var(--text-primary);
-  font-size: 0.72rem;
-}
-
-.tl-episode-context-time,
-.tl-episode-context-counts {
-  flex-wrap: wrap;
-  gap: 5px 14px;
-  color: var(--text-muted);
-  font-size: 0.7rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.tl-episode-context-summary {
-  margin: 0;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 0.74rem;
-  line-height: 1.4;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tl-episode-context-breakdown {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 5px 14px;
-  color: var(--text-muted);
-  font-size: 0.7rem;
-}
-
-.tl-episode-context-breakdown > span,
-.tl-episode-context-devices {
-  display: flex;
-  align-items: flex-start;
-  gap: 5px;
-  min-width: 0;
-}
-
-.tl-episode-context-breakdown svg,
-.tl-episode-context-devices svg {
-  flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
-  color: var(--text-muted);
-}
-
-.tl-episode-context-devices {
-  color: var(--text-muted);
-  font-size: 0.7rem;
-  line-height: 1.35;
 }
 
 .tl-player-stage {
@@ -896,6 +842,9 @@ main:has(> #view-content > .timeline-view) {
     gap: 6px;
   }
   .tl-timeline .tl-region-body {
+    max-height: 300px;
+  }
+  .tl-cams .tl-region-body {
     max-height: 300px;
   }
   .tl-player .tl-region-body {
