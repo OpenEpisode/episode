@@ -82,6 +82,7 @@ class DeviceVideoValidationResponse(ApiModel):
 class CapturePolicyResponse(ApiModel):
     recording: str
     automatic_snapshots: bool
+    snapshot_event_types: list[str] = Field(default_factory=list)
     onvif_events: bool | None = None
     activity_window_seconds: int
 

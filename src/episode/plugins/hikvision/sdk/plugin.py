@@ -17,6 +17,7 @@ from episode.ingestion.models import (
     StoredIngressEnvelope,
 )
 from episode.ingestion.router import IngressHandlerRegistration
+from episode.media.registry import CameraMedia
 from episode.plugins.hikvision.sdk.events import interpret_event
 from episode.plugins.hikvision.sdk.runtime import SDKDeviceConfig, SDKDeviceWorker
 from episode.plugins.hikvision.sdk.video_runtime import HikvisionSDKVideoWorker
@@ -252,6 +253,7 @@ class HikvisionSDKPlugin:
         self._host_machine = host_machine
         self._workers: list[SDKDeviceWorker] = []
         self._video_workers: list[HikvisionSDKVideoWorker] = []
+        self._snapshot_media_devices: set[str] = set()
         self._invalid_instances: list[PluginInstanceStatus] = []
         self._status = PluginStatus(
             id=PLUGIN_ID,
@@ -442,8 +444,47 @@ class HikvisionSDKPlugin:
                     worker.status().id,
                     exc_info=result,
                 )
+            elif worker in self._workers and result is True:
+                self._register_snapshot_media(worker)
+
+    def _register_snapshot_media(self, worker: SDKDeviceWorker) -> None:
+        """Expose the running doorbell login as a snapshot-only media source."""
+        capture_snapshot = getattr(worker, "capture_snapshot", None)
+        if (
+            self._media_registry is None
+            or not callable(capture_snapshot)
+            or "snapshot" not in worker.status().capabilities
+        ):
+            return
+        try:
+            self._media_registry.register(
+                CameraMedia(
+                    device_id=worker.device_id,
+                    # Keep the snapshot-only registration separate from the
+                    # video plugin's HCNetSDK sources during unregister.
+                    source="hikvision-sdk-snapshot",
+                    snapshot_fetcher=capture_snapshot,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Could not register HCNetSDK snapshot media for device %s",
+                worker.device_id,
+            )
+            return
+        self._snapshot_media_devices.add(worker.device_id)
 
     async def stop(self) -> None:
+        if self._media_registry is not None:
+            for device_id in self._snapshot_media_devices:
+                try:
+                    self._media_registry.unregister(device_id, source="hikvision-sdk-snapshot")
+                except Exception:
+                    logger.exception(
+                        "Could not unregister HCNetSDK snapshot media for device %s",
+                        device_id,
+                    )
+        self._snapshot_media_devices.clear()
         await asyncio.gather(
             *(
                 worker.stop()

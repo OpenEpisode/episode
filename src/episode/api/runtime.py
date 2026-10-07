@@ -111,6 +111,7 @@ class OperationalView:
         connector_statuses: Callable[[], Sequence[Mapping[str, Any]]],
         plugin_statuses: Callable[[], Sequence[Mapping[str, Any]]],
         snapshots_enabled: bool,
+        snapshot_event_types: Sequence[str] = (),
         retention_status: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         self._version = version
@@ -120,7 +121,22 @@ class OperationalView:
         self._connector_statuses = connector_statuses
         self._plugin_statuses = plugin_statuses
         self._snapshots_enabled = snapshots_enabled
+        self._snapshot_event_types = tuple(snapshot_event_types)
         self._retention_status = retention_status
+
+    @property
+    def _snapshots_configured(self) -> bool:
+        return self._snapshots_enabled or bool(self._snapshot_event_types)
+
+    def _snapshot_summary(self) -> str:
+        if self._snapshots_enabled:
+            return "Requests and preserves a current image for each new active Event"
+        if self._snapshot_event_types:
+            names = ", ".join(
+                event_type.replace("_", " ").title() for event_type in self._snapshot_event_types
+            )
+            return f"Requests and preserves a current image for active {names} Events"
+        return "Disabled — active Events do not request preserved images"
 
     def _connectors(self) -> list[dict[str, Any]]:
         return [dict(status) for status in self._connector_statuses()]
@@ -152,7 +168,7 @@ class OperationalView:
             ),
             "snapshots": (
                 "disabled"
-                if not self._snapshots_enabled
+                if not self._snapshots_configured
                 else "healthy"
                 if snapshots.get("running")
                 else "unavailable"
@@ -240,11 +256,7 @@ class OperationalView:
                 "id": "snapshots",
                 "name": "Event-triggered snapshots",
                 "state": status["services"]["snapshots"],
-                "summary": (
-                    "Requests and preserves a current image for each new active Event"
-                    if self._snapshots_enabled
-                    else "Disabled — active Events do not request preserved images"
-                ),
+                "summary": (self._snapshot_summary()),
                 "metrics": {
                     key: int(snapshots.get(key, 0))
                     for key in ("captured", "failures", "suppressed", "active")
@@ -323,6 +335,7 @@ class OperationalView:
             "capture_policy": {
                 "recording": recording,
                 "automatic_snapshots": self._snapshots_enabled,
+                "snapshot_event_types": list(self._snapshot_event_types),
                 "onvif_events": events_enabled,
                 "activity_window_seconds": (
                     device.activity_window_seconds or default_activity_window

@@ -5,6 +5,7 @@ import base64
 import ctypes
 import json
 import os
+import queue
 import signal
 import sys
 import threading
@@ -13,6 +14,8 @@ from pathlib import Path
 
 WORKER_MESSAGE_PREFIX = "EPISODE_HIKVISION_SDK="
 MAX_NOTIFICATION_BYTES = 64 * 1024 * 1024
+MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
+MAX_COMMAND_LINE_BYTES = 16 * 1024
 
 SERIALNO_LEN = 48
 NAME_LEN = 32
@@ -211,6 +214,15 @@ class NET_DVR_SETUPALARM_PARAM_V50(ctypes.Structure):
     ]
 
 
+class NET_DVR_JPEGPARA(ctypes.Structure):
+    """JPEG capture settings from the HCNetSDK ABI."""
+
+    _fields_ = [
+        ("wPicSize", ctypes.c_ushort),
+        ("wPicQuality", ctypes.c_ushort),
+    ]
+
+
 MESSAGE_CALLBACK = ctypes.CFUNCTYPE(
     None,
     ctypes.c_int,
@@ -278,6 +290,17 @@ def _configure_sdk(sdk) -> None:
     sdk.NET_DVR_SetupAlarmChan_V50.restype = ctypes.c_int
     sdk.NET_DVR_CloseAlarmChan_V30.argtypes = [ctypes.c_int]
     sdk.NET_DVR_CloseAlarmChan_V30.restype = ctypes.c_bool
+    capture = getattr(sdk, "NET_DVR_CaptureJPEGPicture_NEW", None)
+    if capture is not None:
+        capture.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(NET_DVR_JPEGPARA),
+            ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_uint),
+        ]
+        capture.restype = ctypes.c_bool
 
 
 def _sdk_error(sdk, stage: str) -> int:
@@ -352,8 +375,55 @@ def _get_device_info(sdk, user_id: int) -> dict[str, str]:
     return info
 
 
+class SnapshotCaptureError(RuntimeError):
+    """A bounded, request-local failure while capturing a JPEG."""
+
+    def __init__(self, message: str, *, code: int | None = None):
+        super().__init__(message)
+        self.code = code
+
+
+def _capture_jpeg(sdk, user_id: int, *, channel: int = 1) -> bytes:
+    """Capture one validated JPEG without involving the alarm callback."""
+    capture = getattr(sdk, "NET_DVR_CaptureJPEGPicture_NEW", None)
+    if capture is None:
+        raise SnapshotCaptureError("HCNetSDK does not expose JPEG capture.")
+
+    parameters = NET_DVR_JPEGPARA(wPicSize=0xFF, wPicQuality=0)
+    buffer = (ctypes.c_ubyte * MAX_SNAPSHOT_BYTES)()
+    bytes_returned = ctypes.c_uint()
+    try:
+        succeeded = bool(
+            capture(
+                user_id,
+                channel,
+                ctypes.byref(parameters),
+                buffer,
+                MAX_SNAPSHOT_BYTES,
+                ctypes.byref(bytes_returned),
+            )
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        raise SnapshotCaptureError("HCNetSDK JPEG capture failed.") from exc
+    if not succeeded:
+        try:
+            code = int(sdk.NET_DVR_GetLastError())
+        except (AttributeError, TypeError, ValueError):
+            code = None
+        raise SnapshotCaptureError("HCNetSDK JPEG capture failed.", code=code)
+
+    size = int(bytes_returned.value)
+    if not 4 <= size <= MAX_SNAPSHOT_BYTES:
+        raise SnapshotCaptureError("HCNetSDK returned an invalid JPEG size.")
+    payload = bytes(buffer[:size])
+    if payload[:2] != b"\xff\xd8" or payload[-2:] != b"\xff\xd9":
+        raise SnapshotCaptureError("HCNetSDK returned invalid JPEG data.")
+    return payload
+
+
 def run(plugin_path: Path, config: dict) -> int:
     stop_event = threading.Event()
+    commands: queue.Queue[dict] = queue.Queue()
     initialized = False
     user_id = -1
     alarm_handle = -1
@@ -443,9 +513,79 @@ def run(plugin_path: Path, config: dict) -> int:
             _sdk_error(sdk, "subscribe")
             return 13
 
-        _emit({"type": "ready", "device_info": _get_device_info(sdk, user_id)})
-        while not stop_event.wait(1):
-            pass
+        _emit(
+            {
+                "type": "ready",
+                "device_info": _get_device_info(sdk, user_id),
+                "snapshot_supported": callable(
+                    getattr(sdk, "NET_DVR_CaptureJPEGPicture_NEW", None)
+                ),
+            }
+        )
+
+        def read_commands() -> None:
+            while not stop_event.is_set():
+                line = sys.stdin.readline()
+                if not line:
+                    stop_event.set()
+                    return
+                if len(line.encode("utf-8")) > MAX_COMMAND_LINE_BYTES:
+                    _emit(
+                        {
+                            "type": "command_rejected",
+                            "reason": "command_too_large",
+                        }
+                    )
+                    continue
+                try:
+                    command = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    _emit({"type": "command_rejected", "reason": "invalid_command"})
+                    continue
+                if isinstance(command, dict):
+                    commands.put(command)
+                else:
+                    _emit({"type": "command_rejected", "reason": "invalid_command"})
+
+        command_reader = threading.Thread(
+            target=read_commands,
+            name="hikvision-sdk-command-reader",
+            daemon=True,
+        )
+        command_reader.start()
+        while not stop_event.is_set():
+            try:
+                command = commands.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            if command.get("type") != "snapshot":
+                _emit({"type": "command_rejected", "reason": "unsupported_command"})
+                continue
+            request_id = command.get("request_id")
+            if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
+                _emit({"type": "snapshot_error", "reason": "invalid_request_id"})
+                continue
+            try:
+                jpeg = _capture_jpeg(sdk, user_id)
+            except SnapshotCaptureError as exc:
+                message = {
+                    "type": "snapshot_error",
+                    "request_id": request_id,
+                    "message": str(exc),
+                }
+                if exc.code is not None:
+                    message["code"] = exc.code
+                _emit(message)
+                continue
+            _emit(
+                {
+                    "type": "snapshot",
+                    "request_id": request_id,
+                    "length": len(jpeg),
+                    "content_type": "image/jpeg",
+                    "payload": base64.b64encode(jpeg).decode("ascii"),
+                }
+            )
         return 0
     except (AttributeError, OSError, TypeError, ValueError) as exc:
         _emit({"type": "error", "stage": "configuration", "message": str(exc)})

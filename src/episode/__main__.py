@@ -82,7 +82,13 @@ class Application:
             self._thumbnails,
             active_paths=self._recorder.active_file_paths,
         )
-        self._snapshotter = SnapshotEngine(self._bus, self._media, config.data_dir)
+        self._snapshotter = SnapshotEngine(
+            self._bus,
+            self._media,
+            config.data_dir,
+            enabled=config.actions.snapshot.enabled,
+            event_types=config.actions.snapshot.event_types,
+        )
         self._current_views = CurrentViewService(self._media, self._recorder)
         self._episode_started_webhook = EpisodeStartedWebhookSettingsService(
             self._repo,
@@ -115,6 +121,7 @@ class Application:
             connector_statuses=lambda: [connector.status() for connector in self._connectors],
             plugin_statuses=self._plugins.statuses,
             snapshots_enabled=config.actions.snapshot.enabled,
+            snapshot_event_types=config.actions.snapshot.event_types,
         )
         self._validation = DeviceValidationService(
             runtime_integrations=lambda device: self._operations.device_detail(device)[
@@ -235,7 +242,7 @@ class Application:
         )
         log_startup_phase("retention scheduling")
 
-        if self._config.actions.snapshot.enabled:
+        if self._config.actions.snapshot.enabled or self._config.actions.snapshot.event_types:
             logger.info("Starting Snapshot Engine...")
             await self._lifecycle.start(
                 "Snapshot Engine",

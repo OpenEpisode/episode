@@ -67,6 +67,18 @@ function videoSourceFacts(source) {
   return [...facts, certainty].join(" · ");
 }
 
+function snapshotPolicyDescription(policy) {
+  if (policy.automatic_snapshots) {
+    return "Enabled — requests and preserves an image for each new active Event";
+  }
+  const eventTypes = policy.snapshot_event_types || [];
+  if (eventTypes.length) {
+    const labels = eventTypes.map(type => titleCase(type.replaceAll("_", " "))).join(", ");
+    return `Enabled for ${labels} Events when a snapshot source is available`;
+  }
+  return "Disabled — active Events do not request preserved images";
+}
+
 function capabilityBadges(capabilities) {
   return (capabilities || [])
     .filter(capability => capability !== "events")
@@ -479,9 +491,7 @@ export async function deviceView(id) {
             <div><dt>Firmware</dt><dd>${escHtml(identity.firmware_version || "Not reported")}</dd></div>
             <div><dt>Recording source</dt><dd>${escHtml(recordingSourceLabel)}</dd></div>
             <div><dt>Episode activity window</dt><dd>${item.capture_policy.activity_window_seconds} seconds</dd></div>
-            <div><dt>Event-triggered snapshots</dt><dd>${item.capture_policy.automatic_snapshots
-              ? "Enabled — requests and preserves an image for each new active Event"
-              : "Disabled — active Events do not request preserved images"}</dd></div>
+            <div><dt>Event-triggered snapshots</dt><dd>${escHtml(snapshotPolicyDescription(item.capture_policy))}</dd></div>
             <div><dt>ONVIF Events</dt><dd>${item.capture_policy.onvif_events === null ? "Unavailable" : item.capture_policy.onvif_events ? "Enabled" : "Disabled"}</dd></div>
             <div><dt>Filtered event classes</dt><dd>${escHtml(describeDeviceEventFilter(item.event_filter))}</dd></div>
           </dl>

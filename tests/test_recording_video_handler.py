@@ -379,13 +379,57 @@ async def test_media_registry_selects_snapshot_source_independently_of_video_sou
     )
 
     assert registry.get("camera-1").source == "hikvision-sdk"
-    assert await registry.fetch_snapshot("camera-1") == (b"ordinary", "image/jpeg")
+    assert await registry.fetch_snapshot_with_source("camera-1") == (
+        b"ordinary",
+        "image/jpeg",
+        "onvif",
+    )
     assert await registry.fetch_snapshot("camera-1", snapshot_token="token-1") == (
         b"event-bound",
         "image/jpeg",
     )
     assert ordinary_calls == 1
     assert event_tokens == ["token-1"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_only_sdk_registration_does_not_replace_or_remove_video_source():
+    async def fetch_snapshot():
+        return b"sdk-snapshot", "image/jpeg"
+
+    async def unused_video_handler(_push):
+        return None
+
+    registry = MediaRegistry()
+    registry.register(
+        CameraMedia(
+            device_id="doorbell",
+            source="hikvision-sdk",
+            video_handler=unused_video_handler,
+            video_source=VideoSourceDescriptor(
+                id="hikvision-sdk:main",
+                name="HCNetSDK main",
+                provider="Hikvision HCNetSDK",
+                default=True,
+            ),
+        )
+    )
+    registry.register(
+        CameraMedia(
+            device_id="doorbell",
+            source="hikvision-sdk-snapshot",
+            snapshot_fetcher=fetch_snapshot,
+        )
+    )
+
+    assert await registry.fetch_snapshot_with_source("doorbell") == (
+        b"sdk-snapshot",
+        "image/jpeg",
+        "hikvision-sdk-snapshot",
+    )
+    registry.unregister("doorbell", source="hikvision-sdk-snapshot")
+
+    assert [source.id for source in registry.video_sources("doorbell")] == ["hikvision-sdk:main"]
 
 
 def test_interrupted_capture_remembers_its_video_source(tmp_path):

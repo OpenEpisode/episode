@@ -21,6 +21,7 @@ from episode.plugins.hikvision.sdk.events import ANTI_TAMPER
 from episode.plugins.hikvision.sdk.plugin import HikvisionSDKPlugin
 from episode.plugins.hikvision.sdk.runtime import SDKDeviceConfig, SDKDeviceWorker
 from episode.plugins.hikvision.sdk.worker import (
+    MAX_SNAPSHOT_BYTES,
     NET_DVR_ALARMER,
     NET_DVR_DEVICECFG_V50,
     NET_DVR_DEVICEINFO_V30,
@@ -28,9 +29,12 @@ from episode.plugins.hikvision.sdk.worker import (
     NET_DVR_FIRMWARE_VERSION_INFO,
     NET_DVR_GET_DEVICECFG_V50,
     NET_DVR_GET_FIRMWARE_VERSION,
+    NET_DVR_JPEGPARA,
     NET_DVR_SETUPALARM_PARAM_V50,
     NET_DVR_USER_LOGIN_INFO,
     WORKER_MESSAGE_PREFIX,
+    SnapshotCaptureError,
+    _capture_jpeg,
     _format_firmware_version,
     _get_device_info,
 )
@@ -79,6 +83,47 @@ def _worker_source(*messages: dict, wait: bool = False) -> str:
     return ";".join(lines)
 
 
+def _snapshot_worker_source(
+    payload: bytes,
+    *,
+    respond: bool = True,
+    error: bool = False,
+) -> str:
+    encoded = base64.b64encode(payload).decode()
+    ready = WORKER_MESSAGE_PREFIX + json.dumps({"type": "ready"}, separators=(",", ":"))
+    prefix = WORKER_MESSAGE_PREFIX
+    response = (
+        {
+            "type": "snapshot_error",
+            "message": "capture rejected",
+            "code": 123,
+        }
+        if error
+        else {
+            "type": "snapshot",
+            "length": len(payload),
+            "content_type": "image/jpeg",
+            "payload": encoded,
+        }
+    )
+    lines = [
+        "import json, sys",
+        "json.loads(sys.stdin.readline())",
+        f"print({ready!r}, flush=True)",
+        "for line in sys.stdin:",
+        "    command = json.loads(line)",
+    ]
+    if respond:
+        lines.extend(
+            [
+                f"    response = {response!r}",
+                '    response["request_id"] = command["request_id"]',
+                f"    print({prefix!r} + json.dumps(response, separators=(',', ':')), flush=True)",
+            ]
+        )
+    return "\n".join(lines)
+
+
 @pytest.mark.asyncio
 async def test_worker_preserves_raw_notification_and_reports_health(tmp_path):
     deliveries: list[RawPluginDelivery] = []
@@ -119,6 +164,7 @@ async def test_worker_preserves_raw_notification_and_reports_health(tmp_path):
     }
     status = worker.status()
     assert status.state == PluginInstanceState.RUNNING
+    assert status.capabilities == ("events",)
     assert status.messages_received == 1
     assert status.last_message_at is not None
     assert "not-exposed" not in repr(status)
@@ -138,6 +184,7 @@ async def test_worker_reports_validated_device_information(tmp_path):
         _worker_source(
             {
                 "type": "ready",
+                "snapshot_supported": True,
                 "device_info": {
                     "manufacturer": "Hikvision",
                     "model": "DS-KV8113-WME1",
@@ -156,6 +203,93 @@ async def test_worker_reports_validated_device_information(tmp_path):
     assert info.manufacturer == "Hikvision"
     assert info.model == "DS-KV8113-WME1"
     assert info.firmware_version == "V3.6.0 build 250522"
+    assert worker.status().capabilities == ("events", "snapshot")
+    await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_requests_snapshot_from_existing_process(tmp_path):
+    async def preserve(_delivery: RawPluginDelivery) -> None:
+        pass
+
+    payload = b"\xff\xd8sdk-jpeg\xff\xd9"
+    command = [
+        sys.executable,
+        "-c",
+        _snapshot_worker_source(payload),
+    ]
+    worker = SDKDeviceWorker(tmp_path, _config(), preserve, command=command)
+
+    assert await worker.start()
+    process = worker._process
+    captured, content_type = await worker.capture_snapshot()
+
+    assert captured == payload
+    assert content_type == "image/jpeg"
+    await worker.stop()
+    assert process is not None and process.stdin is not None and process.stdin.is_closing()
+
+
+@pytest.mark.asyncio
+async def test_worker_snapshot_timeout_does_not_fail_worker(tmp_path):
+    async def preserve(_delivery: RawPluginDelivery) -> None:
+        pass
+
+    command = [
+        sys.executable,
+        "-c",
+        _snapshot_worker_source(b"\xff\xd8unused\xff\xd9", respond=False),
+    ]
+    worker = SDKDeviceWorker(
+        tmp_path,
+        _config(),
+        preserve,
+        command=command,
+        snapshot_timeout=0.02,
+    )
+
+    assert await worker.start()
+    with pytest.raises(TimeoutError, match="snapshot request timed out"):
+        await worker.capture_snapshot()
+    assert worker.status().state == PluginInstanceState.RUNNING
+    await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_snapshot_error_is_scoped_to_request(tmp_path):
+    async def preserve(_delivery: RawPluginDelivery) -> None:
+        pass
+
+    command = [
+        sys.executable,
+        "-c",
+        _snapshot_worker_source(b"\xff\xd8unused\xff\xd9", error=True),
+    ]
+    worker = SDKDeviceWorker(tmp_path, _config(), preserve, command=command)
+
+    assert await worker.start()
+    with pytest.raises(RuntimeError, match="capture rejected.*123"):
+        await worker.capture_snapshot()
+    assert worker.status().state == PluginInstanceState.RUNNING
+    await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_invalid_snapshot_response(tmp_path):
+    async def preserve(_delivery: RawPluginDelivery) -> None:
+        pass
+
+    command = [
+        sys.executable,
+        "-c",
+        _snapshot_worker_source(b"not-a-jpeg"),
+    ]
+    worker = SDKDeviceWorker(tmp_path, _config(), preserve, command=command)
+
+    assert await worker.start()
+    with pytest.raises(RuntimeError, match="invalid JPEG"):
+        await worker.capture_snapshot()
+    assert worker.status().state == PluginInstanceState.RUNNING
     await worker.stop()
 
 
@@ -367,6 +501,7 @@ def test_worker_ctypes_layouts_match_hcnetsdk_6_1_9_48_header():
         NET_DVR_DEVICECFG_V50,
         NET_DVR_USER_LOGIN_INFO,
         NET_DVR_SETUPALARM_PARAM_V50,
+        NET_DVR_JPEGPARA,
     )
 
     assert [ctypes.sizeof(structure) for structure in structures] == [
@@ -377,7 +512,54 @@ def test_worker_ctypes_layouts_match_hcnetsdk_6_1_9_48_header():
         500,
         416,
         148,
+        4,
     ]
+
+
+def test_worker_validates_sdk_jpeg_capture_abi_and_markers():
+    payload = b"\xff\xd8valid-jpeg\xff\xd9"
+
+    class FakeSDK:
+        @staticmethod
+        def NET_DVR_CaptureJPEGPicture_NEW(  # noqa: N802 - mirrors the vendor function
+            _user_id,
+            channel,
+            parameters,
+            output,
+            output_size,
+            returned,
+        ):
+            assert channel == 1
+            jpeg_parameters = ctypes.cast(parameters, ctypes.POINTER(NET_DVR_JPEGPARA)).contents
+            assert jpeg_parameters.wPicSize == 0xFF
+            assert jpeg_parameters.wPicQuality == 0
+            assert output_size == MAX_SNAPSHOT_BYTES
+            ctypes.memmove(output, payload, len(payload))
+            ctypes.cast(returned, ctypes.POINTER(ctypes.c_uint)).contents.value = len(payload)
+            return True
+
+    assert _capture_jpeg(FakeSDK(), 42) == payload
+
+    class InvalidSDK(FakeSDK):
+        @staticmethod
+        def NET_DVR_CaptureJPEGPicture_NEW(*_args):  # noqa: N802
+            return True
+
+    with pytest.raises(SnapshotCaptureError, match="invalid JPEG size"):
+        _capture_jpeg(InvalidSDK(), 42)
+
+    class FailingSDK:
+        @staticmethod
+        def NET_DVR_CaptureJPEGPicture_NEW(*_args):  # noqa: N802
+            return False
+
+        @staticmethod
+        def NET_DVR_GetLastError():  # noqa: N802
+            return 17
+
+    with pytest.raises(SnapshotCaptureError) as error:
+        _capture_jpeg(FailingSDK(), 42)
+    assert error.value.code == 17
 
 
 @pytest.mark.asyncio

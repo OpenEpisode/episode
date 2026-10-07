@@ -18,12 +18,22 @@ logger = logging.getLogger(__name__)
 
 
 class SnapshotEngine:
-    """Vendor-neutral snapshot action backed by discovered camera media."""
+    """Vendor-neutral snapshots for configured event types and optional all-event capture."""
 
-    def __init__(self, bus: EventBus, media: MediaRegistry, data_dir: str):
+    def __init__(
+        self,
+        bus: EventBus,
+        media: MediaRegistry,
+        data_dir: str,
+        *,
+        enabled: bool = False,
+        event_types: tuple[str, ...] = ("doorbell",),
+    ):
         self._bus = bus
         self._media = media
         self._orphans_dir = os.path.join(data_dir, "orphans")
+        self._enabled = enabled
+        self._event_types = frozenset(event_types)
         self._running = False
         self._tasks: set[asyncio.Task] = set()
         self._capturing: set[str] = set()
@@ -51,6 +61,8 @@ class SnapshotEngine:
         event = result.event
         if event.event_state.value != "active":
             return
+        if not self._enabled and event.event_type not in self._event_types:
+            return
         if event.participation is not None and not event.participation.allowed:
             return
         device_id = event.device_id
@@ -67,16 +79,13 @@ class SnapshotEngine:
     async def _capture(self, event: Event) -> None:
         device_id = event.device_id
         try:
-            media = self._media.get(device_id)
-            provider = re.sub(r"[^a-z0-9_-]+", "-", media.source.lower()) if media else "media"
-            origin = f"{provider or 'media'}:snapshot"
             snapshot_token = event.metadata.get("snapshot_fetch_token")
-            if isinstance(snapshot_token, str):
-                data, content_type = await self._media.fetch_snapshot(
-                    device_id, snapshot_token=snapshot_token
-                )
-            else:
-                data, content_type = await self._media.fetch_snapshot(device_id)
+            token = snapshot_token if isinstance(snapshot_token, str) else None
+            data, content_type, source = await self._media.fetch_snapshot_with_source(
+                device_id, snapshot_token=token
+            )
+            provider = re.sub(r"[^a-z0-9_-]+", "-", source.lower())
+            origin = f"{provider or 'media'}:snapshot"
             extension = ".png" if content_type == "image/png" else ".jpg"
             path = await asyncio.to_thread(
                 save_bytes,

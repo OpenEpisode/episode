@@ -38,6 +38,21 @@ class ExternalPluginConfig:
 @dataclass
 class SnapshotActionConfig:
     enabled: bool = False
+    event_types: tuple[str, ...] = ("doorbell",)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.event_types, (tuple, list)):
+            raise ValueError("snapshot event_types must be a list of canonical event types")
+        event_types = tuple(self.event_types)
+        if len(event_types) > 64 or any(
+            not isinstance(event_type, str)
+            or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", event_type)
+            for event_type in event_types
+        ):
+            raise ValueError("snapshot event_types must contain valid canonical event types")
+        if len(set(event_types)) != len(event_types):
+            raise ValueError("snapshot event_types cannot contain duplicates")
+        self.event_types = event_types
 
 
 @dataclass

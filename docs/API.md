@@ -95,6 +95,13 @@ claim about the camera's currently selected encode settings.
 Devices may be configured for video before a plugin has completed discovery;
 while no usable source is registered or configured, recording cannot start.
 
+The Device detail `capture_policy` reports `automatic_snapshots` for capture on
+all active Events and `snapshot_event_types` for canonical Event types that
+trigger snapshots independently. The default event-type list contains
+`doorbell`; those snapshots are captured only when the Device has a registered
+snapshot source. Snapshot Evidence references its triggering Event and Episode;
+the original Event delivery is not modified.
+
 `configuration.video.recording_source_id` is empty for **Automatic**, which
 preserves the integration's current preferred source. Otherwise it pins future
 recordings to a discovered source ID (or `manual` when a manual RTSP endpoint is
