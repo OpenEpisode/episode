@@ -264,6 +264,14 @@ registry prefers an event-bound snapshot fetcher for tokenized requests and
 otherwise uses a snapshot-capable source, even when another connector supplies
 the selected video stream.
 
+Snapshot actions run for configured canonical Event types independently of
+the optional all-Event snapshot setting. The default configured type is
+`doorbell`; capture occurs only when the Device has a registered snapshot
+provider. The action stores a separate Evidence item linked to the triggering
+Event and its active Episode, leaving the raw delivery untouched. Device plugins
+provide only the snapshot capability; the core event policy, Episode
+association, persistence, and retention remain vendor-neutral.
+
 The optional Event API is the vendor-neutral exception to plugin interpretation:
 its JSON schema is already a canonical observation contract, so a core-owned
 handler validates it after raw preservation. The referenced Device's stored Area

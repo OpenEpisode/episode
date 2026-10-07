@@ -13,7 +13,7 @@ from episode.domain.models import Area, CapabilityConfig, Device, Episode, Event
 from episode.storage.repository import Repository
 
 
-def _operations() -> OperationalView:
+def _operations(*, snapshots_enabled=False, snapshot_event_types=()) -> OperationalView:
     connectors = [
         {
             "name": "ISAPI:Gate",
@@ -132,7 +132,7 @@ def _operations() -> OperationalView:
             "fragment_seconds": 4,
         },
         snapshot_status=lambda: {
-            "running": False,
+            "running": snapshots_enabled or bool(snapshot_event_types),
             "captured": 0,
             "failures": 0,
             "suppressed": 0,
@@ -140,7 +140,8 @@ def _operations() -> OperationalView:
         },
         connector_statuses=lambda: connectors,
         plugin_statuses=lambda: plugins,
-        snapshots_enabled=False,
+        snapshots_enabled=snapshots_enabled,
+        snapshot_event_types=snapshot_event_types,
     )
 
 
@@ -185,6 +186,18 @@ def test_external_plugin_assignment_is_visible_on_its_device():
     assert integration["type"] == "acme_tripwire"
     assert integration["state"] == "healthy"
     assert integration["capabilities"] == ["events"]
+
+
+def test_snapshot_event_policy_is_visible_as_enabled_for_doorbell_events():
+    operations = _operations(snapshot_event_types=("doorbell",))
+
+    assert operations.status()["services"]["snapshots"] == "healthy"
+    snapshot_service = next(
+        service for service in operations.diagnostics()["services"] if service["id"] == "snapshots"
+    )
+    assert snapshot_service["summary"] == (
+        "Requests and preserves a current image for active Doorbell Events"
+    )
 
 
 @pytest.mark.asyncio
@@ -380,6 +393,7 @@ async def test_device_api_owns_identity_integrations_and_safe_capture_policy(tmp
         assert detail["capture_policy"] == {
             "recording": "on_episode",
             "automatic_snapshots": False,
+            "snapshot_event_types": [],
             "onvif_events": False,
             "activity_window_seconds": 30,
         }

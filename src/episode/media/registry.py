@@ -322,6 +322,15 @@ class MediaRegistry:
     async def fetch_snapshot(
         self, device_id: str, *, snapshot_token: str | None = None
     ) -> tuple[bytes, str]:
+        data, content_type, _ = await self.fetch_snapshot_with_source(
+            device_id, snapshot_token=snapshot_token
+        )
+        return data, content_type
+
+    async def fetch_snapshot_with_source(
+        self, device_id: str, *, snapshot_token: str | None = None
+    ) -> tuple[bytes, str, str]:
+        """Fetch a snapshot and return the registered source that supplied it."""
         source = self._snapshot_source(device_id, snapshot_token)
         if not source:
             raise LookupError(f"No snapshot endpoint for device {device_id}")
@@ -331,7 +340,7 @@ class MediaRegistry:
                 raise ValueError(f"Snapshot fetcher returned {content_type}")
             if len(data) > 25 * 1024 * 1024:
                 raise ValueError("Snapshot exceeds the 25 MiB safety limit")
-            return data, content_type
+            return data, content_type, source.source or "media"
         # Plugin-native fetcher (e.g. Reolink binary protocol) takes precedence.
         if source.snapshot_fetcher is not None:
             data, content_type = await source.snapshot_fetcher()
@@ -339,7 +348,7 @@ class MediaRegistry:
                 raise ValueError(f"Snapshot fetcher returned {content_type}")
             if len(data) > 25 * 1024 * 1024:
                 raise ValueError("Snapshot exceeds the 25 MiB safety limit")
-            return data, content_type
+            return data, content_type, source.source or "media"
         if not source.snapshot_uri:
             raise LookupError(f"No snapshot endpoint for device {device_id}")
         auth = httpx.DigestAuth(source.username, source.password) if source.username else None
@@ -351,4 +360,4 @@ class MediaRegistry:
             raise ValueError(f"Snapshot endpoint returned {content_type}")
         if len(response.content) > 25 * 1024 * 1024:
             raise ValueError("Snapshot exceeds the 25 MiB safety limit")
-        return response.content, content_type
+        return response.content, content_type, source.source or "media"

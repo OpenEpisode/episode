@@ -161,6 +161,7 @@ async def test_snapshot_action_preserves_downloaded_bytes_as_episode_evidence():
         data_dir=temp_dir,
         db_path=os.path.join(temp_dir, "episode.db"),
         episode_timeout=10,
+        actions={"snapshot": {"enabled": True}},
     )
     repo = Repository(config)
     bus = EventBus()
@@ -171,13 +172,20 @@ async def test_snapshot_action_preserves_downloaded_bytes_as_episode_evidence():
 
     expected = b"\xff\xd8\xff\xe0immutable-jpeg-evidence"
 
-    async def fake_snapshot(device_id: str):
+    async def fake_snapshot_with_source(device_id: str, *, snapshot_token: str | None = None):
         assert device_id == "camera-1"
-        return expected, "image/jpeg"
+        assert snapshot_token is None
+        return expected, "image/jpeg", "onvif"
 
-    media.fetch_snapshot = fake_snapshot
+    media.fetch_snapshot_with_source = fake_snapshot_with_source
     episode_engine = EpisodeEngine(repo, bus, timeout=10)
-    snapshot_engine = SnapshotEngine(bus, media, config.data_dir)
+    snapshot_engine = SnapshotEngine(
+        bus,
+        media,
+        config.data_dir,
+        enabled=config.actions.snapshot.enabled,
+        event_types=config.actions.snapshot.event_types,
+    )
     await repo.initialize()
     await repo.upsert_area(Area(id="entrance", name="Entrance"))
     await repo.upsert_device(
@@ -216,6 +224,10 @@ async def test_snapshot_action_preserves_downloaded_bytes_as_episode_evidence():
 
     assert len(evidence) == 1
     assert evidence[0].episode_id is not None
+    events = await repo.list_events(device_id="camera-1")
+    assert len(events) == 1
+    assert evidence[0].event_id == events[0].id
+    assert evidence[0].episode_id == events[0].episode_id
     with open(evidence[0].file_path, "rb") as stored:
         assert stored.read() == expected
     receipts = await repo.list_ingestion_receipts(evidence_id=evidence[0].id)

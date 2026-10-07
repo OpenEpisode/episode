@@ -205,3 +205,99 @@ async def test_camera_uses_video_worker_without_subscribing_to_sdk_events(tmp_pa
     assert "camera-secret" not in repr(status)
     assert "doorbell-secret" not in repr(status)
     await plugin.stop()
+
+
+@pytest.mark.asyncio
+async def test_doorbell_registers_snapshot_only_media_after_worker_starts(tmp_path):
+    _install_sdk_layout(tmp_path)
+    payload = json.dumps({"ok": True, "version": "6.1.9.48"})
+    workers = []
+
+    class MediaRegistry:
+        def __init__(self):
+            self.registered = []
+            self.unregistered = []
+
+        def register(self, source):
+            self.registered.append(source)
+
+        def unregister(self, device_id, *, source=None):
+            self.unregistered.append((device_id, source))
+
+    class FakeWorker:
+        def __init__(self, config):
+            self.config = config
+            self._status = PluginInstanceStatus(
+                id=config.id,
+                name=config.name,
+                state=PluginInstanceState.STARTING,
+            )
+
+        @property
+        def device_id(self):
+            return self.config.id
+
+        def status(self):
+            return self._status
+
+        async def start(self):
+            self._status = PluginInstanceStatus(
+                id=self.config.id,
+                name=self.config.name,
+                state=PluginInstanceState.RUNNING,
+                capabilities=("events", "snapshot"),
+            )
+            return True
+
+        async def capture_snapshot(self):
+            return b"\xff\xd8snapshot\xff\xd9", "image/jpeg"
+
+        async def stop(self):
+            pass
+
+    def worker_factory(_path, config, _sink):
+        worker = FakeWorker(config)
+        workers.append(worker)
+        return worker
+
+    async def preserve(_delivery):
+        pass
+
+    media_registry = MediaRegistry()
+    devices = (
+        {
+            "id": "front-doorbell",
+            "name": "Front Doorbell",
+            "device_type": "doorbell",
+            "area_id": "front",
+            "ip_address": "192.0.2.21",
+            "username": "user",
+            "password": "doorbell-secret",
+            "configs": {"hikvision_sdk": {}},
+        },
+    )
+    plugin = HikvisionSDKPlugin(
+        PluginContext(tmp_path, devices, preserve, media_registry=media_registry),
+        host_machine="x86_64",
+        probe_command=lambda _path: [
+            sys.executable,
+            "-c",
+            f"print({PROBE_RESULT_PREFIX + payload!r})",
+        ],
+        worker_factory=worker_factory,
+    )
+
+    await plugin.start()
+
+    assert len(media_registry.registered) == 1
+    source = media_registry.registered[0]
+    assert source.device_id == "front-doorbell"
+    assert source.source == "hikvision-sdk-snapshot"
+    assert source.stream_uri == ""
+    assert source.video_handler is None
+    assert source.video_source is None
+    assert source.snapshot_fetcher is not None
+    assert await source.snapshot_fetcher() == (b"\xff\xd8snapshot\xff\xd9", "image/jpeg")
+
+    await plugin.stop()
+    assert media_registry.unregistered == [("front-doorbell", "hikvision-sdk-snapshot")]

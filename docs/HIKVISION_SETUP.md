@@ -164,8 +164,12 @@ The selected Device role determines what the HCNetSDK connection does:
   source choices. SDK video preview starts only while that Device is recorded.
   Camera alarm callbacks are not subscribed to; use ONVIF or ISAPI for Events.
 - **Doorbell:** Episode logs in through its existing isolated event worker and
-  subscribes to alarm callbacks. SDK video sources are not registered for
-  Doorbells yet.
+  subscribes to alarm callbacks. On an active canonical `doorbell` Event, the
+  core requests a still image through that worker's existing SDK login when
+  HCNetSDK reports JPEG-capture support, then attaches the returned JPEG as
+  separate Evidence to the Event's Episode. The callback itself does not
+  contain the image, and the original callback delivery remains unchanged. SDK
+  video sources are not registered for Doorbells.
 
 The camera source list describes its current encoder configuration; it does
 not change the camera's settings or enumerate every mode it could support.

@@ -29,9 +29,13 @@ Start with one Area and one Device before adding more integrations:
 An Episode without video may be valid for an event-only source. If you expected
 video, check recording behavior, selected source, and **System → Recordings**.
 If no Event appears, check **System → Integrations** and the integration's
-troubleshooting guide. Snapshot capture is separate from video and disabled in
-the example action configuration; do not expect a JPEG merely because a video
-stream works.
+troubleshooting guide. Snapshot capture is separate from video. By default,
+Episode requests a snapshot for active `doorbell` Events when their Device has a
+snapshot-capable integration. Set `actions.snapshot.event_types` to include
+other canonical Event types, or enable `actions.snapshot.enabled` to capture
+every active Event. Configured Hikvision Doorbells with HCNetSDK event
+integration request the image over their already-running SDK connection. Each
+image is separate Evidence and never modifies the original Event delivery.
 
 ## Areas and recording behavior
 

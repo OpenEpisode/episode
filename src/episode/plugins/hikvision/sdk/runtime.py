@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import Sequence
 
 from episode.plugins.hikvision.sdk.worker import (
     MAX_NOTIFICATION_BYTES,
+    MAX_SNAPSHOT_BYTES,
     WORKER_MESSAGE_PREFIX,
 )
 from episode.plugins.models import (
@@ -25,6 +27,8 @@ from episode.plugins.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+SNAPSHOT_REQUEST_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -58,22 +62,31 @@ class SDKDeviceWorker:
         *,
         command: Sequence[str] | None = None,
         startup_timeout: float = 15.0,
+        snapshot_timeout: float = SNAPSHOT_REQUEST_TIMEOUT_SECONDS,
     ):
         self._plugin_path = plugin_path
         self._config = config
         self._delivery_sink = delivery_sink
         self._command = tuple(command or default_worker_command(plugin_path))
         self._startup_timeout = startup_timeout
+        self._snapshot_timeout = snapshot_timeout
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task | None = None
         self._wait_task: asyncio.Task | None = None
         self._startup: asyncio.Future[bool] | None = None
+        self._snapshot_requests: dict[str, asyncio.Future[tuple[bytes, str]]] = {}
+        self._snapshot_lock = asyncio.Lock()
         self._stopping = False
         self._status = PluginInstanceStatus(
             id=config.id,
             name=config.name,
             state=PluginInstanceState.STARTING,
+            capabilities=("events",),
         )
+
+    @property
+    def device_id(self) -> str:
+        return self._config.id
 
     def status(self) -> PluginInstanceStatus:
         return self._status
@@ -132,7 +145,6 @@ class SDKDeviceWorker:
         try:
             self._process.stdin.write(worker_input + b"\n")
             await self._process.stdin.drain()
-            self._process.stdin.close()
         except (BrokenPipeError, ConnectionResetError):
             self._set_failed("The HCNetSDK worker exited during startup.")
 
@@ -149,13 +161,17 @@ class SDKDeviceWorker:
     async def stop(self, *, preserve_failure: bool = False) -> None:
         self._stopping = True
         process = self._process
-        if process is not None and process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=5)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
+        if process is not None:
+            if process.returncode is None:
+                process.terminate()
+            if process.stdin is not None and not process.stdin.is_closing():
+                process.stdin.close()
+            if process.returncode is None:
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except TimeoutError:
+                    process.kill()
+                    await process.wait()
 
         tasks = [
             task
@@ -168,12 +184,56 @@ class SDKDeviceWorker:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+        self._fail_snapshot_requests("HCNetSDK worker stopped.")
+
         self._process = None
         self._reader_task = None
         self._wait_task = None
         if not preserve_failure:
             self._status = replace(self._status, state=PluginInstanceState.STOPPED)
         self._resolve_startup(False)
+
+    async def capture_snapshot(self) -> tuple[bytes, str]:
+        """Request one JPEG from the already-authenticated native worker."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._snapshot_timeout
+        try:
+            await asyncio.wait_for(self._snapshot_lock.acquire(), timeout=self._snapshot_timeout)
+        except TimeoutError as exc:
+            raise TimeoutError("HCNetSDK snapshot request timed out.") from exc
+        try:
+            process = self._process
+            if process is None or process.returncode is not None:
+                raise RuntimeError("HCNetSDK worker is not running.")
+            if self._status.state != PluginInstanceState.RUNNING:
+                raise RuntimeError("HCNetSDK worker is not ready for snapshots.")
+            if process.stdin is None:
+                raise RuntimeError("HCNetSDK worker command channel is unavailable.")
+            request_id = uuid.uuid4().hex
+            future = loop.create_future()
+            self._snapshot_requests[request_id] = future
+            try:
+                command = json.dumps(
+                    {"type": "snapshot", "request_id": request_id},
+                    separators=(",", ":"),
+                ).encode()
+                process.stdin.write(command + b"\n")
+                remaining = deadline - loop.time()
+                await asyncio.wait_for(process.stdin.drain(), timeout=max(remaining, 0.001))
+                return await asyncio.wait_for(
+                    asyncio.shield(future), timeout=max(deadline - loop.time(), 0.001)
+                )
+            except (BrokenPipeError, ConnectionResetError, ValueError) as exc:
+                self._set_failed("HCNetSDK worker command channel closed.")
+                raise RuntimeError("HCNetSDK worker command channel closed.") from exc
+            except TimeoutError as exc:
+                raise TimeoutError("HCNetSDK snapshot request timed out.") from exc
+            finally:
+                self._snapshot_requests.pop(request_id, None)
+                if future.done() and not future.cancelled():
+                    future.exception()
+        finally:
+            self._snapshot_lock.release()
 
     async def _read_messages(self) -> None:
         assert self._process is not None
@@ -204,12 +264,16 @@ class SDKDeviceWorker:
         if message_type == "ready":
             now = datetime.now(tz=timezone.utc)
             device_info = self._device_info(message.get("device_info"))
+            capabilities = ("events",)
+            if message.get("snapshot_supported") is True:
+                capabilities = (*capabilities, "snapshot")
             self._status = replace(
                 self._status,
                 state=PluginInstanceState.RUNNING,
                 connected_at=now,
                 error=None,
                 device_info=device_info,
+                capabilities=capabilities,
             )
             self._resolve_startup(True)
             return
@@ -225,6 +289,9 @@ class SDKDeviceWorker:
             return
         if message_type == "alarm":
             await self._preserve_alarm(message)
+            return
+        if message_type in {"snapshot", "snapshot_error"}:
+            self._resolve_snapshot(message)
             return
         if message_type in {"notification_rejected", "callback_error"}:
             self._set_failed("HCNetSDK could not safely copy a device notification.")
@@ -316,7 +383,60 @@ class SDKDeviceWorker:
             state=PluginInstanceState.FAILED,
             error=error,
         )
+        self._fail_snapshot_requests(error)
         self._resolve_startup(False)
+
+    def _resolve_snapshot(self, message: dict) -> None:
+        request_id = message.get("request_id")
+        if not isinstance(request_id, str):
+            return
+        future = self._snapshot_requests.get(request_id)
+        if future is None or future.done():
+            return
+        if message.get("type") == "snapshot_error":
+            detail = message.get("message")
+            if not isinstance(detail, str) or not detail:
+                detail = "HCNetSDK snapshot capture failed."
+            code = message.get("code")
+            if isinstance(code, int):
+                detail = f"{detail} (error {code})."
+            future.set_exception(RuntimeError(detail))
+            return
+
+        encoded = message.get("payload")
+        declared_length = message.get("length")
+        content_type = message.get("content_type")
+        if not isinstance(encoded, str) or not isinstance(declared_length, int):
+            future.set_exception(RuntimeError("HCNetSDK returned an invalid snapshot response."))
+            return
+        if not 4 <= declared_length <= MAX_SNAPSHOT_BYTES:
+            future.set_exception(RuntimeError("HCNetSDK returned an invalid snapshot size."))
+            return
+        if len(encoded) != ((declared_length + 2) // 3) * 4:
+            future.set_exception(RuntimeError("HCNetSDK returned an invalid snapshot length."))
+            return
+        if content_type != "image/jpeg":
+            future.set_exception(RuntimeError("HCNetSDK returned an unsupported snapshot type."))
+            return
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            future.set_exception(RuntimeError("HCNetSDK returned invalid snapshot bytes."))
+            return
+        if (
+            len(payload) != declared_length
+            or not 4 <= len(payload) <= MAX_SNAPSHOT_BYTES
+            or payload[:2] != b"\xff\xd8"
+            or payload[-2:] != b"\xff\xd9"
+        ):
+            future.set_exception(RuntimeError("HCNetSDK returned invalid JPEG data."))
+            return
+        future.set_result((payload, content_type))
+
+    def _fail_snapshot_requests(self, message: str) -> None:
+        for future in self._snapshot_requests.values():
+            if not future.done():
+                future.set_exception(RuntimeError(message))
 
     def _resolve_startup(self, result: bool) -> None:
         if self._startup is not None and not self._startup.done():
