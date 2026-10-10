@@ -12,6 +12,7 @@ const {
   ZOOM_LABELS,
   LABEL_W,
   timeToY,
+  timeToX,
   yToTime,
   canvasHeight,
   normalizeTimeRange,
@@ -262,6 +263,34 @@ test("dragging the timeline commits a period instead of seeking", () => {
 
   assert.deepEqual(selectedRanges, [{ start: DAY_START + 2 * HOUR, end: DAY_START + 3 * HOUR }]);
   assert.deepEqual(soughtTimes, []);
+  axis.cleanup();
+  restore();
+});
+
+test("dragging a horizontal timeline never selects a range (native scroll owns the drag)", () => {
+  const selectedRanges = [];
+  const soughtTimes = [];
+  const { axis, container, restore } = mountAxisWithMockDom({
+    dayStart: DAY_START,
+    dayEnd: DAY_START + 24 * HOUR,
+    now: DAY_START + 12 * HOUR,
+    selectEnd: DAY_START + 12 * HOUR,
+    playhead: DAY_START,
+    segments: [],
+    detections: [],
+  }, {
+    horizontal: true,
+    onRangeChange: range => selectedRanges.push(range),
+    onSeek: time => soughtTimes.push(time),
+  });
+  const wrap = container.child;
+  const startX = timeToX(DAY_START + 2 * HOUR, DAY_START, 0);
+  const endX = timeToX(DAY_START + 3 * HOUR, DAY_START, 0);
+  wrap.listeners.pointerdown({ pointerId: 1, clientX: startX, clientY: 10 });
+  wrap.listeners.pointermove({ pointerId: 1, clientX: endX, clientY: 10 });
+  wrap.listeners.pointerup({ pointerId: 1, clientX: endX, clientY: 10 });
+
+  assert.deepEqual(selectedRanges, []);
   axis.cleanup();
   restore();
 });

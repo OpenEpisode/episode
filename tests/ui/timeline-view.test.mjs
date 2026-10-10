@@ -224,13 +224,13 @@ test("episode context renders a compact columns card with only the key details",
   assert.ok(!html.includes("episode-1"));
 });
 
-test("detections size to their content and cap at four rows", () => {
+test("detections size to their content and grow without an inner scrollbar", () => {
   const layoutRule = stylesheet.match(/\.timeline-view\s*\{([^}]*)\}/)?.[1] || "";
   const bodyRule = stylesheet.match(/\.tl-det-body\s*\{([^}]*)\}/)?.[1] || "";
   assert.match(layoutRule, /align-content:\s*start;/);
   assert.match(bodyRule, /height:\s*auto;/);
-  assert.match(bodyRule, /max-height:\s*calc\(4 \* var\(--det-row-height/);
-  assert.doesNotMatch(bodyRule, /(?:^|\n)\s*height:\s*calc\(4 \* var\(--det-row-height/);
+  assert.match(bodyRule, /max-height:\s*none;/);
+  assert.match(bodyRule, /overflow:\s*visible;/);
 });
 
 test("episode context renders a clear empty state", () => {
@@ -246,6 +246,11 @@ test("episode context explains when a selected recording has no Episode", () => 
 test("top timeline panels keep a usable height when the player has no recording", () => {
   assert.equal(calculateTopRowHeight({ head: 32, stage: 240, controls: 0, context: 70 }), 420);
   assert.equal(calculateTopRowHeight({ head: 32, stage: 500, controls: 48, context: 120 }), 702);
+});
+
+test("horizontal timeline scrolls natively on touch instead of selecting a range", () => {
+  const horizontalCanvas = stylesheet.match(/\.tl-axis-horizontal \.tl-axis-canvas\s*\{([^}]*)\}/)?.[1] || "";
+  assert.match(horizontalCanvas, /touch-action:\s*pan-x;/);
 });
 
 test("timeline opens today and Latest recording explicitly jumps to available footage", async () => {

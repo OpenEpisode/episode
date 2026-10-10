@@ -421,7 +421,13 @@ function renderLayout() {
   showContent(`
     <div class="timeline-view" data-tl-view>
       <section class="tl-region tl-cams">
-        <div class="tl-region-head"><svg><use href="icons.svg#devices"></use></svg>Cameras</div>
+        <div class="tl-region-head">
+          <svg><use href="icons.svg#devices"></use></svg>
+          <span>Cameras</span>
+          <button type="button" class="tl-cams-toggle" data-tl-cams-toggle aria-label="Toggle camera list" title="Show/hide camera list">
+            <svg><use href="icons.svg#chevron-right"></use></svg>
+          </button>
+        </div>
         <div class="tl-region-body" data-tl-cams>${placeholder("devices", "No cameras configured")}</div>
       </section>
       <section class="tl-region tl-timeline">
@@ -628,6 +634,36 @@ function wireDetectionLimit() {
   handler();
   select.addEventListener("change", handler);
   registerCleanup(() => select.removeEventListener("change", handler));
+}
+
+// Camera list collapse/expand toggle — the chevron button in the camera
+// region header toggles visibility of the camera list body. On narrow screens
+// the list is collapsed by default to give the timeline, player, and detection
+// grid more space.
+function wireCameraListToggle() {
+  const toggle = $("[data-tl-cams-toggle]");
+  const body = $("[data-tl-cams]");
+  if (!toggle || !body) return;
+  const region = toggle.closest(".tl-region");
+
+  const updateChevron = collapsed => {
+    const use = toggle.querySelector("use");
+    if (use) use.setAttribute("href", collapsed ? "icons.svg#chevron-right" : "icons.svg#chevron-down");
+  };
+
+  const toggleCameraList = () => {
+    const collapsed = region.classList.toggle("tl-cams-collapsed");
+    updateChevron(collapsed);
+  };
+
+  toggle.addEventListener("click", toggleCameraList);
+  registerCleanup(() => toggle.removeEventListener("click", toggleCameraList));
+
+  // On mobile, collapse by default.
+  if (window.matchMedia?.("(max-width: 767px)").matches) {
+    region.classList.add("tl-cams-collapsed");
+    updateChevron(true);
+  }
 }
 
 // The date selector lives in the timeline region head. The text input commits
@@ -902,6 +938,7 @@ async function loadDay({ preferGlobalLatest = false, preservePlayback = false } 
     axis = mountTimelineAxis(tlBody, {
       model: emptyDayModel(state.selectedDate, { now, followingToday: state.followingToday }),
       zoom: state.zoomLevel,
+      horizontal: window.matchMedia?.("(max-width: 767px)").matches ?? false,
       onSeek,
       onScrub,
       onZoom,
@@ -1245,6 +1282,7 @@ export async function renderTimeline() {
   state = defaultState();
   showLoading();
   renderLayout();
+  wireCameraListToggle();
   wireActionButtons();
   mountPlayerInstance();
   mountDetectionGridInstance();
