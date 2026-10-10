@@ -288,6 +288,7 @@ main:has(> #view-content > .timeline-view) {
   padding: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .tl-player-wrap {
