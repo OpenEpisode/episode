@@ -29,6 +29,14 @@ main:has(> #view-content > .timeline-view) {
   min-height: calc(100vh - 4.5rem);
 }
 
+/* The icon symbols in icons.svg are fill-based (no stroke). Set fill to
+   currentColor so every SVG in the timeline view inherits the CSS color
+   property and responds to theme changes. The sidebar uses stroke-based
+   .nav-icon / .button-icon classes and is not affected. */
+.timeline-view svg {
+  fill: currentColor;
+}
+
 /* Region shells. Each is a bordered surface matching episode-workspace panels. */
 .tl-region {
   background: var(--surface);
@@ -97,7 +105,7 @@ main:has(> #view-content > .timeline-view) {
 .tl-region-body {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden auto;
   padding: 10px;
 }
 
@@ -688,7 +696,7 @@ main:has(> #view-content > .timeline-view) {
   height: auto;
   max-height: calc(4 * var(--det-row-height, 128px) + 20px);
   min-height: 0;
-  overflow: auto;
+  overflow: hidden auto;
   padding: 10px;
 }
 

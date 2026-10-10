@@ -140,7 +140,7 @@ body { letter-spacing: -.005em; }
   width: 100%;
 }
 
-main { padding: 2.1rem clamp(1.4rem, 3.1vw, 3.5rem) 4rem; }
+main { overflow-x: hidden; padding: 2.1rem clamp(1.4rem, 3.1vw, 3.5rem) 4rem; }
 #view-content { max-width: 1560px; }
 .policy-banner {
   align-items: center;
