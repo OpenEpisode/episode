@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import FileResponse
@@ -16,6 +17,7 @@ from episode.api.schemas import (
     EvidenceResponse,
     IngestionReceiptResponse,
 )
+from episode.api.time_ranges import normalize_datetime_range
 from episode.domain.models import EpisodeState
 from episode.media.timelapse import TimelapseGenerationError, TimelapseNotFoundError
 
@@ -32,10 +34,25 @@ def episodes_router(context: ApiContext) -> APIRouter:
     async def list_episodes(
         area_id: str | None = None,
         state: EpisodeState | None = None,
+        overlaps_from: datetime | None = None,
+        overlaps_before: datetime | None = None,
         limit: PageLimit = DEFAULT_LIMIT,
         offset: PageOffset = 0,
     ):
-        episodes = await repo.list_episodes(area_id, state, limit, offset)
+        overlaps_from, overlaps_before = normalize_datetime_range(
+            overlaps_from,
+            overlaps_before,
+            start_name="overlaps_from",
+            end_name="overlaps_before",
+        )
+        episodes = await repo.list_episodes(
+            area_id,
+            state,
+            limit,
+            offset,
+            overlaps_from=overlaps_from,
+            overlaps_before=overlaps_before,
+        )
         trigger_types = await repo.episode_trigger_event_types([episode.id for episode in episodes])
         return [public_episode(episode, trigger_types.get(episode.id)) for episode in episodes]
 

@@ -1,10 +1,10 @@
 // NVR Playback & Detections — Timeline view orchestrator.
 // Composes the 4-region layout (camera list, vertical 24h timeline axis,
 // player, detection grid) and wires keyboard shortcuts, date selection,
-// and zoom. Data is composed client-side from the API: /devices, /episodes,
-// /episodes/{id}/evidence, /episodes/{id}/events.
+// and zoom. Data is composed client-side from the API: /devices plus the
+// window-bounded /episodes, /events, and /evidence collections.
 import { $, escHtml } from "./dom.js";
-import { api } from "./api.js";
+import { api, apiAll } from "./api.js";
 import { showContent, showLoading, showError } from "./view.js";
 import { mountCameraList } from "./camera-list.js";
 import { mountTimelineAxis, normalizeTimeRange, ZOOM_LEVELS, ZOOM_LABELS } from "./timeline-axis.js";
@@ -213,13 +213,6 @@ export function isTimelineRecordingPlayable(item) {
 
 const SNAPSHOT_ASSOCIATION_WINDOW_MS = 2000;
 
-function episodeWindow(episode) {
-  return {
-    start: ts(episode.start_time),
-    end: ts(episode.end_time || episode.last_event_time || episode.start_time),
-  };
-}
-
 function nearestEvent(snapshot, events, usedEventIds) {
   const snapshotTime = ts(snapshot.timestamp);
   let best = null;
@@ -247,23 +240,37 @@ async function buildDayModel(cameras, dateStr, options = {}) {
   const selectedCameras = Array.isArray(cameras) ? cameras : [cameras];
   const now = options.now ?? Date.now();
   const { dayStart, dayEnd } = timelineBounds(dateStr, { ...options, now });
-  const episodes = await api("/episodes?limit=200");
-  const relevant = episodes.filter(ep => {
-    const { start, end } = episodeWindow(ep);
-    return end >= dayStart && start <= dayEnd;
-  });
+  // Three paged reads cover every Episode touching the window, instead of two
+  // requests per Episode. Events and Evidence keep their Episode link.
+  const windowQuery = (prefix = "") =>
+    `${prefix}overlaps_from=${encodeURIComponent(new Date(dayStart).toISOString())}`
+    + `&${prefix}overlaps_before=${encodeURIComponent(new Date(dayEnd).toISOString())}`;
+  const selectedIds = new Set(selectedCameras.map(camera => camera?.id).filter(Boolean));
+  const selectedAreaIds = new Set(selectedCameras.map(camera => camera?.area_id).filter(Boolean));
+  const [episodes, windowEvidence, windowEvents] = await Promise.all([
+    apiAll(`/episodes?${windowQuery()}`),
+    apiAll(`/evidence?${windowQuery("episode_")}`),
+    apiAll(`/events?${windowQuery("episode_")}`),
+  ]);
+  const groupByEpisode = items => {
+    const groups = new Map();
+    for (const item of items) {
+      if (!item.episode_id) continue;
+      if (!groups.has(item.episode_id)) groups.set(item.episode_id, []);
+      groups.get(item.episode_id).push(item);
+    }
+    return groups;
+  };
+  const evidenceByEpisode = groupByEpisode(windowEvidence);
+  const eventsByEpisode = groupByEpisode(windowEvents);
   const segments = [];
   const detections = [];
   const episodeDetails = new Map();
   const segmentIds = new Set();
-  const selectedIds = new Set(selectedCameras.map(camera => camera?.id).filter(Boolean));
-  const selectedAreaIds = new Set(selectedCameras.map(camera => camera?.area_id).filter(Boolean));
-  for (const episode of relevant) {
+  for (const episode of episodes) {
     if (selectedAreaIds.size && episode.primary_area_id && !selectedAreaIds.has(episode.primary_area_id)) continue;
-    const [evidence, events] = await Promise.all([
-      api(`/episodes/${episode.id}/evidence?limit=500`),
-      api(`/episodes/${episode.id}/events?limit=500`),
-    ]);
+    const evidence = evidenceByEpisode.get(episode.id) || [];
+    const events = eventsByEpisode.get(episode.id) || [];
     const snapshotsByDevice = new Map();
     const eventsByDevice = new Map();
     const details = {

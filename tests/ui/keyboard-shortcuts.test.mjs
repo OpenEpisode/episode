@@ -12,7 +12,7 @@ const domUrl = moduleUrl(`
   export const $$ = (s, p) => (p || globalThis.document)?.querySelectorAll?.(s) || [];
   export function escHtml(v) { return String(v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
 `);
-const apiUrl = moduleUrl(`export async function api(p) { return []; }`);
+const apiUrl = moduleUrl(`export async function api(p) { return []; } export async function apiAll(p) { return []; }`);
 const viewUrl = moduleUrl(`
   export function showContent(h) {}
   export function showLoading() {}

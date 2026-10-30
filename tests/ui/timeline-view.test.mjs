@@ -16,6 +16,7 @@ const emptyUrl = moduleUrl(`
   export const $ = () => null;
   export const escHtml = value => String(value ?? "");
   export async function api() { return []; }
+  export async function apiAll() { return []; }
   export function showContent() {}
   export function showLoading() {}
   export function showError() {}
@@ -103,6 +104,7 @@ const browserHarnessUrl = moduleUrl(`
   export function element(selector) { return elements.get(selector) || null; }
   export function setApiHandler(handler) { apiHandler = handler; }
   export async function api(path) { calls.api.push(path); return apiHandler(path); }
+  export async function apiAll(path) { calls.api.push(path); return apiHandler(path); }
   export function apiCalls() { return [...calls.api]; }
   export function showContent(markup) { calls.markup = markup; }
   export function markup() { return calls.markup; }
@@ -319,7 +321,7 @@ test("timeline opens today and Latest recording explicitly jumps to available fo
     assert.equal(harness.playerState().emptyMessages.at(-1), "No recordings available for the selected cameras");
     assert.match(harness.markup(), /data-tl-action="latest-recording"[^>]*>\s*Latest recording\s*</);
 
-    const episodeRequestCount = () => harness.apiCalls().filter(path => path.startsWith("/episodes?limit=200")).length;
+    const episodeRequestCount = () => harness.apiCalls().filter(path => path.startsWith("/episodes?overlaps_from")).length;
     const beforeHiddenRefresh = episodeRequestCount();
     globalThis.document.visibilityState = "hidden";
     timers[0].callback();
@@ -362,6 +364,60 @@ test("timeline opens today and Latest recording explicitly jumps to available fo
   } finally {
     cleanupTimeline();
     assert.deepEqual(clearedTimers, [1]);
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+    if (originalSetInterval === undefined) delete globalThis.setInterval;
+    else globalThis.setInterval = originalSetInterval;
+    if (originalClearInterval === undefined) delete globalThis.clearInterval;
+    else globalThis.clearInterval = originalClearInterval;
+  }
+});
+
+test("timeline loads a day with three window-bounded reads regardless of Episode count", async () => {
+  const originalWindow = globalThis.window;
+  const originalDocument = globalThis.document;
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  globalThis.setInterval = () => 1;
+  globalThis.clearInterval = () => {};
+  globalThis.document = {
+    visibilityState: "visible",
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const harness = await import(browserHarnessUrl);
+  const { cleanupTimeline, renderTimeline } = await import(interactiveTimelineUrl);
+  const camera = { id: "camera-1", name: "Front camera", device_type: "camera", area_id: "area-1" };
+  const started = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const episodes = Array.from({ length: 40 }, (_, index) => ({
+    id: `episode-${index}`,
+    primary_area_id: "area-1",
+    start_time: started,
+    end_time: started,
+  }));
+  harness.setApiHandler(async path => {
+    if (path.startsWith("/devices")) return [camera];
+    if (path.startsWith("/episodes?")) return episodes;
+    return [];
+  });
+
+  try {
+    await renderTimeline();
+    for (let i = 0; i < 20; i += 1) await new Promise(resolve => setImmediate(resolve));
+    const calls = harness.apiCalls();
+    assert.equal(calls.some(path => /^\/episodes\/[^?]/.test(path)), false, "no per-Episode requests");
+    const [episodeCall] = calls.filter(path => path.startsWith("/episodes?"));
+    const [eventCall] = calls.filter(path => path.startsWith("/events?"));
+    const [evidenceCall] = calls.filter(path => path.startsWith("/evidence?"));
+    assert.match(episodeCall, /^\/episodes\?overlaps_from=[^&]+&overlaps_before=[^&]+$/);
+    assert.match(eventCall, /^\/events\?episode_overlaps_from=[^&]+&episode_overlaps_before=[^&]+$/);
+    assert.match(evidenceCall, /^\/evidence\?episode_overlaps_from=[^&]+&episode_overlaps_before=[^&]+$/);
+  } finally {
+    cleanupTimeline();
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;
     if (originalDocument === undefined) delete globalThis.document;
