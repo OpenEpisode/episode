@@ -116,7 +116,8 @@ class TimelapseService:
             for index, item in enumerate(snapshots):
                 extension = Path(item.file_path).suffix or ".jpg"
                 link = os.path.join(temporary_dir, f"img{index:06d}{extension}")
-                os.symlink(item.file_path, link)
+                # A relative target would resolve against the temporary directory.
+                os.symlink(os.path.abspath(item.file_path), link)
                 sequence.append(link)
 
             concat_file = os.path.join(temporary_dir, "files.txt")
