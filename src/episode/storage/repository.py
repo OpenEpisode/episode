@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import sqlite3
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
@@ -443,6 +443,13 @@ class Repository:
         )
 
     async def get_ingestion_receipt(self, receipt_id: str) -> IngestionReceipt | None:
+    async def list_ingestion_receipts_for_events(
+        self, event_ids: Sequence[str]
+    ) -> dict[str, list[IngestionReceipt]]:
+        if self._provenance is None:
+            raise RuntimeError("Repository is not initialized")
+        return await self._provenance.list_receipts_for_events(event_ids)
+
         if self._provenance is None:
             raise RuntimeError("Repository is not initialized")
         return await self._provenance.get_receipt(receipt_id)
