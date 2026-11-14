@@ -429,6 +429,43 @@ test("timeline loads a day with three window-bounded reads regardless of Episode
   }
 });
 
+test("the day model lists only Events that have a snapshot as detections", async () => {
+  const harness = await import(browserHarnessUrl);
+  const { buildDayModel } = await import(interactiveTimelineUrl);
+  const camera = { id: "camera-1", name: "Front camera", device_type: "camera", area_id: "area-1" };
+  const now = Date.now();
+  const at = offsetMs => new Date(now - offsetMs).toISOString();
+  const event = (id, type, offsetMs) => ({
+    id, device_id: camera.id, area_id: "area-1", episode_id: "episode-1", event_type: type, timestamp: at(offsetMs),
+  });
+  const events = [
+    event("with-linked-snapshot", "human_detection", 30 * 60000),
+    event("with-nearby-snapshot", "vehicle_detection", 20 * 60000),
+    event("motion-without-snapshot", "motion_detection", 10 * 60000),
+  ];
+  const snapshot = (id, eventId, offsetMs) => ({
+    id, device_id: camera.id, episode_id: "episode-1", evidence_type: "snapshot",
+    availability: "available", event_id: eventId, timestamp: at(offsetMs),
+  });
+  const evidence = [
+    snapshot("snap-linked", "with-linked-snapshot", 30 * 60000 - 3000),
+    snapshot("snap-nearby", null, 20 * 60000 - 1000),
+  ];
+  harness.setApiHandler(async path => {
+    if (path.startsWith("/episodes?")) return [{ id: "episode-1", primary_area_id: "area-1", start_time: at(31 * 60000), end_time: at(5 * 60000) }];
+    if (path.startsWith("/events?")) return events;
+    if (path.startsWith("/evidence?")) return evidence;
+    return [];
+  });
+  const today = new Date(now);
+  const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const model = await buildDayModel([camera], dateStr, { now, followingToday: true });
+  assert.deepEqual(
+    model.detections.map(detection => [detection.id, detection.snapshot.id]),
+    [["with-linked-snapshot", "snap-linked"], ["with-nearby-snapshot", "snap-nearby"]],
+  );
+});
+
 test("empty timeline playback reserves a 16:9 viewing area", () => {
   assert.match(stylesheet, /\.tl-player-stage:has\(\.tl-player-empty:not\(\.hidden\)\)\s*\{[^}]*min-height:\s*240px;[^}]*aspect-ratio:\s*16 \/ 9;/s);
   assert.match(stylesheet, /\.tl-player-stage:has\(\.tl-player-empty:not\(\.hidden\)\) \.tl-player-video\s*\{\s*display:\s*none;/);

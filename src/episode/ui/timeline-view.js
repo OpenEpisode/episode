@@ -236,7 +236,7 @@ function recordingKey(item, episodeId) {
 // Compose one day model for all selected cameras from the real API. Snapshot
 // pairing is deliberately presentation-only: the source Evidence and Events
 // remain untouched, and a snapshot can decorate at most one displayed Event.
-async function buildDayModel(cameras, dateStr, options = {}) {
+export async function buildDayModel(cameras, dateStr, options = {}) {
   const selectedCameras = Array.isArray(cameras) ? cameras : [cameras];
   const now = options.now ?? Date.now();
   const { dayStart, dayEnd } = timelineBounds(dateStr, { ...options, now });
@@ -332,8 +332,11 @@ async function buildDayModel(cameras, dateStr, options = {}) {
           usedSnapshotIds.add(snapshot.id);
         }
       }
+      // Only Events with a snapshot of their own are shown as detections; the
+      // Events themselves stay preserved and are still listed per Episode.
       for (const event of deviceEvents) {
         const snapshot = snapshotsByEventId.get(event.id) || snapshotByEvent.get(event.id) || null;
+        if (!snapshot) continue;
         detections.push({ time: ts(event.timestamp), type: event.event_type, id: event.id, deviceId, event, snapshot });
       }
     }

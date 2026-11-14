@@ -49,6 +49,7 @@ const {
   renderDetectionTile,
   renderFilterBar,
   renderDetectionGrid,
+  mountDetectionGrid,
 } = await import(gridUrl);
 
 const NOW = 1700000000000;
@@ -142,12 +143,19 @@ test("renderDetectionTile produces a button with overlays", () => {
   assert.ok(html.includes('class="tl-det-type"'));
 });
 
-test("renderDetectionTile shows icon fallback when no snapshot", () => {
+test("renderDetectionTile hides the thumbnail when no media is associated", () => {
   const html = renderDetectionTile({ ...DET_B, nowMs: NOW });
   assert.ok(html.includes('data-det-id="ev-2"'));
   assert.ok(!html.includes("<img"));
-  assert.ok(html.includes("icons.svg#activity"));
+  assert.ok(!html.includes("tl-det-thumb"));
+  assert.ok(!html.includes("icons.svg#activity"));
+  assert.ok(html.includes('class="tl-det-time"'));
   assert.ok(html.includes("Vehicle"));
+});
+
+test("renderDetectionTile removes the thumbnail block when the image fails to load", () => {
+  const html = renderDetectionTile({ ...DET_A, nowMs: NOW });
+  assert.ok(html.includes("this.parentElement.remove()"));
 });
 
 test("renderFilterBar produces toggle buttons with active state", () => {
@@ -225,4 +233,52 @@ test("VIRTUAL_THRESHOLD is 200", async () => {
 test("renderDetectionTile includes data-det-time on time span", () => {
   const html = renderDetectionTile({ ...DET_A, nowMs: NOW });
   assert.ok(html.includes(`data-det-time="${DET_A.time}"`));
+});
+
+test("mountDetectionGrid enables a newly seen event type and keeps the operator's choice", () => {
+  const originals = {
+    IntersectionObserver: globalThis.IntersectionObserver,
+    setInterval: globalThis.setInterval,
+    clearInterval: globalThis.clearInterval,
+  };
+  globalThis.IntersectionObserver = class { observe() {} disconnect() {} };
+  globalThis.setInterval = () => 1;
+  globalThis.clearInterval = () => {};
+  const container = {
+    innerHTML: "",
+    addEventListener() {},
+    removeEventListener() {},
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+  const unrecognized = {
+    id: "ev-u", type: "unrecognized", time: NOW - 5000, deviceId: "cam",
+    event: { id: "ev-u", event_type: "unrecognized" }, snapshot: { id: "snap-u" },
+  };
+  const changes = [];
+  try {
+    const grid = mountDetectionGrid(container, {
+      detections: [unrecognized],
+      activeFilters: new Set(Object.keys(DETECTION_TYPE_LABELS)),
+      nowMs: NOW,
+      onFilterChange: filters => changes.push([...filters]),
+    });
+    assert.ok(container.innerHTML.includes("snap-u/thumbnail"), "the unrecognized snapshot is shown");
+    assert.ok(container.innerHTML.includes('data-filter="unrecognized" aria-pressed="true"'));
+    assert.equal(changes.length, 1);
+    assert.ok(changes[0].includes("unrecognized"));
+
+    // The operator turns it off; a later refresh must not turn it back on.
+    grid.setFilters(new Set(Object.keys(DETECTION_TYPE_LABELS)));
+    grid.update([unrecognized]);
+    assert.ok(!container.innerHTML.includes("snap-u/thumbnail"));
+    assert.ok(container.innerHTML.includes('data-filter="unrecognized" aria-pressed="false"'));
+    assert.equal(changes.length, 1);
+    grid.cleanup();
+  } finally {
+    for (const [key, value] of Object.entries(originals)) {
+      if (value === undefined) delete globalThis[key];
+      else globalThis[key] = value;
+    }
+  }
 });

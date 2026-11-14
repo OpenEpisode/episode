@@ -111,18 +111,15 @@ export function renderDetectionTile(detection) {
     : (detection.events || [detection]).map(event => event.id).filter(Boolean);
   const nowMs = detection.nowMs ?? Date.now();
   const relative = relativeTime(detection.time, nowMs);
-  const hasSnapshot = !!detection.snapshot;
-  const thumbSrc = hasSnapshot
+  const thumbSrc = detection.snapshot
     ? `/api/v1/evidence/${encodeURIComponent(detection.snapshot.id)}/thumbnail`
     : "";
   const clock = fmtTime(detection.time);
   return `<button type="button" class="tl-det-tile" data-det-id="${escHtml(detection.id)}" data-det-event-ids="${escHtml(eventIds.join(","))}" data-det-time="${detection.time}" data-det-type="${escHtml(types.join(","))}" aria-label="${escHtml(label)} at ${clock}">
-    <div class="tl-det-thumb">
-      ${hasSnapshot
-        ? `<img src="${thumbSrc}" loading="lazy" decoding="async" alt="" onerror="this.onerror=null;this.hidden=true">`
-        : `<svg><use href="icons.svg#activity"></use></svg>`
-      }
-    </div>
+    ${thumbSrc
+      ? `<div class="tl-det-thumb"><img src="${thumbSrc}" loading="lazy" decoding="async" alt="" onerror="this.onerror=null;this.parentElement.remove()"></div>`
+      : ""
+    }
     <span class="tl-det-time" data-det-time="${detection.time}" title="${escHtml(relative)}">${clock}</span>
     <span class="tl-det-type" data-type="${escHtml(detection.type)}">${escHtml(label)}</span>
   </button>`;
@@ -222,11 +219,26 @@ export function mountDetectionGrid(container, options = {}) {
   let timeInterval = null;
 
   const allTypes = new Set(Object.keys(DETECTION_TYPE_LABELS));
-  for (const d of currentDetections) {
-    allTypes.add(d.type);
-    for (const type of d.eventTypes || []) allTypes.add(type);
-    for (const event of d.events || []) if (event.event_type) allTypes.add(event.event_type);
+  // A type the grid has not seen before (for example "unrecognized") starts
+  // enabled, so its snapshots are not hidden until the operator finds the
+  // filter. Once seen, the operator's choice is never overridden.
+  function registerTypes(list) {
+    const discovered = new Set();
+    for (const d of list) {
+      discovered.add(d.type);
+      for (const type of d.eventTypes || []) discovered.add(type);
+      for (const event of d.events || []) if (event.event_type) discovered.add(event.event_type);
+    }
+    let enabled = false;
+    for (const type of discovered) {
+      if (!type || allTypes.has(type)) continue;
+      allTypes.add(type);
+      currentFilters.add(type);
+      enabled = true;
+    }
+    if (enabled) onFilterChange(new Set(currentFilters));
   }
+  registerTypes(currentDetections);
 
   // Shared 30 s interval that updates relative-time labels in place.
   function startTimeUpdates() {
@@ -393,11 +405,7 @@ export function mountDetectionGrid(container, options = {}) {
   return {
     update(newDetections) {
       currentDetections = newDetections;
-      for (const d of newDetections) {
-        allTypes.add(d.type);
-        for (const type of d.eventTypes || []) allTypes.add(type);
-        for (const event of d.events || []) if (event.event_type) allTypes.add(event.event_type);
-      }
+      registerTypes(newDetections);
       visibleCount = pageSize;
       render();
     },
@@ -454,10 +462,7 @@ export function mountDetectionGrid(container, options = {}) {
       const existingIds = new Set(currentDetections.map(d => d.id));
       const fresh = newDetections.filter(d => !existingIds.has(d.id));
       if (!fresh.length) return;
-      for (const d of fresh) {
-        allTypes.add(d.type);
-        for (const type of d.eventTypes || []) allTypes.add(type);
-      }
+      registerTypes(fresh);
       currentDetections = [...fresh, ...currentDetections];
       visibleCount = Math.max(pageSize, visibleCount + fresh.length);
       render();
