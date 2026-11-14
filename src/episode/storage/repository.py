@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import sqlite3
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
@@ -34,6 +34,7 @@ from episode.domain.models import (
 from episode.storage.bundles import append_journal
 from episode.storage.capture_profiles import CaptureProfileStore
 from episode.storage.database import SCHEMA_SQL
+from episode.storage.episode_window import episode_overlap_clauses, episode_overlap_subquery
 from episode.storage.events import EventStore
 from episode.storage.files import async_move_to_episode, describe_artifact
 from episode.storage.inventory import InventoryStore
@@ -442,6 +443,13 @@ class Repository:
             offset=offset,
         )
 
+    async def list_ingestion_receipts_for_events(
+        self, event_ids: Sequence[str]
+    ) -> dict[str, list[IngestionReceipt]]:
+        if self._provenance is None:
+            raise RuntimeError("Repository is not initialized")
+        return await self._provenance.list_receipts_for_events(event_ids)
+
     async def get_ingestion_receipt(self, receipt_id: str) -> IngestionReceipt | None:
         if self._provenance is None:
             raise RuntimeError("Repository is not initialized")
@@ -655,6 +663,8 @@ class Repository:
         has_episode: bool | None = None,
         observed_from: datetime | None = None,
         observed_before: datetime | None = None,
+        episode_overlaps_from: datetime | None = None,
+        episode_overlaps_before: datetime | None = None,
     ) -> list[Event]:
         return await self._event_store().list(
             episode_id,
@@ -667,6 +677,8 @@ class Repository:
             has_episode=has_episode,
             observed_from=observed_from,
             observed_before=observed_before,
+            episode_overlaps_from=episode_overlaps_from,
+            episode_overlaps_before=episode_overlaps_before,
         )
 
     async def list_unassigned_active_events(
@@ -891,6 +903,8 @@ class Repository:
         available_only: bool | None = None,
         captured_from: datetime | None = None,
         captured_before: datetime | None = None,
+        episode_overlaps_from: datetime | None = None,
+        episode_overlaps_before: datetime | None = None,
     ) -> list[Evidence]:
         for name, value in (
             ("captured_from", captured_from),
@@ -933,6 +947,11 @@ class Repository:
         if captured_before is not None:
             clauses.append("e.timestamp < ?")
             params.append(_utc_iso(captured_before))
+        window_clauses, window_params = episode_overlap_subquery(
+            "e.episode_id", episode_overlaps_from, episode_overlaps_before
+        )
+        clauses.extend(window_clauses)
+        params.extend(window_params)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = await self._conn.execute_fetchall(
             f"{_EVIDENCE_SELECT}{where} ORDER BY e.timestamp DESC, e.id DESC LIMIT ? OFFSET ?",
@@ -1249,9 +1268,11 @@ class Repository:
         state: EpisodeState | None = None,
         limit: int = 50,
         offset: int = 0,
+        *,
+        overlaps_from: datetime | None = None,
+        overlaps_before: datetime | None = None,
     ) -> list[Episode]:
-        clauses = []
-        params = []
+        clauses, params = episode_overlap_clauses(overlaps_from, overlaps_before)
         if area_id:
             clauses.append("primary_area_id = ?")
             params.append(area_id)

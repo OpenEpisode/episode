@@ -1,9 +1,9 @@
-import { api, apiRequest } from "./api.js?v=3";
-import { pageHeader } from "./components.js?v=3";
-import { closeDialog, confirmDialog, notify } from "./dialogs.js?v=1";
-import { openAreaEditor, openDeviceEditor } from "./inventory.js?v=10";
-import { refreshRetentionPolicy } from "./retention-policy.js?v=1";
-import { showContent, showError, showLoading } from "./view.js?v=1";
+import { api, apiRequest } from "./api.js";
+import { pageHeader } from "./components.js";
+import { closeDialog, confirmDialog, notify } from "./dialogs.js";
+import { openAreaEditor, openDeviceEditor } from "./inventory.js";
+import { refreshRetentionPolicy } from "./retention-policy.js";
+import { showContent, showError, showLoading } from "./view.js";
 
 let areas = [];
 let devices = [];

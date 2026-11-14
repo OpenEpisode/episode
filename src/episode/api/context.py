@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +56,14 @@ class ApiContext:
 
     async def public_events(self, events) -> list[EventResponse]:
         integrations = self.public_integrations()
-        return await asyncio.gather(
-            *(self.public_event(event, integrations=integrations) for event in events)
+        receipts = await self.repository.list_ingestion_receipts_for_events(
+            [event.get("id") if isinstance(event, dict) else event.id for event in events]
         )
+        return [
+            public_event(
+                event,
+                receipts.get(event.get("id") if isinstance(event, dict) else event.id, []),
+                integrations,
+            )
+            for event in events
+        ]

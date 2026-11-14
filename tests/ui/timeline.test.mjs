@@ -253,3 +253,86 @@ test("does not claim that an SDK unlock record opened the door", () => {
     metadata: { sdk_event_name: "unlock_record", unlock_outcome: "not_reported_by_device" },
   }), "Door unlock record");
 });
+
+test("keeps an exact timeline seek and falls back to the nearest recording in a gap", () => {
+  const segments = [
+    { id: "earlier", start: 1000, end: 2000 },
+    { id: "later", start: 4000, end: 5000 },
+  ];
+
+  assert.deepEqual(timeline.selectRecordingForTime(segments, 1500), {
+    segment: segments[0],
+    exact: true,
+  });
+  assert.deepEqual(timeline.selectRecordingForTime(segments, 3000), {
+    segment: segments[0],
+    exact: false,
+  });
+  assert.deepEqual(timeline.selectRecordingForTime(segments, 3500), {
+    segment: segments[1],
+    exact: false,
+  });
+  assert.deepEqual(timeline.selectRecordingForTime([
+    { id: "first", start: 1000, end: 2000 },
+    { id: "second", start: 2000, end: 3000 },
+  ], 2000), {
+    segment: { id: "second", start: 2000, end: 3000 },
+    exact: true,
+  });
+  assert.equal(timeline.selectRecordingForTime([], 3000), null);
+});
+
+test("keeps seeks inside the selected range and an overlapping recording", () => {
+  const segments = [
+    { id: "outside", start: 1000, end: 2000 },
+    { id: "inside", start: 3000, end: 5000 },
+  ];
+  const range = { start: 2500, end: 4500 };
+
+  assert.equal(timeline.selectRecordingForTimeInRange(segments, 1500, range).segment.id, "inside");
+  assert.equal(timeline.selectRecordingForTimeInRange(segments, 1500, range).time, 3000);
+  assert.equal(timeline.selectRecordingForTimeInRange(segments, 4200, range).time, 4200);
+  assert.equal(timeline.selectRecordingForTimeInRange(segments, 5000, range).time, 4499);
+  assert.equal(timeline.selectRecordingForTimeInRange(segments, 2500, { start: 2100, end: 2900 }), null);
+});
+
+test("selects only recordings overlapping a selected range", () => {
+  const segments = [
+    { id: "first", start: 1000, end: 2000 },
+    { id: "second", start: 3000, end: 5000 },
+  ];
+
+  assert.equal(timeline.selectRecordingForRange(segments, { start: 2100, end: 2900 }), null);
+  assert.deepEqual(
+    timeline.selectRecordingForRange(segments, { start: 1500, end: 3500 }, null, 1800),
+    {
+      segment: segments[0],
+      rangeStart: 1500,
+      rangeEnd: 2000,
+      playhead: 1800,
+      preservedCurrent: false,
+    },
+  );
+});
+
+test("preserves the current overlapping recording and clamps its playhead", () => {
+  const segments = [
+    { id: "first", start: 1000, end: 2000 },
+    { id: "second", start: 3000, end: 5000 },
+  ];
+
+  assert.deepEqual(
+    timeline.selectRecordingForRange(segments, { start: 1500, end: 3500 }, segments[1], 1800),
+    {
+      segment: segments[1],
+      rangeStart: 3000,
+      rangeEnd: 3500,
+      playhead: 3000,
+      preservedCurrent: true,
+    },
+  );
+  assert.equal(
+    timeline.selectRecordingForRange(segments, { start: 1500, end: 3500 }, segments[1], 3200).playhead,
+    3200,
+  );
+});

@@ -57,12 +57,12 @@ globalThis.onboardingResponses = {
 
 const module = await import(moduleUrl(
   source
-    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
-    .replace('"./components.js?v=3"', JSON.stringify(componentsUrl))
-    .replace('"./dialogs.js?v=1"', JSON.stringify(dialogsUrl))
-    .replace('"./inventory.js?v=10"', JSON.stringify(inventoryUrl))
-    .replace('"./retention-policy.js?v=1"', JSON.stringify(retentionUrl))
-    .replace('"./view.js?v=1"', JSON.stringify(viewUrl)),
+    .replace('"./api.js"', JSON.stringify(apiUrl))
+    .replace('"./components.js"', JSON.stringify(componentsUrl))
+    .replace('"./dialogs.js"', JSON.stringify(dialogsUrl))
+    .replace('"./inventory.js"', JSON.stringify(inventoryUrl))
+    .replace('"./retention-policy.js"', JSON.stringify(retentionUrl))
+    .replace('"./view.js"', JSON.stringify(viewUrl)),
 ));
 
 test("unconfirmed retention keeps first-run setup open", async () => {

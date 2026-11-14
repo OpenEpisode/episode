@@ -45,6 +45,107 @@ export function recordingBounds(recording) {
   };
 }
 
+/**
+ * Select the recording to show for a timeline time. Exact matches preserve
+ * the requested seek position; gaps choose the nearest playable segment so a
+ * timeline click never leaves the player empty when scoped recordings exist.
+ */
+export function selectRecordingForTime(segments, time) {
+  if (!Number.isFinite(time)) return null;
+  const candidates = (segments || [])
+    .filter(segment => Number.isFinite(segment?.start)
+      && Number.isFinite(segment?.end)
+      && segment.end > segment.start)
+    .map((segment, index) => {
+      const exact = time >= segment.start && time < segment.end;
+      const distance = exact
+        ? 0
+        : time < segment.start
+          ? segment.start - time
+          : time - segment.end;
+      return { segment, exact, distance, index };
+    })
+    .sort((left, right) => left.distance - right.distance
+      || Number(right.exact) - Number(left.exact)
+      || left.segment.start - right.segment.start
+      || String(left.segment.id || "").localeCompare(String(right.segment.id || ""))
+      || left.index - right.index);
+  const selected = candidates[0];
+  return selected ? { segment: selected.segment, exact: selected.exact } : null;
+}
+
+/**
+ * Select a recording for a seek constrained to a selected time range. The
+ * result's time always remains inside both the range and the recording.
+ */
+export function selectRecordingForTimeInRange(segments, time, range) {
+  if (!Number.isFinite(time)
+    || !Number.isFinite(range?.start)
+    || !Number.isFinite(range?.end)) return null;
+  const rangeStart = Math.min(range.start, range.end);
+  const rangeEnd = Math.max(range.start, range.end);
+  if (rangeEnd <= rangeStart) return null;
+
+  const scopedSegments = (segments || []).filter(segment => Number.isFinite(segment?.start)
+    && Number.isFinite(segment?.end)
+    && segment.end > segment.start
+    && segment.start < rangeEnd
+    && segment.end > rangeStart);
+  const requestedTime = Math.max(rangeStart, Math.min(rangeEnd, time));
+  const selected = selectRecordingForTime(scopedSegments, requestedTime);
+  if (!selected) return null;
+
+  const overlapStart = Math.max(rangeStart, selected.segment.start);
+  const overlapEnd = Math.min(rangeEnd, selected.segment.end);
+  const targetTime = selected.exact
+    ? Math.min(requestedTime, overlapEnd - 1)
+    : requestedTime < selected.segment.start
+      ? overlapStart
+      : overlapEnd - 1;
+  return {
+    ...selected,
+    time: targetTime,
+  };
+}
+
+/**
+ * Select the first recording overlapping a time range, preserving the current
+ * recording when it also overlaps. The returned playhead is clamped to the
+ * selected recording's overlap with the range.
+ */
+export function selectRecordingForRange(segments, range, currentSegment = null, playhead = null) {
+  if (!Number.isFinite(range?.start) || !Number.isFinite(range?.end)) return null;
+  const rangeStart = Math.min(range.start, range.end);
+  const rangeEnd = Math.max(range.start, range.end);
+  if (rangeEnd <= rangeStart) return null;
+
+  const overlapping = (segments || [])
+    .filter(segment => Number.isFinite(segment?.start)
+      && Number.isFinite(segment?.end)
+      && segment.end > segment.start
+      && segment.start < rangeEnd
+      && segment.end > rangeStart)
+    .sort((left, right) => left.start - right.start
+      || String(left.id || "").localeCompare(String(right.id || "")));
+  if (!overlapping.length) return null;
+
+  const current = currentSegment
+    && overlapping.find(segment => segment.id === currentSegment.id);
+  const segment = current || overlapping[0];
+  const overlapStart = Math.max(rangeStart, segment.start);
+  const overlapEnd = Math.min(rangeEnd, segment.end);
+  const target = Number.isFinite(playhead) && playhead >= overlapStart && playhead < overlapEnd
+    ? playhead
+    : overlapStart;
+  return {
+    segment,
+    rangeStart: overlapStart,
+    rangeEnd: overlapEnd,
+    playhead: target,
+    preservedCurrent: Boolean(current),
+  };
+}
+
 function eventEntries(events) {
   const entries = [];
   const open = new Map();

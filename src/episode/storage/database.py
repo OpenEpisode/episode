@@ -180,6 +180,7 @@ CREATE INDEX IF NOT EXISTS idx_receipts_event ON ingestion_receipts(event_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_evidence ON ingestion_receipts(evidence_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_episode ON ingestion_receipts(episode_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_artifacts_path ON raw_artifacts(file_path);
+CREATE INDEX IF NOT EXISTS idx_episodes_start ON episodes(start_time);
 CREATE INDEX IF NOT EXISTS idx_episodes_area ON episodes(primary_area_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_state ON episodes(state);
 """

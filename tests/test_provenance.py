@@ -104,6 +104,10 @@ async def test_duplicate_deliveries_share_canonical_event_and_bundle(tmp_path):
         }
         assert {receipt.event_id for receipt in receipts} == {events[0].id}
 
+        batched = await repo.list_ingestion_receipts_for_events([events[0].id, "unknown-event"])
+        assert batched == {events[0].id: await repo.list_ingestion_receipts(event_id=events[0].id)}
+        assert await repo.list_ingestion_receipts_for_events([]) == {}
+
         transport = httpx.ASGITransport(app=create_api(repo, str(tmp_path)))
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             event_body = (await client.get(f"/api/v1/events/{events[0].id}")).json()

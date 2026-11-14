@@ -1,7 +1,7 @@
-import { api } from "./api.js?v=3";
-import { episodeStateBadge } from "./components.js?v=6";
+import { api } from "./api.js";
+import { episodeStateBadge } from "./components.js";
 import { $ } from "./dom.js";
-import { plural, trunc } from "./format.js?v=3";
+import { plural, trunc } from "./format.js";
 
 function statusIndicator(state) {
   if (state === "healthy") return "online";

@@ -33,6 +33,8 @@ def events_router(context: ApiContext) -> APIRouter:
         has_episode: bool | None = None,
         observed_from: datetime | None = None,
         observed_before: datetime | None = None,
+        episode_overlaps_from: datetime | None = None,
+        episode_overlaps_before: datetime | None = None,
         limit: PageLimit = DEFAULT_LIMIT,
         offset: PageOffset = 0,
     ):
@@ -41,6 +43,12 @@ def events_router(context: ApiContext) -> APIRouter:
             observed_before,
             start_name="observed_from",
             end_name="observed_before",
+        )
+        episode_overlaps_from, episode_overlaps_before = normalize_datetime_range(
+            episode_overlaps_from,
+            episode_overlaps_before,
+            start_name="episode_overlaps_from",
+            end_name="episode_overlaps_before",
         )
         events = await repo.list_events(
             episode_id,
@@ -53,6 +61,8 @@ def events_router(context: ApiContext) -> APIRouter:
             has_episode=has_episode,
             observed_from=observed_from,
             observed_before=observed_before,
+            episode_overlaps_from=episode_overlaps_from,
+            episode_overlaps_before=episode_overlaps_before,
         )
         return await context.public_events(events)
 

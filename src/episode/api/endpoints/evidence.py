@@ -43,6 +43,8 @@ def evidence_router(context: ApiContext) -> APIRouter:
         has_episode: bool | None = None,
         captured_from: datetime | None = None,
         captured_before: datetime | None = None,
+        episode_overlaps_from: datetime | None = None,
+        episode_overlaps_before: datetime | None = None,
         limit: PageLimit = DEFAULT_LIMIT,
         offset: PageOffset = 0,
     ):
@@ -51,6 +53,12 @@ def evidence_router(context: ApiContext) -> APIRouter:
             captured_before,
             start_name="captured_from",
             end_name="captured_before",
+        )
+        episode_overlaps_from, episode_overlaps_before = normalize_datetime_range(
+            episode_overlaps_from,
+            episode_overlaps_before,
+            start_name="episode_overlaps_from",
+            end_name="episode_overlaps_before",
         )
         evidence = await repo.list_evidence(
             episode_id,
@@ -63,6 +71,8 @@ def evidence_router(context: ApiContext) -> APIRouter:
             has_episode=has_episode,
             captured_from=captured_from,
             captured_before=captured_before,
+            episode_overlaps_from=episode_overlaps_from,
+            episode_overlaps_before=episode_overlaps_before,
         )
         return [public_evidence(item) for item in evidence]
 

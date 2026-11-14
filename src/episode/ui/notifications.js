@@ -1,8 +1,8 @@
-import { API, api, apiRequest } from "./api.js?v=3";
-import { pageHeader } from "./components.js?v=4";
-import { notify } from "./dialogs.js?v=1";
+import { API, api, apiRequest } from "./api.js";
+import { pageHeader } from "./components.js";
+import { notify } from "./dialogs.js";
 import { escHtml } from "./dom.js";
-import { showContent, showError, showLoading } from "./view.js?v=1";
+import { showContent, showError, showLoading } from "./view.js";
 
 const SETTINGS_PATH = "/settings/notifications/episode-started";
 const TEST_PATH = `${SETTINGS_PATH}/test`;

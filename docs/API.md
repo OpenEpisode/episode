@@ -150,6 +150,20 @@ to find observations or artifacts that have not been associated with an
 Episode; absence of a direct `event_id` is not itself an error because
 recordings and other Episode-level Evidence need not belong to one Event.
 
+The Episode collection accepts `area_id`, `state`, and the optional
+`overlaps_from` and `overlaps_before` RFC 3339 bounds. An Episode overlaps the
+window when it starts before `overlaps_before` (exclusive) and ends at or after
+`overlaps_from` (inclusive); an Episode without a closing time ends at its last
+Event, or at its start if it has none. The global Event and Evidence
+collections accept the same window as `episode_overlaps_from` and
+`episode_overlaps_before`, returning every item that belongs to an overlapping
+Episode regardless of the item's own timestamp. Items not associated with an
+Episode never match. Both bounds require a timezone offset, and the upper bound
+must be later than the lower bound. A client such as the Timeline can therefore
+load all Episodes, Events, and Evidence for a day with three paged reads
+instead of two requests per Episode. Each item keeps its `episode_id`, so the
+client can regroup them.
+
 ## Errors
 
 JSON API errors use one envelope:

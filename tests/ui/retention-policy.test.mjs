@@ -12,7 +12,7 @@ const apiUrl = moduleUrl(`
   export async function api() { return globalThis.retentionPolicy; }
 `);
 const module = await import(moduleUrl(
-  source.replace('"./api.js?v=3"', JSON.stringify(apiUrl)),
+  source.replace('"./api.js"', JSON.stringify(apiUrl)),
 ));
 
 const banner = { className: "", innerHTML: "" };

@@ -8,6 +8,7 @@ import aiosqlite
 
 from episode.domain.event_filter import FILTERED_REASON
 from episode.domain.models import Event, EventState, ParticipationDecision, make_event_dedup_key
+from episode.storage.episode_window import episode_overlap_subquery
 
 _RECOVERY_INGRESS_SQL = """COALESCE(
     (SELECT MIN(r.received_at) FROM ingestion_receipts r WHERE r.event_id = e.id),
@@ -117,6 +118,8 @@ class EventStore:
         has_episode: bool | None = None,
         observed_from: datetime | None = None,
         observed_before: datetime | None = None,
+        episode_overlaps_from: datetime | None = None,
+        episode_overlaps_before: datetime | None = None,
     ) -> list[Event]:
         clauses: list[str] = []
         params: list[str | int] = []
@@ -153,6 +156,11 @@ class EventStore:
             and observed_before <= observed_from
         ):
             raise ValueError("observed_before must be later than observed_from")
+        window_clauses, window_params = episode_overlap_subquery(
+            "episode_id", episode_overlaps_from, episode_overlaps_before
+        )
+        clauses.extend(window_clauses)
+        params.extend(window_params)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = await self._connection.execute_fetchall(
             f"""SELECT * FROM events{where}

@@ -38,11 +38,11 @@ const viewUrl = moduleUrl(`
 `);
 const module = await import(moduleUrl(
   source
-    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
-    .replace('"./components.js?v=4"', JSON.stringify(componentsUrl))
+    .replace('"./api.js"', JSON.stringify(apiUrl))
+    .replace('"./components.js"', JSON.stringify(componentsUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./format.js?v=4"', JSON.stringify(formatUrl))
-    .replace('"./view.js?v=1"', JSON.stringify(viewUrl)),
+    .replace('"./format.js"', JSON.stringify(formatUrl))
+    .replace('"./view.js"', JSON.stringify(viewUrl)),
 ));
 
 test("alerts render newest first with evidence and episode links", () => {

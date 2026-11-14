@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime
 
 import aiosqlite
 
 from episode.domain.models import IngestionReceipt, RawArtifact, ReceiptStatus
+
+_EVENT_ID_CHUNK = 400
 
 
 class ProvenanceStore:
@@ -152,6 +155,33 @@ class ProvenanceStore:
             [*params, limit, offset],
         )
         return [self._row_to_receipt(row) for row in rows]
+
+    async def list_receipts_for_events(
+        self,
+        event_ids: Sequence[str],
+        *,
+        per_event_limit: int = 200,
+    ) -> dict[str, list[IngestionReceipt]]:
+        """Return Receipts grouped by Event in one query per bounded chunk.
+
+        Ordering and the per-Event bound match ``list_receipts(event_id=...)``.
+        """
+        grouped: dict[str, list[IngestionReceipt]] = {}
+        unique = list(dict.fromkeys(event_ids))
+        for start in range(0, len(unique), _EVENT_ID_CHUNK):
+            chunk = unique[start : start + _EVENT_ID_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            rows = await self._conn.execute_fetchall(
+                f"""SELECT * FROM ingestion_receipts
+                    WHERE event_id IN ({placeholders})
+                    ORDER BY received_at ASC, id ASC""",
+                chunk,
+            )
+            for row in rows:
+                receipts = grouped.setdefault(row["event_id"], [])
+                if len(receipts) < per_event_limit:
+                    receipts.append(self._row_to_receipt(row))
+        return grouped
 
     async def link_receipt(
         self,

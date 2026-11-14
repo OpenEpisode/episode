@@ -61,10 +61,10 @@ globalThis.inventoryRequests = [];
 
 const inventoryUrl = moduleUrl(
   source
-    .replace('"./api.js?v=3"', JSON.stringify(apiUrl))
-    .replace('"./dialogs.js?v=1"', JSON.stringify(dialogsUrl))
+    .replace('"./api.js"', JSON.stringify(apiUrl))
+    .replace('"./dialogs.js"', JSON.stringify(dialogsUrl))
     .replace('"./dom.js"', JSON.stringify(domUrl))
-    .replace('"./event-filter.js?v=3"', JSON.stringify(eventFilterModUrl))
+    .replace('"./event-filter.js"', JSON.stringify(eventFilterModUrl))
     .replace('"./format.js"', JSON.stringify(formatUrl)),
 );
 const {

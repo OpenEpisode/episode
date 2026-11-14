@@ -1,5 +1,5 @@
 import { escHtml } from "./dom.js";
-import { plural } from "./format.js?v=3";
+import { plural } from "./format.js";
 
 function badgeClass(value) {
   return String(value || "unknown")
@@ -73,7 +73,7 @@ export function pageHeader({ eyebrow = "", title, description = "", actions = ""
 }
 
 export function detailMetric(icon, label, value, href = "") {
-  const content = `<svg><use href="icons.svg?v=2#${icon}"></use></svg>
+  const content = `<svg><use href="icons.svg#${icon}"></use></svg>
     <span><small>${escHtml(label)}</small><strong>${escHtml(value)}</strong></span>`;
   return href
     ? `<a class="review-detail-metric" href="${escHtml(href)}">${content}</a>`
@@ -83,7 +83,7 @@ export function detailMetric(icon, label, value, href = "") {
 export function sectionHeading(icon, title, description = "", aside = "") {
   return `<header class="review-section-heading">
     <div class="review-section-title">
-      <svg><use href="icons.svg?v=2#${icon}"></use></svg>
+      <svg><use href="icons.svg#${icon}"></use></svg>
       <div><h3>${escHtml(title)}</h3>${description ? `<p>${escHtml(description)}</p>` : ""}</div>
     </div>
     ${aside}
