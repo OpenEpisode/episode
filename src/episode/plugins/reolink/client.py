@@ -922,6 +922,7 @@ class BaichuanApiClient:
         #: Annex-B access units the streaming path could not buffer because the recorder
         #: was not draining; counted so an overloaded consumer is never a silent loss.
         self._stream_dropped = 0
+        self._audio_dropped = 0
 
         # Event state tracking (per-channel, for transition detection)
         self._alarm_event_state: dict[int, dict[str, Any]] = defaultdict(dict)
@@ -2271,6 +2272,7 @@ class BaichuanApiClient:
         *,
         variant: str = "main",
         timeout: float = DEFAULT_PREVIEW_TIMEOUT,
+        push_audio: Callable[[bytes], Awaitable[None]] | None = None,
     ) -> PreviewStats:
         """Stream one native preview burst (``cmdId=3``) as Annex-B access units.
 
@@ -2292,6 +2294,10 @@ class BaichuanApiClient:
         with the episode length rather than a fixed preview deadline. The per-frame queue
         bound and the awaited ``push`` provide backpressure that stops the recorder from
         overrunning the camera's own encode rate.
+
+        ``push_audio`` receives the AAC (ADTS) payloads of the same burst, through its own
+        bounded queue and consumer. Audio never holds video back: a full audio queue drops
+        audio and counts it, and a failing audio consumer ends audio only.
         """
         if not self.authenticated:
             raise ReolinkError("Not authenticated")
@@ -2312,17 +2318,30 @@ class BaichuanApiClient:
             # race the dispatcher for the same bytes.
             frame_queue: asyncio.Queue = asyncio.Queue(maxsize=PREVIEW_QUEUE_MAXSIZE)
             out_queue: asyncio.Queue = asyncio.Queue(maxsize=PREVIEW_QUEUE_MAXSIZE)
+            audio_queue: asyncio.Queue | None = (
+                asyncio.Queue(maxsize=PREVIEW_QUEUE_MAXSIZE) if push_audio is not None else None
+            )
             feed = PreviewFeed(
                 variant=variant,
                 max_bytes=None,  # streaming: hand bytes on, never accumulate here
                 packet_max_bytes=PREVIEW_MAX_BYTES,
                 sink=lambda payload: self._sink_annexb(payload, out_queue),
+                audio_sink=(
+                    (lambda payload: self._sink_audio(payload, audio_queue))
+                    if audio_queue is not None
+                    else None
+                ),
             )
             dropped_before = self._dispatcher.dropped_frames
             loop = asyncio.get_event_loop()
             started = loop.time()
             rejected = False
             consumer = asyncio.create_task(self._drain_queue(out_queue, push))
+            audio_consumer = (
+                asyncio.create_task(self._drain_queue(audio_queue, push_audio, kind="audio"))
+                if audio_queue is not None and push_audio is not None
+                else None
+            )
 
             async def _send_preview() -> None:
                 """Send the preview request frame."""
@@ -2371,6 +2390,8 @@ class BaichuanApiClient:
             finally:
                 await self._send_preview_stop(variant, channel, request.handle)
                 await self._finish_preview_consumer(out_queue, consumer)
+                if audio_queue is not None and audio_consumer is not None:
+                    await self._finish_preview_consumer(audio_queue, audio_consumer)
 
             stats = feed.stats
             stats.dropped_frames += self._dispatcher.dropped_frames - dropped_before
@@ -2383,7 +2404,8 @@ class BaichuanApiClient:
             logger.debug(
                 "Preview stream done (variant=%s frames=%d media_bytes=%d "
                 "codec=%s res=%s dropped_bytes=%d dropped_frames=%d sink_dropped=%d "
-                "first_packet_ms=%s first_iframe_ms=%s)",
+                "first_packet_ms=%s first_iframe_ms=%s audio_packets=%d audio_bytes=%d "
+                "audio_dropped=%d)",
                 variant,
                 stats.frames(),
                 stats.media_bytes,
@@ -2394,6 +2416,9 @@ class BaichuanApiClient:
                 self._stream_dropped,
                 f"{stats.first_packet_ms:.1f}" if stats.first_packet_ms is not None else "none",
                 f"{stats.first_iframe_ms:.1f}" if stats.first_iframe_ms is not None else "none",
+                stats.audio_count,
+                stats.audio_bytes,
+                self._audio_dropped,
             )
             return stats
 
@@ -2414,17 +2439,26 @@ class BaichuanApiClient:
                 self._stream_dropped,
             )
 
+    def _sink_audio(self, payload: bytes, queue: asyncio.Queue) -> None:
+        """Enqueue one AAC (ADTS) payload; a full queue drops audio, never video."""
+        try:
+            queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            self._audio_dropped += 1
+
     async def _drain_queue(
         self,
         queue: asyncio.Queue,
         push: Callable[[bytes], Awaitable[None]],
+        *,
+        kind: str = "Annex-B access unit",
     ) -> None:
-        """Await ``push`` for each queued access unit; stop on the sentinel."""
+        """Await ``push`` for each queued chunk; stop on the sentinel."""
         while True:
             chunk = await queue.get()
             if chunk is None:
                 return
-            logger.debug("Preview Annex-B access unit pushed: %d bytes", len(chunk))
+            logger.debug("Preview %s pushed: %d bytes", kind, len(chunk))
             await push(chunk)
 
     async def _finish_preview_consumer(

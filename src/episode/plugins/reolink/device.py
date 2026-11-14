@@ -460,6 +460,9 @@ class ReolinkDeviceConnection:
                         snapshot_fetcher=self._fetch_snapshot,
                         event_snapshot_fetcher=self._snapshot_fetcher,
                         video_handler=self._preview_handler_for(variant),
+                        # Every measured firmware interleaves AAC (ADTS) with the video. The
+                        # recorder confirms audio actually arrives before it commits to it.
+                        audio_codec_hint="aac",
                         codec_hint=(
                             self._preview_codec_hint
                             if variant == self.config.preview.variant
@@ -533,8 +536,11 @@ class ReolinkDeviceConnection:
         return {key: tuple(value[:32]) for key, value in modes.items()}
 
     def _preview_handler_for(self, variant: str):
-        async def handler(push: Callable[[bytes], Awaitable[None]]) -> None:
-            await self._stream_preview(push, variant=variant)
+        async def handler(
+            push: Callable[[bytes], Awaitable[None]],
+            audio: Callable[[bytes], Awaitable[None]] | None = None,
+        ) -> None:
+            await self._stream_preview(push, variant=variant, push_audio=audio)
 
         return handler
 
@@ -792,7 +798,11 @@ class ReolinkDeviceConnection:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
-    async def _preview_handler(self, push: Callable[[bytes], Awaitable[None]]) -> None:
+    async def _preview_handler(
+        self,
+        push: Callable[[bytes], Awaitable[None]],
+        audio: Callable[[bytes], Awaitable[None]] | None = None,
+    ) -> None:
         """One on-demand native recording burst, handed to the recorder's pipe.
 
         This is the F1 source: ``stream_preview`` runs ``cmdId=3`` and ``cmdId=6`` (in
@@ -804,13 +814,14 @@ class ReolinkDeviceConnection:
         fixed preview deadline. Cancellation or failure simply ends the burst; the
         recorder's own reconnect/stall handling owns the outcome.
         """
-        await self._stream_preview(push, variant=self.config.preview.variant)
+        await self._stream_preview(push, variant=self.config.preview.variant, push_audio=audio)
 
     async def _stream_preview(
         self,
         push: Callable[[bytes], Awaitable[None]],
         *,
         variant: str,
+        push_audio: Callable[[bytes], Awaitable[None]] | None = None,
     ) -> None:
         logger.debug(
             "Reolink:%s native preview burst starting (variant=%s first_packet_timeout=%.1fs)",
@@ -824,6 +835,7 @@ class ReolinkDeviceConnection:
                 channel=0,
                 variant=variant,
                 timeout=self.config.preview.timeout,
+                push_audio=push_audio,
             )
         except asyncio.CancelledError:
             logger.debug("Reolink:%s native preview burst cancelled", self.config.device.name)
@@ -837,13 +849,14 @@ class ReolinkDeviceConnection:
             raise
         logger.debug(
             "Reolink:%s native preview burst done (frames=%d media_bytes=%d codec=%s "
-            "res=%s first_packet_ms=%s)",
+            "res=%s first_packet_ms=%s audio_bytes=%d)",
             self.config.device.name,
             stats.frames(),
             stats.media_bytes,
             stats.codec or "?",
             f"{stats.width}x{stats.height}" if stats.width else "?",
             f"{stats.first_packet_ms:.1f}" if stats.first_packet_ms is not None else "none",
+            stats.audio_bytes,
         )
 
     @property

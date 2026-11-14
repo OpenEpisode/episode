@@ -251,7 +251,10 @@ preview session: it issues the command when a recording starts, the camera opens
 with an I-Frame, and `cmdId=6` stops the burst on every exit path. The bytes are
 handed to the core recorder's pipe as Annex-B access units through the
 `video_handler` contract, so the bundle, manifest, Evidence, and retention remain
-core-owned — only the origin of the elementary stream changes. Because the camera
+core-owned — only the origin of the elementary stream changes. The AAC (ADTS)
+audio the camera interleaves with that video is forwarded on a second pipe and
+recorded with it; ADPCM, which no measured firmware sends, is counted but not
+recorded. Because the camera
 leads with a keyframe, the acquisition delay (recording start → first access
 unit) collapses from the ~3.5 s an RTSP keyframe-wait costs toward the measured
 ~0.15 s of the first native picture. A native HEVC source is written with the
@@ -543,7 +546,15 @@ from a pipe and is stamped by arrival time because an elementary stream carries 
 timestamps of its own. The input is the only part that changes: the recorder still
 owns the child process, the bundle, finalization, and retention, and it cancels the
 plugin's feed when it stops reading so a camera session cannot outlive the
-recording. Current views prefer native HLS and use the pinned,
+recording. A source that declares audio may push framed AAC on a second pipe, and
+that audio is copied into the bundle as sent, not transcoded. FFmpeg refuses an
+audio input that closes empty and blocks on one that never delivers, so the
+recorder starts the plugin first and gives FFmpeg an audio input only once audio
+has actually arrived within a short window after the first picture; a camera
+with no microphone, or with audio switched off, records video only and still
+records. The picture is stamped by arrival time and the audio keeps its own
+sample clock: stamping both by arrival makes ffmpeg 7 hold back whichever input
+runs ahead, which measured as a camera's ~16 fps dropping to ~3 fps. Current views prefer native HLS and use the pinned,
 integrity-checked hls.js CDN build only as a fallback. They are live operational
 previews with standard browser video controls; Episode-specific DVR and review
 controls are intentionally not part of the current-view contract. Completed

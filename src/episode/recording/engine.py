@@ -16,13 +16,14 @@ from typing import TYPE_CHECKING
 from episode.domain.models import Device, EpisodeState, EventState, Evidence
 from episode.engine.bus import EventBus, Message
 from episode.engine.engine import CanonicalEventResult
-from episode.media.registry import VIDEO_CODEC_HINTS, VideoStreamHandler
+from episode.media.registry import AUDIO_CODEC_HINTS, VIDEO_CODEC_HINTS, VideoStreamHandler
 from episode.recording.hls import (
     CAPTURE_STATE_NAME,
     HLS_MIME_TYPE,
     HLSCaptureState,
     HLSRecordingBundle,
 )
+from episode.recording.piped_feed import PipedFeed
 from episode.recording.targets import AreaRecordingTargetResolver, RecordingTargetResolver
 
 if TYPE_CHECKING:
@@ -57,8 +58,13 @@ _RECORDING_PART = re.compile(
 PIPE_WRITE_TIMEOUT_SECONDS = 10.0
 
 
-class PipeClosedError(RuntimeError):
-    """Raised into a video handler when its recorder child has already gone."""
+#: A source that declares audio gets this long, from its first video chunk, to deliver the
+#: first audio chunk. Audio normally arrives with the picture; a camera with no microphone
+#: or audio switched off never sends any, and ffmpeg must not be given an input that would
+#: never deliver (it would block, or refuse to start on an empty one).
+AUDIO_ARRIVAL_SECONDS = 1.5
+#: How long to wait for the first video chunk before judging audio at all.
+AUDIO_FIRST_VIDEO_SECONDS = 5.0
 
 
 #: Floor for the recorder's socket timeout on a camera URL, in seconds.
@@ -95,6 +101,12 @@ class _EpisodeRecording:
     #: bundle; only the bytes' origin changes (piped elementary stream instead of RTSP).
     video_handler: VideoStreamHandler | None = None
     codec_hint: str = ""
+    #: Audio demuxer the handler's ``audio`` bytes use ("aac"), or "" for a source with none.
+    audio_codec_hint: str = ""
+    #: Whether the current attempt's bundle includes the source's audio.
+    audio_recorded: bool = False
+    #: The current attempt's relay between the handler and ffmpeg's pipes.
+    feed: PipedFeed | None = None
     #: The recorder's own task driving ``video_handler``; always stopped with the attempt.
     handler_task: asyncio.Task | None = None
     #: Why the plugin source stopped feeding, when it did. It must not be mistaken for a
@@ -400,6 +412,9 @@ class RecordingEngine:
                     stream_url,
                     video_handler=video_handler,
                     codec_hint=codec_hint,
+                    audio_codec_hint=self._native_audio_hint(
+                        device, source_id_override=recovered_source_id or None
+                    ),
                 )
                 recording = self._recordings[self._rec_key(episode.id, device.id)]
                 await self._repo.append_episode_journal(
@@ -453,6 +468,7 @@ class RecordingEngine:
                         stream_url,
                         video_handler=video_handler,
                         codec_hint=codec_hint,
+                        audio_codec_hint=self._native_audio_hint(device),
                     )
                 else:
                     selected_source = self._configured_video_source_id(device)
@@ -563,6 +579,23 @@ class RecordingEngine:
             return "manual"
         return ""
 
+    def _native_audio_hint(self, device: Device, *, source_id_override: str | None = None) -> str:
+        """The audio demuxer the selected native source declares, or "" when it has none."""
+        selected_source_id = (
+            self._configured_video_source_id(device)
+            if source_id_override is None
+            else source_id_override
+        )
+        discovered = (
+            self._media.get(device.id, source_id=selected_source_id or None)
+            if self._media
+            else None
+        )
+        if discovered is None or discovered.video_handler is None:
+            return ""
+        hint = discovered.audio_codec_hint
+        return hint if hint in AUDIO_CODEC_HINTS else ""
+
     async def _start_recording(
         self,
         episode_id: str,
@@ -571,6 +604,7 @@ class RecordingEngine:
         *,
         video_handler: VideoStreamHandler | None = None,
         codec_hint: str = "",
+        audio_codec_hint: str = "",
     ) -> None:
         key = self._rec_key(episode_id, device.id)
         if key in self._recordings:
@@ -612,6 +646,9 @@ class RecordingEngine:
         rec.rtsp_url = rtsp_url
         rec.video_handler = video_handler
         rec.codec_hint = codec_hint if video_handler is not None and codec_hint else ""
+        rec.audio_codec_hint = (
+            audio_codec_hint if video_handler is not None and audio_codec_hint else ""
+        )
         rec.finalize_reason = None
         rec.stop_reason = None
         lease = self._episode_capture_leases.get(episode_id)
@@ -815,12 +852,15 @@ class RecordingEngine:
             return
         if rec.handler_task is not None and not rec.handler_task.done():
             rec.handler_task.cancel()
-        # Closing stdin signals EOF, which is what lets ffmpeg finalize the bundle.
+        # Closing the inputs signals EOF, which is what lets ffmpeg finalize the bundle.
         if rec.proc and rec.proc.stdin is not None and rec.proc.returncode is None:
-            try:
-                rec.proc.stdin.close()
-            except Exception:
-                pass
+            if rec.feed is not None:
+                rec.feed.close()
+            else:
+                try:
+                    rec.proc.stdin.close()
+                except Exception:
+                    pass
         else:
             RecordingEngine._signal_child_process(rec)
 
@@ -881,7 +921,36 @@ class RecordingEngine:
             return ["-tag:v", HEVC_CODEC_TAG]
         return []
 
-    def _piped_command(self, rec: _EpisodeRecording, flags: str) -> list[str]:
+    @staticmethod
+    def _audio_input(rec: _EpisodeRecording, audio_fd: int | None) -> list[str]:
+        """The second, audio-only input: the source's own framed audio on an extra pipe."""
+        if audio_fd is None:
+            return []
+        # Audio keeps its own sample clock instead of arrival time. Two wallclock-stamped
+        # pipes make ffmpeg 7 hold back whichever input runs ahead, which measured as the
+        # picture dropping from ~16 to ~3 frames per second. The small probe is because
+        # ADTS states its own format, and a long one stalls the picture while it waits.
+        return [
+            "-probesize",
+            "2048",
+            "-analyzeduration",
+            "0",
+            "-f",
+            rec.audio_codec_hint,
+            "-i",
+            f"pipe:{audio_fd}",
+        ]
+
+    @staticmethod
+    def _audio_output(audio_fd: int | None) -> list[str]:
+        """Keep the camera's AAC as sent. ADTS framing is rewrapped for fMP4, not decoded."""
+        if audio_fd is None:
+            return []
+        return ["-c:a", "copy", "-bsf:a", "aac_adtstoasc"]
+
+    def _piped_command(
+        self, rec: _EpisodeRecording, flags: str, audio_fd: int | None = None
+    ) -> list[str]:
         """FFmpeg reading an elementary stream on stdin instead of a network URL.
 
         Only the input side differs from :meth:`_rtsp_command`; everything from ``-i``
@@ -900,10 +969,13 @@ class RecordingEngine:
             "1",
             "-i",
             "pipe:0",
+            *self._audio_input(rec, audio_fd),
             "-map",
             "0:v:0",
+            *(["-map", "1:a:0"] if audio_fd is not None else []),
             "-c:v",
             "copy",
+            *self._audio_output(audio_fd),
             *self._output_codec_tag(rec),
             "-f",
             "hls",
@@ -990,32 +1062,80 @@ class RecordingEngine:
                 process.kill()
                 await process.wait()
 
-    def _start_handler(self, rec: _EpisodeRecording, proc: asyncio.subprocess.Process) -> None:
-        """Drive the plugin's video handler, feeding this attempt's ffmpeg stdin.
+    async def _negotiate_audio(
+        self, rec: _EpisodeRecording, feed: PipedFeed
+    ) -> tuple[int, asyncio.StreamWriter] | None:
+        """Start the handler, then give ffmpeg an audio input only if audio really arrives.
+
+        Returns the audio pipe's read descriptor (to hand to the child) and its write end,
+        or ``None`` to record video only. A source that declares audio but never sends any
+        (no microphone, audio switched off) must still record: ffmpeg would otherwise block
+        on, or refuse to open, an input that never delivers.
+        """
+        self._start_handler(rec, feed, audio=True)
+        handler_task = rec.handler_task
+        assert handler_task is not None
+        sniff = asyncio.create_task(
+            feed.has_audio(
+                first_video_timeout=AUDIO_FIRST_VIDEO_SECONDS, audio_wait=AUDIO_ARRIVAL_SECONDS
+            )
+        )
+        try:
+            await asyncio.wait({sniff, handler_task}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not sniff.done():
+                sniff.cancel()
+            await asyncio.gather(sniff, return_exceptions=True)
+        arrived = (not sniff.cancelled() and sniff.result()) or feed.audio_arrived
+        if not arrived:
+            logger.info(
+                "Episode %s camera %s sent no audio; recording video only",
+                rec.episode_id[:8],
+                rec.device_id,
+            )
+            return None
+        read_fd, write_fd = os.pipe()
+        try:
+            loop = asyncio.get_running_loop()
+            transport, protocol = await loop.connect_write_pipe(
+                lambda: asyncio.streams.FlowControlMixin(loop=loop),
+                os.fdopen(write_fd, "wb", buffering=0),
+            )
+        except BaseException:
+            os.close(read_fd)
+            raise
+        logger.info(
+            "Episode %s camera %s recording %s audio from the source",
+            rec.episode_id[:8],
+            rec.device_id,
+            rec.audio_codec_hint.upper(),
+        )
+        return read_fd, asyncio.StreamWriter(transport, protocol, None, loop)
+
+    def _start_handler(self, rec: _EpisodeRecording, feed: PipedFeed, *, audio: bool) -> None:
+        """Drive the plugin's video handler, feeding this attempt through ``feed``.
 
         The handler is a plugin callback, so it runs on a task the recorder owns and can
         cancel: a plugin that never returns must not keep a camera session open past the
         recording. One chunk in flight keeps memory bounded, and a handler that blocks the
         write longer than ``PIPE_WRITE_TIMEOUT_SECONDS`` is treated as stalled, which ends
-        the attempt through the same path a dead network takes.
+        the attempt through the same path a dead network takes. A source that declares
+        audio (``audio=True``) is also given the feed's audio push.
         """
         handler = rec.video_handler
-        stdin = proc.stdin
         rec.handler_error = None
         rec.handler_ended = False
         rec.handler_reason = None
-
-        async def _push(chunk: bytes) -> None:
-            if stdin is None or proc.returncode is not None:
-                raise PipeClosedError("recorder child process is no longer reading")
-            stdin.write(chunk)
-            await asyncio.wait_for(stdin.drain(), timeout=PIPE_WRITE_TIMEOUT_SECONDS)
+        rec.feed = feed
 
         async def _pump() -> None:
             cancelled = False
             try:
                 try:
-                    await handler(_push)
+                    if audio:
+                        await handler(feed.push_video, audio=feed.push_audio)
+                    else:
+                        await handler(feed.push_video)
                 except asyncio.CancelledError:
                     cancelled = True
                     raise
@@ -1049,16 +1169,13 @@ class RecordingEngine:
                     rec.handler_ended = True
                     rec.handler_reason = "video_handler_ended"
             finally:
-                # Nothing more can arrive either way. Closing stdin is what lets ffmpeg
+                # Nothing more can arrive either way. Closing ffmpeg's inputs is what lets it
                 # flush its final fragment and exit 0, so a source that ran out is not
                 # punished into a truncated bundle. A child that ignores EOF is still
                 # caught by the recorder's own no-progress watchdog. A cancelled attempt
                 # is left to the recorder's teardown, which terminates the child on purpose.
-                if not cancelled and stdin is not None:
-                    try:
-                        stdin.close()
-                    except Exception:
-                        pass
+                if not cancelled:
+                    feed.finish()
 
         rec.handler_task = asyncio.create_task(_pump())
 
@@ -1157,13 +1274,31 @@ class RecordingEngine:
             stderr_task: asyncio.Task | None = None
             stall_signaled = False
             try:
+                audio_pipe: tuple[int, asyncio.StreamWriter] | None = None
+                feed: PipedFeed | None = None
                 if piped:
-                    proc = await asyncio.create_subprocess_exec(
-                        *self._piped_command(rec, flags),
-                        cwd=str(rec.bundle.root),
-                        stdin=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
+                    feed = PipedFeed(write_timeout=PIPE_WRITE_TIMEOUT_SECONDS)
+                    if rec.audio_codec_hint:
+                        audio_pipe = await self._negotiate_audio(rec, feed)
+                    rec.audio_recorded = audio_pipe is not None
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            *self._piped_command(
+                                rec, flags, audio_pipe[0] if audio_pipe is not None else None
+                            ),
+                            cwd=str(rec.bundle.root),
+                            stdin=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            pass_fds=(audio_pipe[0],) if audio_pipe is not None else (),
+                        )
+                    except BaseException:
+                        if audio_pipe is not None:
+                            audio_pipe[1].close()
+                        raise
+                    finally:
+                        if audio_pipe is not None:
+                            # The child holds its own copy of the read end.
+                            os.close(audio_pipe[0])
                 else:
                     proc = await asyncio.create_subprocess_exec(
                         *self._rtsp_command(rec, rtsp_url, flags),
@@ -1173,8 +1308,10 @@ class RecordingEngine:
                     )
                 rec.proc = proc
                 stderr_task = asyncio.create_task(self._drain_stderr(rec, proc))
-                if piped:
-                    self._start_handler(rec, proc)
+                if feed is not None:
+                    if not rec.audio_codec_hint:
+                        self._start_handler(rec, feed, audio=False)
+                    await feed.attach(proc, audio_pipe[1] if audio_pipe is not None else None)
                 wait_task = asyncio.create_task(proc.wait())
                 while not wait_task.done():
                     if self._capture_lease_expired(rec):

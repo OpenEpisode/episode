@@ -91,6 +91,14 @@ explicit source selected under **Capture → Recording source** takes precedence
 In every case, Episode's core recorder owns the HLS/fMP4 Video Evidence bundle;
 the plugin only supplies the source bytes.
 
+Both paths record the camera's audio. RTSP recordings transcode it to AAC; native
+recordings keep the camera's AAC exactly as sent. The native path records audio
+only when the camera sends AAC, which every firmware measured for this plugin
+does; an ADPCM stream is not recorded. If a camera has no microphone or its audio
+is switched off, the recording is video only. Recording sound can carry legal and
+privacy obligations: to stop recording it, disable audio in the camera's own
+settings.
+
 The two acquisition paths differ sharply in how long they take to produce a
 usable picture. On the same three cameras in the same window, native `cmdId=3`
 delivery reached a first independently decodable frame in 80–270 ms at 12–15

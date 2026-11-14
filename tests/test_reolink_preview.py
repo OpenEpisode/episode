@@ -408,3 +408,58 @@ def test_parse_encrypt_len_reads_only_what_it_names() -> None:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+ADPCM_MAGIC = 0x62773130  # "01wb"
+
+
+def _audio_packet(magic: int, payload: bytes) -> bytes:
+    """One audio packet on the wire: magic, both sizes, payload, then 8-byte padding."""
+    size = len(payload)
+    return struct.pack("<IHH", magic, size, size) + payload + b"\x00" * _padding(size)
+
+
+def test_walker_forwards_each_aac_payload_in_order_and_counts_it():
+    adts = [b"\xff\xf1" + bytes([index]) * 261 for index in range(3)]  # sizes need padding
+    stream = b"".join(_audio_packet(AAC_MAGIC, payload) for payload in adts)
+    forwarded: list[bytes] = []
+
+    walker = BcMediaWalker(audio_sink=forwarded.append)
+    # Arrive in awkward slices: a packet split mid-header and mid-payload must still frame.
+    for start in range(0, len(stream), 97):
+        walker.push(stream[start : start + 97])
+
+    assert forwarded == adts
+    assert walker.stats.audio_count == 3
+    assert walker.stats.audio_bytes == sum(len(payload) for payload in adts)
+    assert walker.stats.resyncs == 0
+
+
+def test_walker_counts_adpcm_but_never_forwards_it():
+    forwarded: list[bytes] = []
+    walker = BcMediaWalker(audio_sink=forwarded.append)
+
+    walker.push(_audio_packet(ADPCM_MAGIC, b"\x01" * 100))
+
+    assert forwarded == []
+    assert walker.stats.audio_count == 1
+    assert walker.stats.audio_bytes == 0
+
+
+def test_a_dead_audio_sink_is_recorded_and_does_not_stop_framing_video():
+    def broken(_payload: bytes) -> None:
+        raise BrokenPipeError("recorder is gone")
+
+    walker = BcMediaWalker(audio_sink=broken)
+    walker.push(_audio_packet(AAC_MAGIC, b"\xff\xf1" + b"\x00" * 30))
+    walker.push(_audio_packet(AAC_MAGIC, b"\xff\xf1" + b"\x01" * 30))
+
+    assert walker.stats.audio_count == 2
+    assert walker.sink_errors and "BrokenPipeError" in walker.sink_errors[0]
+
+
+def test_walker_without_an_audio_sink_still_tallies_audio():
+    walker = BcMediaWalker()
+    walker.push(_audio_packet(AAC_MAGIC, b"\xff\xf1" + b"\x00" * 30))
+    assert walker.stats.audio_count == 1
+    assert walker.stats.audio_bytes == 32

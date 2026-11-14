@@ -173,6 +173,9 @@ class PreviewStats:
     iframe_count: int = 0
     pframe_count: int = 0
     audio_count: int = 0
+    #: AAC payload bytes handed to the audio sink. ADPCM is counted in ``audio_count`` but
+    #: never forwarded: no measured firmware sends it and it would need decoding first.
+    audio_bytes: int = 0
     media_bytes: int = 0
     padding_bytes: int = 0
     resyncs: int = 0
@@ -226,6 +229,8 @@ class BcMediaWalker:
     exception, because that is how byte-loss recovery must behave on a transport with no
     checksum. ``sink`` receives each validated video payload as it is framed, so a live
     consumer sees exactly the bytes the tallies describe and can never disagree with them.
+    ``audio_sink`` receives each AAC payload the same way. The camera sends it as ADTS
+    frames, which is exactly what an ``-f aac`` demuxer reads, so nothing is rewrapped.
     """
 
     def __init__(
@@ -234,11 +239,13 @@ class BcMediaWalker:
         stats: PreviewStats | None = None,
         max_packet_bytes: int = PREVIEW_MAX_BYTES,
         sink: Callable[[bytes], None] | None = None,
+        audio_sink: Callable[[bytes], None] | None = None,
     ) -> None:
         self._buffer = bytearray()
         self._max = max_packet_bytes
         self.stats = stats if stats is not None else PreviewStats()
         self._sink = sink
+        self._audio_sink = audio_sink
         self._sink_errors: list[str] = []
 
     def push(self, data: bytes, *, elapsed_ms: float = 0.0) -> int:
@@ -295,9 +302,13 @@ class BcMediaWalker:
             pad = _padding(size_a)
             if pad and len(buf) < total + pad:
                 return None  # padding has not fully arrived yet
+            payload = bytes(buf[8:total]) if kind == "AAC" else b""
             del buf[: total + pad]
             self.stats.audio_count += 1
             self.stats.record_packet(kind, size_a)
+            if payload:
+                self.stats.audio_bytes += size_a
+                self._deliver(self._audio_sink, payload)
             return (kind, size_a)
         if len(buf) < VIDEO_HEADER_BYTES:
             return None
@@ -347,14 +358,18 @@ class BcMediaWalker:
             stats.h264_sps += types.count(H264_SPS)
             stats.h264_idr += types.count(H264_IDR)
         stats.record_packet(kind, size)
-        if self._sink is not None:
-            # A consumer that dies (a closed pipe, a cancelled recording) must not stop
-            # framing: the tallies are what the next decision is made from.
-            try:
-                self._sink(payload)
-            except Exception as error:  # noqa: BLE001 - a dead sink is recorded, not raised
-                if len(self._sink_errors) < 8:
-                    self._sink_errors.append(f"{type(error).__name__}: {str(error)[:120]}")
+        self._deliver(self._sink, payload)
+
+    def _deliver(self, sink: Callable[[bytes], None] | None, payload: bytes) -> None:
+        if sink is None:
+            return
+        # A consumer that dies (a closed pipe, a cancelled recording) must not stop
+        # framing: the tallies are what the next decision is made from.
+        try:
+            sink(payload)
+        except Exception as error:  # noqa: BLE001 - a dead sink is recorded, not raised
+            if len(self._sink_errors) < 8:
+                self._sink_errors.append(f"{type(error).__name__}: {str(error)[:120]}")
 
     def _resync(self) -> None:
         """Drop bytes up to the next plausible magic; count it, never raise."""
@@ -448,11 +463,17 @@ class PreviewFeed:
         max_bytes: int | None = PREVIEW_MAX_BYTES,
         packet_max_bytes: int = PREVIEW_MAX_BYTES,
         sink: Callable[[bytes], None] | None = None,
+        audio_sink: Callable[[bytes], None] | None = None,
     ) -> None:
         self.stats = PreviewStats(variant=variant)
         self._max = max_bytes
         self._packet_max = packet_max_bytes
-        self._walker = BcMediaWalker(stats=self.stats, max_packet_bytes=packet_max_bytes, sink=sink)
+        self._walker = BcMediaWalker(
+            stats=self.stats,
+            max_packet_bytes=packet_max_bytes,
+            sink=sink,
+            audio_sink=audio_sink,
+        )
         self._full = False
         self.frames_in = 0
         self.bytes_in = 0

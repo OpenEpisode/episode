@@ -33,6 +33,7 @@ from episode.engine.engine import EpisodeEngine
 from episode.media.registry import CameraMedia, MediaRegistry, VideoSourceDescriptor
 from episode.recording.engine import RecordingEngine, _EpisodeRecording
 from episode.recording.hls import HLSCaptureState, HLSRecordingBundle
+from episode.recording.piped_feed import PipedFeed
 from episode.retention import RetentionService
 from episode.storage.repository import Repository
 
@@ -125,6 +126,68 @@ def _finite_access_units():
     """A finite source used to verify that an early clean return is incomplete."""
 
     return _live_feed(*_fixture_access_units(), seconds=FIXTURE_SECONDS, keep_open=False)
+
+
+def _aac_frames(seconds: float = FIXTURE_SECONDS) -> list[bytes]:
+    """Real ADTS AAC (16 kHz mono) cut into the one-frame payloads a camera sends."""
+    data = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=16000",
+            "-ac",
+            "1",
+            "-t",
+            str(seconds),
+            "-c:a",
+            "aac",
+            "-f",
+            "adts",
+            "pipe:1",
+        ],
+        capture_output=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    frames: list[bytes] = []
+    position = 0
+    while position + 7 <= len(data):
+        length = (
+            ((data[position + 3] & 0x03) << 11)
+            | (data[position + 4] << 3)
+            | (data[position + 5] >> 5)
+        )
+        frames.append(data[position : position + length])
+        position += length
+    return frames
+
+
+def _live_av_feed(*, send_audio: bool = True, seconds: float = FIXTURE_SECONDS):
+    """A native source pushing paced video and, when asked, paced audio on its own push."""
+    video = _fixture_access_units()
+    sound = _aac_frames(seconds)
+    feed_complete = asyncio.Event()
+
+    async def handler(push, audio=None) -> None:
+        async def send(chunks, target) -> None:
+            spacing = seconds / len(chunks)
+            for chunk in chunks:
+                await asyncio.sleep(spacing)
+                await target(chunk)
+
+        jobs = [send(video, push)]
+        if send_audio and audio is not None:
+            jobs.append(send(sound, audio))
+        await asyncio.gather(*jobs)
+        feed_complete.set()
+        await asyncio.Event().wait()
+
+    handler.feed_complete = feed_complete
+    return handler
 
 
 def _camera_device() -> Device:
@@ -467,16 +530,18 @@ class Harness:
         self.recorder.set_evidence_sink(self.engine.ingest_recording_evidence)
         self.episode_id = ""
 
-    async def start(self, handler=None, *, codec_hint: str = "hevc") -> None:
+    async def start(
+        self, handler=None, *, codec_hint: str = "hevc", audio_codec_hint: str = ""
+    ) -> None:
         await self.repo.initialize()
         await self.repo.upsert_area(Area(id="area-spike", name="Area"))
         await self.repo.upsert_device(_camera_device())
         if handler is not None:
-            self.register(handler, codec_hint=codec_hint)
+            self.register(handler, codec_hint=codec_hint, audio_codec_hint=audio_codec_hint)
         await self.engine.start()
         await self.recorder.start()
 
-    def register(self, handler, *, codec_hint: str = "hevc") -> None:
+    def register(self, handler, *, codec_hint: str = "hevc", audio_codec_hint: str = "") -> None:
         self.registry.register(
             CameraMedia(
                 device_id="camera-native",
@@ -484,6 +549,7 @@ class Harness:
                 source="spike",
                 video_handler=handler,
                 codec_hint=codec_hint,
+                audio_codec_hint=audio_codec_hint,
             )
         )
 
@@ -578,12 +644,13 @@ def _manifest_kinds(manifest: dict[str, Any]) -> dict[str, int]:
     return kinds
 
 
-def _probe(path: Path, entry: str) -> str:
+def _probe(path: Path, entry: str, *extra: str) -> str:
     result = subprocess.run(
         [
             "ffprobe",
             "-v",
             "error",
+            *extra,
             "-show_entries",
             entry,
             "-of",
@@ -817,7 +884,6 @@ async def test_a_handler_blocked_in_push_is_a_stalled_source_not_a_failed_plugin
     blocked write, and a real child would have to be stalled by the OS pipe buffer, which no
     assertion could rely on.
     """
-    from episode.recording import engine as engine_module
 
     class _StuckStdin:
         def __init__(self) -> None:
@@ -854,13 +920,10 @@ async def test_a_handler_blocked_in_push_is_a_stalled_source_not_a_failed_plugin
         start_time=datetime.now(tz=timezone.utc),
         video_handler=_handler(b"\x00\x00\x00\x01frame"),
     )
-    monkeypatched = engine_module.PIPE_WRITE_TIMEOUT_SECONDS
-    engine_module.PIPE_WRITE_TIMEOUT_SECONDS = 0.05
-    try:
-        harness.recorder._start_handler(rec, _StubChild(stdin))
-        await asyncio.wait_for(rec.handler_task, timeout=5.0)
-    finally:
-        engine_module.PIPE_WRITE_TIMEOUT_SECONDS = monkeypatched
+    feed = PipedFeed(write_timeout=0.05)
+    await feed.attach(_StubChild(stdin))
+    harness.recorder._start_handler(rec, feed, audio=False)
+    await asyncio.wait_for(rec.handler_task, timeout=5.0)
 
     assert "blocked writing" in (rec.last_error or "")
     assert rec.handler_error is None, "a blocked write is not the plugin's fault"
@@ -973,7 +1036,9 @@ async def test_retention_removes_every_piped_bundle_component(tmp_path):
     await harness.repo.close()
 
 
-def _piped_command_for(codec_hint: str, tmp_path: Path) -> list[str]:
+def _piped_command_for(
+    codec_hint: str, tmp_path: Path, *, audio_fd: int | None = None
+) -> list[str]:
     """Build a piped ffmpeg command for a recording with the given codec hint."""
     started_at = datetime.now(tz=timezone.utc)
     root = tmp_path / "cmd"
@@ -997,10 +1062,11 @@ def _piped_command_for(codec_hint: str, tmp_path: Path) -> list[str]:
         start_time=started_at,
         video_handler=lambda push: None,
         codec_hint=codec_hint,
+        audio_codec_hint="aac" if audio_fd is not None else "",
     )
     recorder = RecordingEngine.__new__(RecordingEngine)
     recorder._fragment_seconds = 2
-    return recorder._piped_command(rec, "independent_segments")
+    return recorder._piped_command(rec, "independent_segments", audio_fd)
 
 
 def test_hevc_input_is_retagged_hvc1_for_browser_playback(tmp_path):
@@ -1016,3 +1082,130 @@ def test_h264_and_unknown_inputs_keep_their_natural_codec_tag(tmp_path):
     for codec_hint in ("h264", ""):
         command = _piped_command_for(codec_hint, tmp_path)
         assert "-tag:v" not in command
+
+
+def _stream_codecs(path: Path) -> list[str]:
+    return _probe(path, "stream=codec_name").split()
+
+
+@needs_ffmpeg
+@pytest.mark.asyncio
+async def test_native_audio_is_recorded_in_the_same_bundle_as_the_video(tmp_path):
+    """A source that sends AAC alongside its picture records both, with the audio untouched."""
+    harness = Harness(tmp_path)
+    await harness.start(_live_av_feed(), audio_codec_hint="aac")
+    recording = await harness.begin()
+    await harness.await_feed(recording)
+    await harness.recorder._stop_recording(recording, reason="test_done")
+
+    assert recording.audio_recorded is True
+    assert (recording.bundle.root / "init.mp4").stat().st_size > 0
+
+    joined = tmp_path / "joined.mp4"
+    _join(recording.bundle, joined)
+    assert sorted(_stream_codecs(joined)) == ["aac", "hevc"]
+    assert _probe(joined, "stream=sample_rate").split() == ["16000"]
+    assert float(_probe(joined, "format=duration")) > 3.0
+
+    evidence = await harness.evidence()
+    assert evidence.evidence_type == "recording"
+    assert evidence.metadata["fragment_count"] >= 2
+
+    await harness.close()
+
+
+@needs_ffmpeg
+@pytest.mark.asyncio
+async def test_an_audio_input_does_not_clump_the_picture(tmp_path):
+    """ffmpeg 7 holds back a pipe whose timestamps run ahead of another input's.
+
+    With both inputs stamped by arrival time the picture was read in bursts 1-3 s apart,
+    which on a camera cut ~16 fps to ~3 fps. Audio on its own clock leaves the picture's
+    packet times as evenly spaced as they were sent.
+    """
+    harness = Harness(tmp_path)
+    await harness.start(_live_av_feed(seconds=12.0), audio_codec_hint="aac")
+    recording = await harness.begin()
+    await harness.await_feed(recording, timeout=60.0)
+    await harness.recorder._stop_recording(recording, reason="test_done")
+    assert recording.audio_recorded is True
+
+    joined = tmp_path / "joined.mp4"
+    _join(recording.bundle, joined)
+    times = sorted(
+        float(value)
+        for value in _probe(joined, "packet=pts_time", "-select_streams", "v:0").split()
+    )
+    gaps = [later - earlier for earlier, later in zip(times, times[1:])]
+    # Sent every 0.2 s; the first seconds hold ffmpeg's start-up and are not the subject.
+    assert len(times) >= 55
+    assert max(gaps[10:]) < 1.0
+
+    await harness.close()
+
+
+@needs_ffmpeg
+@pytest.mark.asyncio
+async def test_declared_audio_that_never_arrives_still_records_the_video(tmp_path):
+    """A camera with no microphone must not stall or fail the recording ffmpeg is writing."""
+    harness = Harness(tmp_path)
+    await harness.start(_live_av_feed(send_audio=False), audio_codec_hint="aac")
+    recording = await harness.begin()
+    await harness.await_feed(recording)
+    await harness.recorder._stop_recording(recording, reason="test_done")
+
+    assert recording.audio_recorded is False
+
+    joined = tmp_path / "joined.mp4"
+    _join(recording.bundle, joined)
+    assert _stream_codecs(joined) == ["hevc"]
+    assert float(_probe(joined, "format=duration")) > 2.0
+
+    evidence = await harness.evidence()
+    assert evidence.evidence_type == "recording"
+
+    await harness.close()
+
+
+@needs_ffmpeg
+@pytest.mark.asyncio
+async def test_a_source_without_an_audio_hint_is_given_only_the_video_push(tmp_path):
+    """Sources written before audio existed keep the one-argument handler contract."""
+    harness = Harness(tmp_path)
+    await harness.start(_live_access_units())
+    recording = await harness.begin()
+    await harness.await_feed(recording)
+    await harness.recorder._stop_recording(recording, reason="test_done")
+
+    assert recording.audio_recorded is False
+    joined = tmp_path / "joined.mp4"
+    _join(recording.bundle, joined)
+    assert _stream_codecs(joined) == ["hevc"]
+
+    await harness.close()
+
+
+def test_the_piped_command_adds_an_audio_input_only_when_audio_was_negotiated(tmp_path):
+    video_only = _piped_command_for("hevc", tmp_path)
+    assert video_only.count("-i") == 1
+    assert "-c:a" not in video_only and "1:a:0" not in video_only
+
+    command = _piped_command_for("hevc", tmp_path, audio_fd=7)
+    assert command.count("-i") == 2
+    audio_input = command.index("pipe:7")
+    assert command[audio_input - 7 : audio_input + 1] == [
+        "-probesize",
+        "2048",
+        "-analyzeduration",
+        "0",
+        "-f",
+        "aac",
+        "-i",
+        "pipe:7",
+    ]
+    # Audio keeps its own sample clock; only the picture is stamped by arrival time.
+    assert command.count("-use_wallclock_as_timestamps") == 1
+    assert command[command.index("1:a:0") - 1] == "-map"
+    # ADTS is rewrapped for fMP4, never decoded: the camera's AAC is kept as sent.
+    assert command[command.index("-c:a") + 1] == "copy"
+    assert command[command.index("-bsf:a") + 1] == "aac_adtstoasc"

@@ -107,11 +107,17 @@ EventSnapshotFetcher = Callable[[str], Awaitable[tuple[bytes, str]]]
 
 # A plugin-native video source: ``handler(push)`` streams Annex-B access units to the
 # recorder until it returns, raises, or is cancelled. The recorder owns the encoder
-# process and calls ``push``; bytes are never stored by the handler.
-VideoStreamHandler = Callable[[Callable[[bytes], Awaitable[None]]], Awaitable[None]]
+# process and calls ``push``; bytes are never stored by the handler. A source that
+# declares ``audio_codec_hint`` is called as ``handler(push, audio=push_audio)`` and
+# may also push framed audio; ``audio`` is optional, so a handler that never sends audio
+# keeps the one-argument form.
+VideoStreamHandler = Callable[..., Awaitable[None]]
 
 #: Elementary-stream demuxer names the recorder can pipe a handler's bytes into.
 VIDEO_CODEC_HINTS = ("h264", "hevc")
+
+#: Audio elementary-stream demuxers a handler's ``audio`` bytes may use. AAC is ADTS.
+AUDIO_CODEC_HINTS = ("aac",)
 
 
 @dataclass(frozen=True)
@@ -137,6 +143,10 @@ class CameraMedia:
     # Elementary-stream demuxer for the handler's bytes ("h264" | "hevc"); "" lets the
     # recorder's child guess. Set it from a real capability (e.g. cmdId=146), never a guess.
     codec_hint: str = ""
+    # Audio demuxer for the bytes a handler pushes to ``audio`` ("aac"); "" means the source
+    # carries no audio. A declaration, not a promise: the recorder only records audio once
+    # it has actually arrived, because an input that never delivers would stall ffmpeg.
+    audio_codec_hint: str = ""
     # A source may be one of several choices a plugin registers for a Device. Its
     # descriptor contains no URI or credentials and is safe for the Device API.
     video_source: VideoSourceDescriptor | None = None
