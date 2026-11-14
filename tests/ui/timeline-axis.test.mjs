@@ -17,6 +17,8 @@ const {
   canvasHeight,
   normalizeTimeRange,
   renderAxis,
+  renderAxisHorizontal,
+  tickPlan,
   mountTimelineAxis,
 } = await import(moduleUrl);
 
@@ -62,7 +64,7 @@ test("normalizeTimeRange orders endpoints regardless of drag direction", () => {
 });
 
 function mockCtx() {
-  const calls = { fillRect: [], arc: [], fillText: [] };
+  const calls = { fillRect: [], arc: [], fillText: [], moveTo: [] };
   return {
     calls,
     fillStyle: "",
@@ -73,7 +75,9 @@ function mockCtx() {
     lineWidth: 1,
     clearRect() {},
     beginPath() {},
-    moveTo() {},
+    moveTo(x, y) {
+      calls.moveTo.push({ x, y });
+    },
     lineTo() {},
     stroke() {},
     fill() {},
@@ -148,7 +152,7 @@ function mountAxisWithMockDom(model, options = {}) {
   };
 }
 
-test("renderAxis draws an easier-to-hit blue marker per recording segment", () => {
+test("renderAxis draws an thin blue marker per recording segment", () => {
   const palette = {
     accent: "#111",
     muted: "#222",
@@ -174,16 +178,14 @@ test("renderAxis draws an easier-to-hit blue marker per recording segment", () =
   const ctx = mockCtx();
   renderAxis(ctx, 130, model, 0, palette);
 
-  // One enlarged blob per video segment, in the playhead (brand blue) color.
-  const blobs = ctx.calls.arc;
-  assert.equal(blobs.length, 2);
-  for (const blob of blobs) {
-    assert.equal(blob.r, 8);
-    assert.equal(blob.color, "#444");
-  }
-
-  // No thin 4px-wide segment bars remain.
-  assert.equal(ctx.calls.fillRect.filter(rect => rect.w === 4).length, 0);
+  // One thin rectangular marker per video segment, in the playhead (brand
+  // blue) color: 16px across the time axis, 4px along it. No circles.
+  assert.equal(ctx.calls.arc.length, 0);
+  const markers = ctx.calls.fillRect.filter(rect => rect.w === 16 && rect.h === 4);
+  assert.equal(markers.length, 2);
+  for (const marker of markers) assert.equal(marker.color, "#444");
+  const markerCenters = markers.map(marker => marker.y + marker.h / 2);
+  assert.ok(markerCenters[0] > markerCenters[1], "earlier segments sit lower on the vertical axis");
 
   // Hour labels are drawn (24 of them, "00:00".."23:00").
   assert.equal(ctx.calls.fillText.filter(text => /^\d\d:00$/.test(text)).length, 24);
@@ -195,6 +197,132 @@ test("renderAxis draws an easier-to-hit blue marker per recording segment", () =
   assert.ok(pill.x >= LABEL_W, "NOW pill stays right of the hour-label column");
   assert.ok(pill.x < 130 - 40, "NOW pill stays clear of the canvas right edge");
   assert.ok(ctx.calls.fillText.includes("NOW"));
+});
+
+test("tickPlan refines labels toward 5 minutes and ticks toward 1 minute as zoom increases", () => {
+  // Vertical labels need ~22px, horizontal labels ~44px.
+  assert.deepEqual(
+    [0, 1, 2, 3, 4].map(zoom => tickPlan(zoom, 22)),
+    [
+      { labelMinutes: 60, minorMinutes: 10 },
+      { labelMinutes: 30, minorMinutes: 5 },
+      { labelMinutes: 10, minorMinutes: 5 },
+      { labelMinutes: 5, minorMinutes: 5 },
+      { labelMinutes: 5, minorMinutes: 1 },
+    ],
+  );
+  assert.deepEqual(
+    [0, 1, 2, 3, 4].map(zoom => tickPlan(zoom, 44).labelMinutes),
+    [60, 60, 30, 10, 5],
+  );
+});
+
+test("renderAxis adds minute labels between the hours when zoomed in", () => {
+  const palette = { accent: "#111", muted: "#222", border: "#333", playhead: "#444", detection: {} };
+  const model = {
+    dayStart: DAY_START,
+    dayEnd: DAY_START + 24 * HOUR,
+    now: DAY_START + 23 * HOUR,
+    playhead: DAY_START + 10 * HOUR,
+    segments: [],
+    detections: [],
+  };
+  const labelsAt = zoom => {
+    const ctx = mockCtx();
+    renderAxis(ctx, 130, model, zoom, palette);
+    return ctx.calls.fillText.filter(text => /^10:\d\d$/.test(text));
+  };
+  assert.deepEqual(labelsAt(0), ["10:00"]);
+  assert.deepEqual(labelsAt(1), ["10:00", "10:30"]);
+  assert.equal(labelsAt(2).length, 6, "one label per 10 minutes");
+  assert.equal(labelsAt(4).length, 12, "one label per 5 minutes");
+});
+
+test("renderAxis draws a tick for every minute at the highest zoom", () => {
+  const palette = { accent: "#111", muted: "#222", border: "#333", playhead: "#444", detection: {} };
+  const model = {
+    dayStart: DAY_START + 10 * HOUR,
+    dayEnd: DAY_START + 11 * HOUR,
+    now: DAY_START + 12 * HOUR,
+    playhead: DAY_START + 10 * HOUR,
+    segments: [],
+    detections: [],
+  };
+  const ticksAt = zoom => {
+    const ctx = mockCtx();
+    renderAxis(ctx, 130, model, zoom, palette);
+    return ctx.calls.moveTo.filter(point => point.x === LABEL_W).length;
+  };
+  assert.equal(ticksAt(4), 60);
+  assert.equal(ticksAt(3), 12, "every 5 minutes one zoom level lower");
+});
+
+test("renderAxisHorizontal adds minute labels between the hours when zoomed in", () => {
+  const palette = { accent: "#111", muted: "#222", border: "#333", playhead: "#444", detection: {} };
+  const model = {
+    dayStart: DAY_START,
+    dayEnd: DAY_START + 24 * HOUR,
+    now: DAY_START + 23 * HOUR,
+    playhead: DAY_START + 10 * HOUR,
+    segments: [],
+    detections: [],
+  };
+  const labelsAt = zoom => {
+    const ctx = mockCtx();
+    renderAxisHorizontal(ctx, Math.round(24 * ZOOM_LEVELS[zoom]), model, zoom, palette);
+    return ctx.calls.fillText.filter(text => /^10:\d\d$/.test(text));
+  };
+  assert.deepEqual(labelsAt(1), ["10:00"]);
+  assert.deepEqual(labelsAt(2), ["10:00", "10:30"]);
+  assert.equal(labelsAt(3).length, 6, "one label per 10 minutes");
+  assert.equal(labelsAt(4).length, 12, "one label per 5 minutes");
+});
+
+test("ctrl-wheel zoom keeps the time under the pointer and blocks native scrolling", () => {
+  const model = {
+    dayStart: DAY_START,
+    dayEnd: DAY_START + 24 * HOUR,
+    now: DAY_START + 24 * HOUR,
+    playhead: DAY_START + 6 * HOUR,
+    segments: [],
+    detections: [],
+  };
+  const zooms = [];
+  const mounted = mountAxisWithMockDom(model, { zoom: 0, onZoom: zoom => zooms.push(zoom) });
+  try {
+    mounted.container.scrollTop = 0;
+    const canvas = mounted.container.child.child;
+    let prevented = 0;
+    const wheel = (overrides) => canvas.listeners.wheel({
+      ctrlKey: true,
+      deltaY: -100,
+      clientX: 60,
+      clientY: 390, // 10h above the day's end at 39px/h
+      preventDefault() { prevented += 1; },
+      ...overrides,
+    });
+
+    wheel();
+    // 10h from the end is 780px at 78px/h; the pointer stayed at 390px.
+    assert.equal(mounted.container.scrollTop, 390);
+    assert.deepEqual(zooms, [1]);
+    assert.equal(prevented, 1);
+
+    // Already at the top zoom level: no change, still no native scroll.
+    for (let i = 0; i < 5; i += 1) wheel({ clientY: 0 });
+    const scrollAtMax = mounted.container.scrollTop;
+    wheel({ clientY: 0 });
+    assert.equal(mounted.container.scrollTop, scrollAtMax);
+    assert.equal(prevented, 7);
+
+    // Plain wheel scrolls natively and does not zoom.
+    const before = zooms.length;
+    canvas.listeners.wheel({ ctrlKey: false, metaKey: false, deltaY: -100, preventDefault() { prevented += 1; } });
+    assert.equal(zooms.length, before);
+    assert.equal(prevented, 7);
+  } finally {
+    mounted.restore();
+  }
 });
 
 test("renderAxis labels rolling windows at actual local hour boundaries", () => {

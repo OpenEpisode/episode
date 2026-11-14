@@ -17,10 +17,15 @@ export const LABEL_W = 34; // hour-label column width (px)
 export const HORIZONTAL_AXIS_H = 48; // fixed canvas height in horizontal mode
 
 const MS_PER_HOUR = 3600000;
-const RECORDING_MARKER_RADIUS = 8;
+const RECORDING_MARKER_LENGTH = 16; // across the time axis
+const RECORDING_MARKER_THICKNESS = 4; // along the time axis
 const RECORDING_MARKER_HIT_X = 18;
 const RECORDING_MARKER_HIT_Y = 11;
 const RANGE_DRAG_THRESHOLD = 5;
+const TICK_STEPS_MINUTES = [1, 5, 10, 15, 30, 60];
+const MINOR_TICK_MIN_PX = 6;
+const VERTICAL_LABEL_MIN_PX = 22; // 10px text, one line per label
+const HORIZONTAL_LABEL_MIN_PX = 44; // "HH:MM" at 9px, side by side
 const DEFAULT_DAY_END_OFFSET_MS = 24 * MS_PER_HOUR;
 
 export function timeToY(time, dayStart, zoom, dayEnd = dayStart + DEFAULT_DAY_END_OFFSET_MS) {
@@ -59,12 +64,44 @@ function nextLocalHour(time) {
   return time + MS_PER_HOUR;
 }
 
-function firstLocalHourAtOrAfter(time) {
+function floorLocalHour(time) {
   const date = new Date(time);
-  const boundary = date.getTime();
   date.setMinutes(0, 0, 0);
-  if (date.getTime() < boundary) date.setTime(date.getTime() + MS_PER_HOUR);
   return date.getTime();
+}
+
+function stepFor(zoom, minPx) {
+  const found = TICK_STEPS_MINUTES.find(minutes => (minutes / 60) * ZOOM_LEVELS[zoom] >= minPx);
+  return found ?? 60;
+}
+
+// Tick density grows with zoom: labels move from hourly toward every 5 minutes
+// and unlabeled minor ticks fill in between, never closer than the minimum
+// pixel spacing. `labelMinPx` is the room one label needs along the time axis.
+export function tickPlan(zoom, labelMinPx) {
+  const labelMinutes = stepFor(zoom, labelMinPx);
+  const minorMinutes = Math.min(labelMinutes, stepFor(zoom, MINOR_TICK_MIN_PX));
+  return { labelMinutes, minorMinutes };
+}
+
+// Local-time ticks in [dayStart, dayEnd), each flagged as an hour boundary or
+// a label tick. Hours are walked from the hour containing dayStart so a
+// rolling window keeps its leading minor ticks.
+function* ticksFor(dayStart, dayEnd, plan) {
+  for (let hour = floorLocalHour(dayStart); hour < dayEnd; hour = nextLocalHour(hour)) {
+    for (let minute = 0; minute < 60; minute += plan.minorMinutes) {
+      const time = hour + minute * 60000;
+      if (time >= dayEnd) break;
+      if (time < dayStart) continue;
+      const date = new Date(time);
+      yield {
+        time,
+        isHour: minute === 0,
+        isLabel: minute % plan.labelMinutes === 0,
+        text: `${pad2(date.getHours())}:${pad2(minute)}`,
+      };
+    }
+  }
 }
 
 // Draws the horizontal axis onto `ctx`. Time flows left→right.
@@ -96,34 +133,37 @@ export function renderAxisHorizontal(ctx, width, model, zoom, palette) {
     ctx.globalAlpha = 1;
   }
 
-  // Hour labels + ticks along the bottom.
+  // Hour/minute labels + ticks along the bottom; density follows the zoom.
   const labelY = H - 12;
-  const tickTop = 20;
+  const plan = tickPlan(zoom, HORIZONTAL_LABEL_MIN_PX);
   ctx.font = "9px system-ui, sans-serif";
   ctx.textBaseline = "top";
-  for (let t = firstLocalHourAtOrAfter(dayStart); t < dayEnd; t = nextLocalHour(t)) {
-    const x = t2x(t);
-    ctx.strokeStyle = palette.border;
-    ctx.lineWidth = 1;
+  ctx.strokeStyle = palette.border;
+  ctx.lineWidth = 1;
+  for (const tick of ticksFor(dayStart, dayEnd, plan)) {
+    const x = t2x(tick.time);
     ctx.beginPath();
-    ctx.moveTo(x, tickTop);
+    ctx.moveTo(x, tick.isHour ? 20 : tick.isLabel ? 24 : 26);
     ctx.lineTo(x, H - 18);
     ctx.stroke();
-    const labelDate = new Date(t);
+    if (!tick.isLabel) continue;
     ctx.fillStyle = palette.muted;
-    ctx.fillText(`${pad2(labelDate.getHours())}:00`, x + 2, labelY);
+    ctx.fillText(tick.text, x + 2, labelY);
   }
 
-  // Recording dots (centered vertically in the upper portion).
-  const dotY = 10;
+  // Recording markers (centered vertically in the upper portion).
+  const markerY = 10;
   ctx.fillStyle = palette.playhead;
   for (const segment of model.segments) {
     if (segment.start > dayEnd) continue;
     const x = t2x(Math.max(segment.start, dayStart));
     if (x < 0 || x > width) continue;
-    ctx.beginPath();
-    ctx.arc(x, dotY, RECORDING_MARKER_RADIUS, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.fillRect(
+      x - RECORDING_MARKER_THICKNESS / 2,
+      markerY - RECORDING_MARKER_LENGTH / 2,
+      RECORDING_MARKER_THICKNESS,
+      RECORDING_MARKER_LENGTH,
+    );
   }
 
   // NOW marker.
@@ -187,48 +227,42 @@ export function renderAxis(ctx, width, model, zoom, palette) {
     ctx.globalAlpha = 1;
   }
 
-  // Hour labels + ticks.
+  // Hour/minute labels + ticks; density follows the zoom.
+  const plan = tickPlan(zoom, VERTICAL_LABEL_MIN_PX);
   ctx.font = "10px system-ui, sans-serif";
   ctx.textBaseline = "middle";
-  for (let t = firstLocalHourAtOrAfter(dayStart); t < dayEnd; t = nextLocalHour(t)) {
-    const y = t2y(t);
-    ctx.strokeStyle = palette.border;
-    ctx.lineWidth = 1;
+  ctx.strokeStyle = palette.border;
+  ctx.lineWidth = 1;
+  for (const tick of ticksFor(dayStart, dayEnd, plan)) {
+    const y = t2y(tick.time);
     ctx.beginPath();
     ctx.moveTo(LABEL_W, y);
-    ctx.lineTo(LABEL_W + 10, y);
+    ctx.lineTo(LABEL_W + (tick.isHour ? 10 : tick.isLabel ? 8 : 6), y);
     ctx.stroke();
-    const labelDate = new Date(t);
+    if (!tick.isLabel) continue;
     ctx.fillStyle = palette.muted;
-    ctx.fillText(`${pad2(labelDate.getHours())}:00`, 2, y);
-    // Minor 10-minute ticks.
-    for (let minute = 10; minute < 60; minute += 10) {
-      const minorTime = t + minute * 60000;
-      if (minorTime >= dayEnd) break;
-      const ym = t2y(minorTime);
-      ctx.beginPath();
-      ctx.moveTo(LABEL_W, ym);
-      ctx.lineTo(LABEL_W + 6, ym);
-      ctx.stroke();
-    }
+    ctx.fillText(tick.text, 2, y);
   }
 
-  // Recording blobs (one per video segment, brand blue).
+  // Recording markers (one thin bar per video segment, brand blue).
   const trackX = LABEL_W + 26;
   ctx.fillStyle = palette.playhead;
   for (const segment of model.segments) {
     if (segment.start > selectEnd) continue;
     const y = t2y(Math.max(segment.start, dayStart));
-    ctx.beginPath();
-    ctx.arc(trackX + 6, y, RECORDING_MARKER_RADIUS, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.fillRect(
+      trackX + 6 - RECORDING_MARKER_LENGTH / 2,
+      y - RECORDING_MARKER_THICKNESS / 2,
+      RECORDING_MARKER_LENGTH,
+      RECORDING_MARKER_THICKNESS,
+    );
   }
 
-  // NOW marker: short dashed line just past the blob track, label on the
+  // NOW marker: short dashed line just past the marker track, label on the
   // left (the right side of the canvas stays clear).
   if (model.now >= dayStart && model.now <= dayEnd) {
     const y = t2y(model.now);
-    const lineEnd = trackX + 12; // short line: label column -> blob track
+    const lineEnd = trackX + 12; // short line: label column -> marker track
     ctx.strokeStyle = palette.accent;
     ctx.lineWidth = 1;
     ctx.setLineDash([3, 3]);
@@ -368,7 +402,7 @@ export function mountTimelineAxis(container, {
     const clamped = Math.max(currentModel.dayStart, Math.min(end, raw));
     if (!snapToRecording) return clamped;
 
-    // The visible recording dot is also a forgiving target: a near miss snaps
+    // The visible recording marker is also a forgiving target: a near miss snaps
     // to its start instead of landing just outside the recording interval.
     for (const segment of currentModel.segments || []) {
       if (segment.start > end) continue;
@@ -456,15 +490,30 @@ export function mountTimelineAxis(container, {
     wrap.releasePointerCapture?.(event.pointerId);
     scheduleRender();
   }
+  // Zooming resizes the canvas inside a scrolling container. Keep the time
+  // under the pointer where it was instead of leaving the old scroll offset,
+  // which would make the view jump to an unrelated time.
+  function keepTimeUnderPointer(anchorTime, event) {
+    const rect = canvas.getBoundingClientRect();
+    if (horizontal) {
+      const x = timeToX(anchorTime, currentModel.dayStart, currentZoom);
+      container.scrollLeft += rect.left + x - event.clientX;
+    } else {
+      const y = timeToY(anchorTime, currentModel.dayStart, currentZoom, currentModel.dayEnd);
+      container.scrollTop += rect.top + y - event.clientY;
+    }
+  }
   function onWheel(event) {
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
     const next = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, currentZoom + (event.deltaY < 0 ? 1 : -1)));
-    if (next !== currentZoom) {
-      currentZoom = next;
-      scheduleRender();
-      onZoom?.(next);
-    }
+    if (next === currentZoom) return;
+    const anchorTime = pointerTime(event, { snapToRecording: false });
+    currentZoom = next;
+    cancelAnimationFrame(raf);
+    render(); // synchronous: the scroll fix-up needs the final canvas size
+    keepTimeUnderPointer(anchorTime, event);
+    onZoom?.(next);
   }
   function onKey(event) {
     const keys = horizontal

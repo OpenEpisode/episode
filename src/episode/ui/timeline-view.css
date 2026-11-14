@@ -109,6 +109,12 @@ main:has(> #view-content > .timeline-view) {
   padding: 10px;
 }
 
+/* The axis canvas resizes on zoom; the axis repositions the scroll itself, so
+   the browser must not also adjust it. */
+.tl-timeline .tl-region-body {
+  overflow-anchor: none;
+}
+
 .tl-cams { grid-area: cams; }
 .tl-timeline { grid-area: timeline; }
 .tl-player { grid-area: player; }
