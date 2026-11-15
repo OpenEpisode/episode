@@ -25,6 +25,7 @@ from episode.domain.models import (
     Area,
     CapabilityConfig,
     Device,
+    EpisodeState,
     EventState,
     Evidence,
 )
@@ -1012,6 +1013,8 @@ async def test_retention_removes_every_piped_bundle_component(tmp_path):
     evidence = await harness.evidence()
     fragment_count = evidence.metadata["fragment_count"]
     await harness.recorder.stop()  # nothing is live any more, so retention may sweep
+    # Retention only touches a sealed Episode's Evidence.
+    await harness.repo.update_episode_state(harness.episode_id, EpisodeState.CLOSED)
 
     assert "index.m3u8" in components
     assert "init.mp4" in components

@@ -169,7 +169,12 @@ class RetentionService:
             return expired
 
     async def _expire_evidence(self, evidence: Evidence, expired_at: datetime) -> bool:
+        # The candidate list is only a hint: re-read the lifecycle now, so Evidence whose
+        # Episode is not closed (or was already expired) never loses its bytes.
+        if not await self._repository.evidence_retention_eligible(evidence.id):
+            return False
         artifacts = await self._repository.visual_artifacts_for_evidence(evidence.id)
+        shared = await self._shared_artifacts(artifacts, excluding_evidence_id=evidence.id)
         paths = {evidence.file_path, *(artifact.file_path for artifact in artifacts)} - {""}
         if (
             evidence.metadata.get("format") == "hls-fmp4"
@@ -187,6 +192,9 @@ class RetentionService:
             ).resolve()
             if bundle_root == expected_root:
                 paths.add(str(bundle_root))
+        # Bytes another live Evidence or Event still points at stay; this item's own
+        # reference is tombstoned and the shared artifact expires with its last reference.
+        paths -= {artifact.file_path for artifact in shared}
         if self._contains_active_path(paths):
             return False
 
@@ -207,37 +215,61 @@ class RetentionService:
         )
         return True
 
+    async def _shared_artifacts(
+        self,
+        artifacts: list,
+        *,
+        excluding_evidence_id: str = "",
+        excluding_event_id: str = "",
+    ) -> list:
+        return [
+            artifact
+            for artifact in artifacts
+            if await self._repository.artifact_has_live_reference(
+                artifact.id,
+                excluding_evidence_id=excluding_evidence_id,
+                excluding_event_id=excluding_event_id,
+            )
+        ]
+
     async def _expire_embedded_event_pictures(
         self,
         cutoff: datetime,
         expired_at: datetime,
     ) -> int:
         expired = 0
-        offset = 0
+        after: tuple[datetime, str] | None = None
         while True:
-            events = await self._repository.list_events(limit=500, offset=offset)
+            events = await self._repository.list_event_pictures_before(cutoff, after=after)
             if not events:
                 break
             for event in events:
-                if event.timestamp >= cutoff or not self._has_embedded_picture(event):
+                if not self._has_embedded_picture(event):
                     continue
-                artifacts = await self._repository.visual_artifacts_for_event(event.id)
-                paths = {event.raw_payload_path or "", *(item.file_path for item in artifacts)} - {
-                    ""
-                }
-                if self._contains_active_path(paths):
-                    continue
-                await self._remove_paths(paths)
-                await self._repository.mark_event_visual_expired(
-                    event,
-                    expired_at=expired_at,
-                    artifact_ids=[artifact.id for artifact in artifacts],
-                )
-                expired += 1
+                if await self._expire_event_picture(event, expired_at):
+                    expired += 1
             if len(events) < 500:
                 break
-            offset += len(events)
+            last = events[-1]
+            after = (last.timestamp, last.id)
         return expired
+
+    async def _expire_event_picture(self, event: Event, expired_at: datetime) -> bool:
+        if not await self._repository.event_visual_retention_eligible(event.id):
+            return False
+        artifacts = await self._repository.visual_artifacts_for_event(event.id)
+        shared = await self._shared_artifacts(artifacts, excluding_event_id=event.id)
+        paths = {event.raw_payload_path or "", *(item.file_path for item in artifacts)} - {""}
+        paths -= {artifact.file_path for artifact in shared}
+        if self._contains_active_path(paths):
+            return False
+        await self._remove_paths(paths)
+        await self._repository.mark_event_visual_expired(
+            event,
+            expired_at=expired_at,
+            artifact_ids=[artifact.id for artifact in artifacts],
+        )
+        return True
 
     @staticmethod
     def _has_embedded_picture(event: Event) -> bool:
@@ -268,9 +300,21 @@ class RetentionService:
             except FileNotFoundError:
                 continue
 
+    async def reconcile(self) -> int:
+        """Repair journal/manifest records an interrupted expiry left behind.
+
+        Run once at startup, before the first sweep. It never deletes bytes.
+        """
+        async with self._cleanup_lock:
+            repaired = await self._repository.reconcile_expiry_records()
+        if repaired:
+            logger.info("Recovered %d interrupted retention journal entries", repaired)
+        return repaired
+
     async def _cleanup_loop(self) -> None:
         self._initial_cleanup_state = "running"
         try:
+            await self.reconcile()
             await self.run_once()
         except asyncio.CancelledError:
             raise
