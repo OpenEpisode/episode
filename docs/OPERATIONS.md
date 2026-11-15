@@ -351,3 +351,27 @@ post-closure Evidence lifecycle: it may remove managed bytes and record their
 expiry, but it does not add Events, Evidence, or associations to a sealed
 Episode. Legal and operational requirements vary; exported Evidence and
 external backups need their own lifecycle policy.
+
+Eligibility is decided when bytes are about to be removed, not when the sweep
+starts. Evidence and Event pictures that belong to an `ACTIVE`, `QUIESCENT`, or
+`FINALIZING` Episode never expire; those of a `CLOSED` Episode expire once older
+than the policy period. Visual material that is not assigned to any Episode ages
+out on the same period, because it has no closure to wait for. Files an active
+recording is still writing are skipped and retried on the next sweep.
+
+A file that more than one Evidence item or Event picture points at is removed only
+when the last of those references expires; expiring one reference leaves the bytes
+for the others and tombstones just that item. An expired item keeps its identity,
+size, and checksum, so the tombstone stays truthful.
+
+Expiry runs in a fixed order: bytes are removed, the tombstone is committed, then
+the Episode's `journal.ndjson` and `manifest.json` are updated. A failure before
+the commit leaves the item available and the next sweep retries it. A failure
+after the commit leaves a correct tombstone with a journal that does not mention
+it; on every start, before the first sweep, Episode appends the missing journal
+entries from the database and rebuilds the affected manifests. This repair never
+removes bytes and is safe to repeat. A cancelled sweep rolls back its uncommitted
+database writes and releases the cleanup lock.
+
+Retention consent, review before first deletion, and legal holds are separate
+decisions; this behavior does not change what is enabled or confirmed.

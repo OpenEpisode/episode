@@ -31,7 +31,7 @@ from episode.domain.models import (
     RawArtifact,
     ReceiptStatus,
 )
-from episode.storage.bundles import append_journal
+from episode.storage.bundles import append_journal, read_journal
 from episode.storage.capture_profiles import CaptureProfileStore
 from episode.storage.database import SCHEMA_SQL
 from episode.storage.episode_window import episode_overlap_clauses, episode_overlap_subquery
@@ -88,6 +88,10 @@ SELECT e.*,
 FROM evidence e
 LEFT JOIN evidence_expirations x ON x.evidence_id = e.id
 """
+
+
+#: Episode states whose Evidence may enter the post-closure retention lifecycle.
+_SEALED_STATES = (EpisodeState.CLOSED.value, EpisodeState.ARCHIVED.value)
 
 
 def _utc_iso(dt: datetime | None) -> str | None:
@@ -353,6 +357,13 @@ class Repository:
         except (TypeError, ValueError):
             logger.error("Invalid stored Episode quiescent grace; using default")
             return fallback
+
+    async def _rollback_after_interruption(self) -> None:
+        """Discard an uncommitted write so a cancelled task cannot leak it into the next commit."""
+        try:
+            await asyncio.shield(self._conn.rollback())
+        except Exception:  # noqa: BLE001 - the original error is what matters
+            logger.exception("Could not roll back an interrupted write")
 
     async def _mark_raw_artifact_expired(self, artifact_id: str, expired_at: str) -> None:
         rows = await self._conn.execute_fetchall(
@@ -795,26 +806,20 @@ class Repository:
             "expired_at": expired_value,
             "expiration_reason": "retention_policy",
         }
-        await self._conn.execute(
-            "UPDATE events SET raw_payload_path = NULL, metadata = ? WHERE id = ?",
-            (json.dumps(metadata), event.id),
-        )
-        for artifact_id in artifact_ids:
-            references = await self._conn.execute_fetchall(
-                """SELECT 1 FROM evidence e
-                   LEFT JOIN evidence_expirations x ON x.evidence_id = e.id
-                   WHERE e.artifact_id = ? AND x.evidence_id IS NULL
-                   UNION ALL
-                   SELECT 1 FROM ingestion_receipts r
-                   JOIN events linked ON linked.id = r.event_id
-                   WHERE r.artifact_id = ? AND linked.id != ?
-                     AND linked.raw_payload_path IS NOT NULL
-                   LIMIT 1""",
-                (artifact_id, artifact_id, event.id),
+        try:
+            await self._conn.execute(
+                "UPDATE events SET raw_payload_path = NULL, metadata = ? WHERE id = ?",
+                (json.dumps(metadata), event.id),
             )
-            if not references:
-                await self._mark_raw_artifact_expired(artifact_id, expired_value)
-        await self._conn.commit()
+            for artifact_id in artifact_ids:
+                if not await self.artifact_has_live_reference(
+                    artifact_id, excluding_event_id=event.id
+                ):
+                    await self._mark_raw_artifact_expired(artifact_id, expired_value)
+            await self._conn.commit()
+        except BaseException:
+            await self._rollback_after_interruption()
+            raise
         if event.episode_id:
             await self.append_episode_journal(
                 event.episode_id,
@@ -1043,15 +1048,115 @@ class Repository:
         await self._conn.commit()
 
     async def list_visual_evidence_before(self, cutoff: datetime) -> list[Evidence]:
+        """Visual Evidence old enough to expire whose Episode is sealed or absent.
+
+        Evidence of an ACTIVE, QUIESCENT, or FINALIZING Episode is never a candidate;
+        Evidence with no Episode ages out on its own.
+        """
         rows = await self._conn.execute_fetchall(
             f"{_EVIDENCE_SELECT} "
+            "LEFT JOIN episodes ep ON ep.id = e.episode_id "
             "WHERE x.evidence_id IS NULL AND e.timestamp < ? "
+            "AND (e.episode_id IS NULL OR ep.state IN (?, ?)) "
             "AND (e.mime_type LIKE 'image/%' OR e.mime_type LIKE 'video/%' "
             "OR e.evidence_type IN ('recording', 'incomplete_recording')) "
             "ORDER BY e.timestamp ASC",
-            (_utc_iso(cutoff),),
+            (_utc_iso(cutoff), *_SEALED_STATES),
         )
         return [self._row_to_evidence(row) for row in rows]
+
+    async def evidence_retention_eligible(self, evidence_id: str) -> bool:
+        """Fresh, delete-time check that Evidence may still expire.
+
+        Candidate lists go stale while cleanup runs; the Episode may have been
+        FINALIZING or ACTIVE when listed. CLOSED is sealed and never reopens, so a
+        positive answer here cannot be revoked before the bytes are removed.
+        """
+        rows = await self._conn.execute_fetchall(
+            """SELECT 1 FROM evidence e
+               LEFT JOIN evidence_expirations x ON x.evidence_id = e.id
+               LEFT JOIN episodes ep ON ep.id = e.episode_id
+               WHERE e.id = ? AND x.evidence_id IS NULL
+                 AND (e.episode_id IS NULL OR ep.state IN (?, ?))""",
+            (evidence_id, *_SEALED_STATES),
+        )
+        return bool(rows)
+
+    async def event_visual_retention_eligible(self, event_id: str) -> bool:
+        """Fresh, delete-time check that an Event's embedded picture may expire."""
+        rows = await self._conn.execute_fetchall(
+            """SELECT 1 FROM events ev
+               LEFT JOIN episodes ep ON ep.id = ev.episode_id
+               WHERE ev.id = ? AND ev.raw_payload_path IS NOT NULL
+                 AND (ev.episode_id IS NULL OR ep.state IN (?, ?))""",
+            (event_id, *_SEALED_STATES),
+        )
+        return bool(rows)
+
+    async def list_event_pictures_before(
+        self,
+        cutoff: datetime,
+        *,
+        after: tuple[datetime, str] | None = None,
+        limit: int = 500,
+    ) -> list[Event]:
+        """Events holding an embedded picture payload that may be old enough to expire.
+
+        Keyset-paged on (timestamp, id) so an item that is skipped this run cannot
+        be returned forever.
+        """
+        rows = await self._conn.execute_fetchall(
+            """SELECT ev.id, ev.timestamp FROM events ev
+               LEFT JOIN episodes ep ON ep.id = ev.episode_id
+               WHERE ev.raw_payload_path IS NOT NULL AND ev.timestamp < ?
+                 AND (ev.episode_id IS NULL OR ep.state IN (?, ?))
+                 AND (? IS NULL OR (ev.timestamp, ev.id) > (?, ?))
+               ORDER BY ev.timestamp ASC, ev.id ASC LIMIT ?""",
+            (
+                _utc_iso(cutoff),
+                *_SEALED_STATES,
+                _utc_iso(after[0]) if after else None,
+                _utc_iso(after[0]) if after else None,
+                after[1] if after else None,
+                limit,
+            ),
+        )
+        events = [await self.get_event(row["id"]) for row in rows]
+        return [event for event in events if event is not None]
+
+    async def artifact_has_live_reference(
+        self,
+        artifact_id: str,
+        *,
+        excluding_evidence_id: str = "",
+        excluding_event_id: str = "",
+    ) -> bool:
+        """Whether any other un-expired Evidence or Event payload still needs the bytes."""
+        rows = await self._conn.execute_fetchall(
+            """SELECT 1 FROM evidence e
+               LEFT JOIN evidence_expirations x ON x.evidence_id = e.id
+               WHERE e.artifact_id = ? AND e.id != ? AND x.evidence_id IS NULL
+               UNION ALL
+               SELECT 1 FROM ingestion_receipts r
+               JOIN evidence e ON e.id = r.evidence_id
+               LEFT JOIN evidence_expirations x ON x.evidence_id = e.id
+               WHERE r.artifact_id = ? AND e.id != ? AND x.evidence_id IS NULL
+               UNION ALL
+               SELECT 1 FROM ingestion_receipts r
+               JOIN events linked ON linked.id = r.event_id
+               WHERE r.artifact_id = ? AND linked.id != ?
+                 AND linked.raw_payload_path IS NOT NULL
+               LIMIT 1""",
+            (
+                artifact_id,
+                excluding_evidence_id,
+                artifact_id,
+                excluding_evidence_id,
+                artifact_id,
+                excluding_event_id,
+            ),
+        )
+        return bool(rows)
 
     async def visual_artifacts_for_evidence(self, evidence_id: str) -> list[RawArtifact]:
         rows = await self._conn.execute_fetchall(
@@ -1074,29 +1179,27 @@ class Repository:
         artifact_ids: list[str],
     ) -> None:
         expired_value = _utc_iso(expired_at)
-        await self._conn.execute(
-            """INSERT OR IGNORE INTO evidence_expirations
-               (evidence_id, expired_at, reason) VALUES (?, ?, ?)""",
-            (evidence.id, expired_value, "retention_policy"),
-        )
-        await self._conn.execute(
-            """UPDATE evidence
-               SET file_path = ''
-               WHERE id = ?""",
-            (evidence.id,),
-        )
-        for artifact_id in artifact_ids:
-            references = await self._conn.execute_fetchall(
-                """SELECT 1
-                   FROM evidence e
-                   LEFT JOIN evidence_expirations x ON x.evidence_id = e.id
-                   WHERE e.artifact_id = ? AND e.id != ? AND x.evidence_id IS NULL
-                   LIMIT 1""",
-                (artifact_id, evidence.id),
+        try:
+            await self._conn.execute(
+                """INSERT OR IGNORE INTO evidence_expirations
+                   (evidence_id, expired_at, reason) VALUES (?, ?, ?)""",
+                (evidence.id, expired_value, "retention_policy"),
             )
-            if not references:
-                await self._mark_raw_artifact_expired(artifact_id, expired_value)
-        await self._conn.commit()
+            await self._conn.execute(
+                """UPDATE evidence
+                   SET file_path = ''
+                   WHERE id = ?""",
+                (evidence.id,),
+            )
+            for artifact_id in artifact_ids:
+                if not await self.artifact_has_live_reference(
+                    artifact_id, excluding_evidence_id=evidence.id
+                ):
+                    await self._mark_raw_artifact_expired(artifact_id, expired_value)
+            await self._conn.commit()
+        except BaseException:
+            await self._rollback_after_interruption()
+            raise
 
         if evidence.episode_id:
             await self.append_episode_journal(
@@ -1111,6 +1214,73 @@ class Repository:
                 },
             )
             await self.refresh_episode_manifest(evidence.episode_id)
+
+    async def reconcile_expiry_records(self) -> int:
+        """Finish expiry bookkeeping a crash left behind; return entries it repaired.
+
+        Bytes are removed first, then the tombstone is committed, then the portable
+        journal and manifest are written. A crash after the commit leaves a truthful
+        tombstone but a journal that never mentions it. The journal is append-only and
+        the database is the index, so the missing entry is appended from the database
+        row, and each touched Episode's manifest is rebuilt. Safe to repeat.
+        """
+        repaired = 0
+        episodes: dict[str, dict[str, dict]] = {}
+        evidence_rows = await self._conn.execute_fetchall(
+            f"{_EVIDENCE_SELECT} WHERE x.evidence_id IS NOT NULL AND e.episode_id IS NOT NULL"
+        )
+        for row in evidence_rows:
+            evidence = self._row_to_evidence(row)
+            episodes.setdefault(evidence.episode_id, {"evidence": {}, "events": {}})["evidence"][
+                evidence.id
+            ] = {
+                "evidence_id": evidence.id,
+                "evidence_type": evidence.evidence_type,
+                "captured_at": evidence.timestamp.isoformat(),
+                "sha256": evidence.sha256,
+                "reason": evidence.expiration_reason or "retention_policy",
+            }
+        event_rows = await self._conn.execute_fetchall(
+            """SELECT id FROM events WHERE episode_id IS NOT NULL
+               AND json_extract(metadata, '$.visual_evidence.availability') = 'expired'"""
+        )
+        for row in event_rows:
+            event = await self.get_event(row["id"])
+            if event is not None and event.episode_id:
+                episodes.setdefault(event.episode_id, {"evidence": {}, "events": {}})["events"][
+                    event.id
+                ] = {
+                    "event_id": event.id,
+                    "captured_at": event.timestamp.isoformat(),
+                    "reason": "retention_policy",
+                }
+        for episode_id, expired in episodes.items():
+            try:
+                journaled = await asyncio.to_thread(read_journal, self._data_dir, episode_id)
+                seen_evidence = {
+                    entry.get("data", {}).get("evidence_id")
+                    for entry in journaled
+                    if entry.get("type") == "evidence.expired"
+                }
+                seen_events = {
+                    entry.get("data", {}).get("event_id")
+                    for entry in journaled
+                    if entry.get("type") == "event.visual_evidence_expired"
+                }
+                for evidence_id, data in expired["evidence"].items():
+                    if evidence_id not in seen_evidence:
+                        await self.append_episode_journal(episode_id, "evidence.expired", data)
+                        repaired += 1
+                for event_id, data in expired["events"].items():
+                    if event_id not in seen_events:
+                        await self.append_episode_journal(
+                            episode_id, "event.visual_evidence_expired", data
+                        )
+                        repaired += 1
+                await self.refresh_episode_manifest(episode_id)
+            except Exception:  # noqa: BLE001 - one Episode must not block the rest
+                logger.exception("Could not reconcile expiry records for Episode %s", episode_id)
+        return repaired
 
     # --- Episodes ---
 

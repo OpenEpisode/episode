@@ -49,6 +49,24 @@ def write_manifest(data_root: str, episode_id: str, manifest: dict[str, Any]) ->
     return destination
 
 
+def read_journal(data_root: str, episode_id: str) -> list[dict[str, Any]]:
+    """Every well-formed journal entry; a torn or foreign line is skipped, never raised."""
+    destination = os.path.join(bundle_dir(data_root, episode_id), "journal.ndjson")
+    entries: list[dict[str, Any]] = []
+    try:
+        with open(destination, encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(entry, dict):
+                    entries.append(entry)
+    except FileNotFoundError:
+        pass
+    return entries
+
+
 def append_journal(
     data_root: str,
     episode_id: str,
