@@ -6,12 +6,15 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from concurrent.futures import Future
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO, TypeVar
 
 from episode.domain.models import Device, EpisodeState, EventState, Evidence
 from episode.engine.bus import EventBus, Message
@@ -38,6 +41,29 @@ logger = logging.getLogger(__name__)
 HEVC_CODEC_TAG = "hvc1"
 
 RecordingEvidenceSink = Callable[[Evidence], Awaitable[Evidence]]
+_ThreadResult = TypeVar("_ThreadResult")
+
+
+def _recording_thread(
+    operation: Callable[[], _ThreadResult], *, name: str
+) -> asyncio.Future[_ThreadResult]:
+    """Run lifetime process I/O without occupying the shared async executor.
+
+    Each child owns its own wait and stderr workers, so another live capture
+    cannot prevent a stopped child from being drained and reaped.
+    """
+    result: Future[_ThreadResult] = Future()
+
+    def run() -> None:
+        if not result.set_running_or_notify_cancel():
+            return
+        try:
+            result.set_result(operation())
+        except BaseException as error:
+            result.set_exception(error)
+
+    threading.Thread(target=run, name=name, daemon=True).start()
+    return asyncio.wrap_future(result)
 
 
 def _evidence_episode_id(value: Evidence | dict[str, object] | None) -> str | None:
@@ -45,6 +71,40 @@ def _evidence_episode_id(value: Evidence | dict[str, object] | None) -> str | No
         episode_id = value.get("episode_id")
         return str(episode_id) if episode_id else None
     return value.episode_id if value else None
+
+
+class _RecordingProcess:
+    """Async facade over a Popen handle owned before the recorder yields."""
+
+    def __init__(self, process: subprocess.Popen[bytes]):
+        self._process = process
+        self.stdin: asyncio.StreamWriter | None = None
+        self._wait_task: asyncio.Future[int] | None = None
+
+    @property
+    def stderr(self) -> BinaryIO | None:
+        return self._process.stderr
+
+    @property
+    def pid(self) -> int:
+        return self._process.pid
+
+    @property
+    def returncode(self) -> int | None:
+        return self._process.poll()
+
+    def terminate(self) -> None:
+        self._process.terminate()
+
+    def kill(self) -> None:
+        self._process.kill()
+
+    async def wait(self) -> int:
+        if self._wait_task is None:
+            self._wait_task = _recording_thread(
+                self._process.wait, name=f"episode-ffmpeg-wait-{self.pid}"
+            )
+        return await asyncio.shield(self._wait_task)
 
 
 _RECORDING_PART = re.compile(
@@ -56,6 +116,10 @@ _RECORDING_PART = re.compile(
 #: Seconds a handler may block writing one chunk before the recorder treats the
 #: source as stalled. Bounds "a plugin stall stalls a recording" (see docs/PLUGINS.md).
 PIPE_WRITE_TIMEOUT_SECONDS = 10.0
+# The live playlist is written by FFmpeg; this sidecar is a bounded-cadence inventory.
+ACTIVE_MANIFEST_REFRESH_SECONDS = 60.0
+TERMINAL_EPISODE_CACHE_SIZE = 4096
+PROCESS_STOP_TIMEOUT_SECONDS = 5.0
 
 
 #: A source that declares audio gets this long, from its first video chunk, to deliver the
@@ -120,9 +184,14 @@ class _EpisodeRecording:
     ffmpeg_stderr: str = ""
     capture_lease_deadline: float | None = None
     finalize_reason: str | None = None
-    proc: asyncio.subprocess.Process | None = None
-    stop_signaled_proc: asyncio.subprocess.Process | None = field(default=None, repr=False)
+    proc: _RecordingProcess | asyncio.subprocess.Process | None = None
+    stop_signaled_proc: _RecordingProcess | asyncio.subprocess.Process | None = field(
+        default=None,
+        repr=False,
+    )
     task: asyncio.Task | None = None
+    starting: bool = False
+    finalize_requested: bool = False
     stop_reason: str | None = None
     continued: bool = False
     published: bool = False
@@ -133,6 +202,7 @@ class _EpisodeRecording:
     last_exit_code: int | None = None
     last_error: str | None = None
     retry_wakeup: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    segment_directory_mtime_ns: int | None = field(default=None, repr=False)
 
     @property
     def evidence_id(self) -> str:
@@ -164,6 +234,7 @@ class RecordingEngine:
         target_resolver: RecordingTargetResolver | None = None,
         evidence_sink: RecordingEvidenceSink | None = None,
         episode_timeout_seconds: int = 30,
+        lifecycle_lock: asyncio.Lock | None = None,
     ):
         if fragment_seconds <= 0:
             raise ValueError("fragment_seconds must be greater than zero")
@@ -177,10 +248,12 @@ class RecordingEngine:
         self._media = media
         self._target_resolver = target_resolver or AreaRecordingTargetResolver(repo)
         self._evidence_sink = evidence_sink
+        self._lifecycle_lock = lifecycle_lock or asyncio.Lock()
         self._active_tasks: set[asyncio.Task] = set()
         self._recordings: dict[tuple[str, str], _EpisodeRecording] = {}
         self._recoverable: dict[tuple[str, str], _EpisodeRecording] = {}
         self._episode_capture_leases: dict[str, tuple[int, float]] = {}
+        self._terminal_episode_ids: OrderedDict[str, None] = OrderedDict()
         self._running = False
         self._stall_seconds = max(60, fragment_seconds * 6)
         # A camera socket that stops answering must fail its ffmpeg before the no-progress
@@ -228,17 +301,40 @@ class RecordingEngine:
         )
 
     def _observe_progress(self, recording: _EpisodeRecording) -> bool:
-        fragment_count = recording.bundle.next_segment_index()
+        segments_dir = recording.bundle.root / "segments"
+        try:
+            directory_mtime_ns = segments_dir.stat().st_mtime_ns
+        except OSError:
+            return False
+        if recording.segment_directory_mtime_ns is None and recording.fragment_count == 0:
+            # Recovery may load an existing workspace with a non-zero segment
+            # start number. Pay for a full index scan once, then advance from the
+            # known next sequence instead of rescanning every accumulated file.
+            fragment_count = recording.bundle.next_segment_index()
+        else:
+            fragment_count = recording.fragment_count
+            if directory_mtime_ns == recording.segment_directory_mtime_ns:
+                next_segment = segments_dir / f"segment-{fragment_count:06d}.m4s"
+                if not next_segment.is_file():
+                    return False
+                fragment_count += 1
+            while (segments_dir / f"segment-{fragment_count:06d}.m4s").is_file():
+                fragment_count += 1
         if fragment_count <= recording.fragment_count:
+            recording.segment_directory_mtime_ns = directory_mtime_ns
+            return False
+        latest = segments_dir / f"segment-{fragment_count - 1:06d}.m4s"
+        try:
+            latest_stat = latest.stat()
+        except OSError:
+            recording.segment_directory_mtime_ns = None
             return False
         recording.fragment_count = fragment_count
-        fragments = list((recording.bundle.root / "segments").glob("segment-*.m4s"))
-        if fragments:
-            latest = max(fragments, key=lambda path: path.stat().st_mtime_ns)
-            recording.last_fragment_at = datetime.fromtimestamp(
-                latest.stat().st_mtime,
-                tz=timezone.utc,
-            )
+        recording.segment_directory_mtime_ns = directory_mtime_ns
+        recording.last_fragment_at = datetime.fromtimestamp(
+            latest_stat.st_mtime,
+            tz=timezone.utc,
+        )
         recording.state = "recording"
         recording.last_error = None
         return True
@@ -416,7 +512,18 @@ class RecordingEngine:
                         device, source_id_override=recovered_source_id or None
                     ),
                 )
-                recording = self._recordings[self._rec_key(episode.id, device.id)]
+                recording = self._recordings.get(self._rec_key(episode.id, device.id))
+                if recording is None:
+                    # The persisted Episode may have crossed into FINALIZING or CLOSED
+                    # after the recovery query but before guarded startup acquired the
+                    # lifecycle lock. Treat that race as a skipped resume; do not claim
+                    # a recording was restored or raise KeyError.
+                    logger.info(
+                        "Recording resume skipped for terminal Episode %s camera %s",
+                        episode.id[:8],
+                        device.id,
+                    )
+                    continue
                 await self._repo.append_episode_journal(
                     episode.id,
                     "recording.resumed",
@@ -606,6 +713,43 @@ class RecordingEngine:
         codec_hint: str = "",
         audio_codec_hint: str = "",
     ) -> None:
+        async with self._lifecycle_lock:
+            episode = await self._repo.get_episode(episode_id)
+            if (
+                episode_id in self._terminal_episode_ids
+                or episode is None
+                or episode.state not in {EpisodeState.ACTIVE, EpisodeState.QUIESCENT}
+            ):
+                if episode is None or episode.state not in {
+                    EpisodeState.ACTIVE,
+                    EpisodeState.QUIESCENT,
+                }:
+                    self._remember_terminal_episode(episode_id)
+                logger.info(
+                    "Skipping recording for episode %s camera %s: Episode is no longer open",
+                    episode_id[:8],
+                    device.id,
+                )
+                return
+            self._start_recording_locked(
+                episode_id,
+                device,
+                rtsp_url,
+                video_handler=video_handler,
+                codec_hint=codec_hint,
+                audio_codec_hint=audio_codec_hint,
+            )
+
+    def _start_recording_locked(
+        self,
+        episode_id: str,
+        device: Device,
+        rtsp_url: str,
+        *,
+        video_handler: VideoStreamHandler | None = None,
+        codec_hint: str = "",
+        audio_codec_hint: str = "",
+    ) -> None:
         key = self._rec_key(episode_id, device.id)
         if key in self._recordings:
             return
@@ -671,6 +815,9 @@ class RecordingEngine:
 
     async def _on_episode_updated(self, msg: Message) -> None:
         episode_id = str(msg.data.get("episode_id", ""))
+        state = msg.data.get("state")
+        if state in {EpisodeState.FINALIZING.value, EpisodeState.CLOSED.value}:
+            self._remember_terminal_episode(episode_id)
         lease_until = msg.data.get("capture_lease_until")
         if lease_until:
             self._set_episode_capture_lease(
@@ -678,9 +825,9 @@ class RecordingEngine:
                 str(lease_until),
                 revision=msg.data.get("capture_lease_revision", 0),
             )
-        if msg.data.get("state") == EpisodeState.CLOSED.value:
+        if state == EpisodeState.CLOSED.value:
             self._episode_capture_leases.pop(episode_id, None)
-        if msg.data.get("state") != EpisodeState.CLOSED.value:
+        if state != EpisodeState.CLOSED.value:
             return
         recordings = [
             recording
@@ -688,6 +835,14 @@ class RecordingEngine:
             if recording.episode_id == episode_id
         ]
         await asyncio.gather(*(self._stop_recording(recording) for recording in recordings))
+
+    def _remember_terminal_episode(self, episode_id: str) -> None:
+        if not episode_id:
+            return
+        self._terminal_episode_ids[episode_id] = None
+        self._terminal_episode_ids.move_to_end(episode_id)
+        while len(self._terminal_episode_ids) > TERMINAL_EPISODE_CACHE_SIZE:
+            self._terminal_episode_ids.popitem(last=False)
 
     def _set_episode_capture_lease(
         self,
@@ -765,6 +920,7 @@ class RecordingEngine:
         await self._stop_recordings(
             recordings,
             raise_on_error=True,
+            finalize=True,
         )
         # A retry task may move its recording into the recoverable map while
         # the active tasks are being stopped. Include that work in the barrier.
@@ -789,17 +945,24 @@ class RecordingEngine:
         *,
         reason: str | None = None,
         raise_on_error: bool = False,
+        finalize: bool = False,
     ) -> None:
         if not recordings:
             return
         for rec in recordings:
             self._recordings.pop(self._rec_key(rec.episode_id, rec.device_id), None)
             rec.stop_reason = reason
+            rec.finalize_requested = rec.finalize_requested or finalize
             rec.retry_wakeup.set()
             # A piped source is stopped gracefully: closing stdin lets ffmpeg flush its
             # final fragment and exit 0, instead of truncating the last segment with a
             # SIGTERM. URL sources keep the terminate-and-reconnect behavior.
             self._graceful_signal_process(rec)
+            if rec.starting and rec.task and not rec.task.done():
+                # Stop asynchronous plugin negotiation or pipe setup. Popen itself
+                # cannot yield; after it returns, _record_episode assigns the handle
+                # before its next await.
+                rec.task.cancel()
         if reason:
             await asyncio.gather(
                 *(self._journal_interruption(rec, reason) for rec in recordings),
@@ -994,12 +1157,95 @@ class RecordingEngine:
             "-hls_base_url",
             "segments/",
             "-start_number",
-            str(rec.bundle.next_segment_index()),
+            str(rec.fragment_count),
             "-hls_flags",
             flags,
             "index.m3u8",
         ]
         return command
+
+    def _spawn_ffmpeg(
+        self,
+        command: list[str],
+        *,
+        cwd: str,
+        stdin: int | None = None,
+        stdout: int | None = None,
+        pass_fds: tuple[int, ...] = (),
+    ) -> _RecordingProcess:
+        """Launch FFmpeg synchronously so its handle is owned before any async handoff.
+
+        ``Popen`` is a brief local OS operation, not a network wait. Keeping it
+        synchronous avoids asyncio's subprocess pipe-connection window, where a
+        child may exist before ``create_subprocess_exec`` returns its Process.
+        ``Popen`` creates the stderr pipe synchronously, and the recorder starts
+        its blocking reader only after it has stored the returned process handle.
+        """
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=subprocess.PIPE,
+            pass_fds=pass_fds,
+            bufsize=0,
+        )
+        return _RecordingProcess(process)
+
+    @staticmethod
+    async def _writer_from_fd(fd: int) -> asyncio.StreamWriter:
+        """Attach a parent-owned raw pipe to asyncio after the child handle exists."""
+        loop = asyncio.get_running_loop()
+        try:
+            pipe = os.fdopen(fd, "wb", buffering=0)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        try:
+            transport, protocol = await loop.connect_write_pipe(
+                lambda: asyncio.streams.FlowControlMixin(loop=loop),
+                pipe,
+            )
+        except BaseException:
+            pipe.close()
+            raise
+        return asyncio.StreamWriter(transport, protocol, None, loop)
+
+    @staticmethod
+    async def _drain_stderr(rec: _EpisodeRecording, stream: BinaryIO | None) -> None:
+        """Drain Popen's stderr file off-loop and retain only a redacted tail."""
+        if stream is None:
+            rec.ffmpeg_stderr = ""
+            return
+
+        def _read_tail() -> bytes:
+            tail = bytearray()
+            max_bytes = FFMPEG_STDERR_TAIL_CHARS * 4
+            try:
+                while True:
+                    chunk = stream.read(8192)
+                    if not chunk:
+                        break
+                    tail.extend(chunk)
+                    if len(tail) > max_bytes:
+                        del tail[:-max_bytes]
+            except OSError:
+                pass
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            return bytes(tail)
+
+        raw_tail = await _recording_thread(_read_tail, name="episode-ffmpeg-stderr")
+        tail = raw_tail.decode("utf-8", "replace")
+        rec.ffmpeg_stderr = RecordingEngine._redact_url_credentials(tail).strip()[
+            -FFMPEG_STDERR_TAIL_CHARS:
+        ]
 
     def _rtsp_command(self, rec: _EpisodeRecording, rtsp_url: str, flags: str) -> list[str]:
         """FFmpeg pulling a camera URL, exactly as before handler support existed.
@@ -1046,7 +1292,7 @@ class RecordingEngine:
             "-hls_base_url",
             "segments/",
             "-start_number",
-            str(rec.bundle.next_segment_index()),
+            str(rec.fragment_count),
             "-hls_flags",
             flags,
             "index.m3u8",
@@ -1057,9 +1303,17 @@ class RecordingEngine:
         process = rec.proc
         if process and process.returncode is None:
             try:
-                await asyncio.wait_for(process.wait(), timeout=5)
+                await asyncio.wait_for(
+                    process.wait(),
+                    timeout=PROCESS_STOP_TIMEOUT_SECONDS,
+                )
             except asyncio.TimeoutError:
-                process.kill()
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                # Do not publish or close the Episode until the writer is actually
+                # reaped, even when the graceful-stop deadline needed escalation.
                 await process.wait()
 
     async def _negotiate_audio(
@@ -1096,13 +1350,12 @@ class RecordingEngine:
             return None
         read_fd, write_fd = os.pipe()
         try:
-            loop = asyncio.get_running_loop()
-            transport, protocol = await loop.connect_write_pipe(
-                lambda: asyncio.streams.FlowControlMixin(loop=loop),
-                os.fdopen(write_fd, "wb", buffering=0),
-            )
+            writer = await self._writer_from_fd(write_fd)
         except BaseException:
-            os.close(read_fd)
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
             raise
         logger.info(
             "Episode %s camera %s recording %s audio from the source",
@@ -1110,7 +1363,7 @@ class RecordingEngine:
             rec.device_id,
             rec.audio_codec_hint.upper(),
         )
-        return read_fd, asyncio.StreamWriter(transport, protocol, None, loop)
+        return read_fd, writer
 
     def _start_handler(self, rec: _EpisodeRecording, feed: PipedFeed, *, audio: bool) -> None:
         """Drive the plugin's video handler, feeding this attempt through ``feed``.
@@ -1191,29 +1444,6 @@ class RecordingEngine:
         return _URL_USERINFO.sub("://[redacted]@", text)
 
     @staticmethod
-    async def _drain_stderr(rec: _EpisodeRecording, proc: asyncio.subprocess.Process) -> None:
-        """Keep ffmpeg's stderr pipe empty and keep a bounded, redacted tail.
-
-        Unread stderr deadlocks ffmpeg once the OS pipe fills, so it is consumed on both
-        the URL and the piped path; only the tail is kept, and only in redacted form,
-        because a stream URL with credentials can appear in it.
-        """
-        tail = ""
-        stream = getattr(proc, "stderr", None)
-        if stream is not None:
-            while True:
-                try:
-                    line = await stream.readline()
-                except Exception:
-                    break
-                if not line:
-                    break
-                tail = (tail + line.decode("utf-8", "replace"))[-FFMPEG_STDERR_TAIL_CHARS * 4 :]
-        rec.ffmpeg_stderr = RecordingEngine._redact_url_credentials(tail).strip()[
-            -FFMPEG_STDERR_TAIL_CHARS:
-        ]
-
-    @staticmethod
     def _stderr_note(rec: _EpisodeRecording) -> str:
         """One bounded ffmpeg-stderr clause for a log line; never empty enough to mislead."""
         tail = rec.ffmpeg_stderr.strip().replace("\n", " | ")
@@ -1241,6 +1471,7 @@ class RecordingEngine:
     async def _record_episode(self, rec: _EpisodeRecording, rtsp_url: str) -> None:
         key = self._rec_key(rec.episode_id, rec.device_id)
         retry_attempt = 0
+        last_manifest_refresh = asyncio.get_running_loop().time()
         while True:
             if rec.stop_reason == "application_shutdown" or not self._running:
                 rec.bundle.preserve_temporary_components()
@@ -1254,7 +1485,8 @@ class RecordingEngine:
                 await self._finalize_from_retry_task(rec, reason=rec.finalize_reason)
                 return
 
-            segments_before = rec.bundle.next_segment_index()
+            self._observe_progress(rec)
+            segments_before = rec.fragment_count
             observed_segments = segments_before
             last_progress = asyncio.get_running_loop().time()
             rec.state = "reconnecting" if rec.continued or retry_attempt else "starting"
@@ -1272,68 +1504,129 @@ class RecordingEngine:
             rec.ffmpeg_stderr = ""
             wait_task: asyncio.Task | None = None
             stderr_task: asyncio.Task | None = None
+            proc: _RecordingProcess | None = None
+            audio_pipe: tuple[int, asyncio.StreamWriter] | None = None
+            audio_read_fd: int | None = None
+            video_read_fd: int | None = None
+            video_write_fd: int | None = None
             stall_signaled = False
+            rec.starting = True
             try:
-                audio_pipe: tuple[int, asyncio.StreamWriter] | None = None
                 feed: PipedFeed | None = None
                 if piped:
                     feed = PipedFeed(write_timeout=PIPE_WRITE_TIMEOUT_SECONDS)
                     if rec.audio_codec_hint:
                         audio_pipe = await self._negotiate_audio(rec, feed)
+                    audio_read_fd = audio_pipe[0] if audio_pipe is not None else None
                     rec.audio_recorded = audio_pipe is not None
+                    video_read_fd, video_write_fd = os.pipe()
                     try:
-                        proc = await asyncio.create_subprocess_exec(
-                            *self._piped_command(
-                                rec, flags, audio_pipe[0] if audio_pipe is not None else None
-                            ),
+                        proc = self._spawn_ffmpeg(
+                            self._piped_command(rec, flags, audio_read_fd),
                             cwd=str(rec.bundle.root),
-                            stdin=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE,
-                            pass_fds=(audio_pipe[0],) if audio_pipe is not None else (),
+                            stdin=video_read_fd,
+                            pass_fds=(audio_read_fd,) if audio_read_fd is not None else (),
                         )
+                        # Popen has returned. Register ownership before closing setup
+                        # descriptors or reaching any asynchronous handoff.
+                        rec.proc = proc
                     except BaseException:
                         if audio_pipe is not None:
                             audio_pipe[1].close()
                         raise
                     finally:
-                        if audio_pipe is not None:
-                            # The child holds its own copy of the read end.
-                            os.close(audio_pipe[0])
+                        if video_read_fd is not None:
+                            os.close(video_read_fd)
+                            video_read_fd = None
+                        if audio_read_fd is not None:
+                            os.close(audio_read_fd)
+                            audio_read_fd = None
                 else:
-                    proc = await asyncio.create_subprocess_exec(
-                        *self._rtsp_command(rec, rtsp_url, flags),
+                    proc = self._spawn_ffmpeg(
+                        self._rtsp_command(rec, rtsp_url, flags),
                         cwd=str(rec.bundle.root),
                         stdout=subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.PIPE,
                     )
-                rec.proc = proc
-                stderr_task = asyncio.create_task(self._drain_stderr(rec, proc))
+                    rec.proc = proc
+                stderr_task = asyncio.create_task(self._drain_stderr(rec, proc.stderr))
+                if rec.stop_reason == "application_shutdown" or not self._running:
+                    rec.starting = False
+                    if video_write_fd is not None:
+                        os.close(video_write_fd)
+                        video_write_fd = None
+                    if audio_pipe is not None:
+                        audio_pipe[1].close()
+                    await self._terminate_process(rec)
+                    if proc.returncode is not None:
+                        rec.last_exit_code = proc.returncode
+                    rec.bundle.preserve_temporary_components()
+                    rec.bundle.refresh_manifest(
+                        state="interrupted",
+                        reason="application_shutdown",
+                    )
+                    return
+                if rec.finalize_requested or self._recordings.get(key) is not rec:
+                    rec.starting = False
+                    if video_write_fd is not None:
+                        os.close(video_write_fd)
+                        video_write_fd = None
+                    if audio_pipe is not None:
+                        audio_pipe[1].close()
+                    await self._terminate_process(rec)
+                    if proc.returncode is not None:
+                        rec.last_exit_code = proc.returncode
+                    if rec.finalize_requested:
+                        await self._finalize_bundle(
+                            rec,
+                            incomplete=True,
+                            reason="episode_finalizing_during_startup",
+                        )
+                    else:
+                        await self._finalize_from_retry_task(
+                            rec,
+                            reason=rec.finalize_reason,
+                        )
+                    return
                 if feed is not None:
+                    if video_write_fd is None:
+                        raise RuntimeError("Piped recording has no video input pipe")
+                    writer_fd = video_write_fd
+                    video_write_fd = None
+                    proc.stdin = await self._writer_from_fd(writer_fd)
                     if not rec.audio_codec_hint:
                         self._start_handler(rec, feed, audio=False)
                     await feed.attach(proc, audio_pipe[1] if audio_pipe is not None else None)
                 wait_task = asyncio.create_task(proc.wait())
+                rec.starting = False
                 while not wait_task.done():
                     if self._capture_lease_expired(rec):
                         rec.finalize_reason = "capture_lease_expired"
                         self._signal_process(rec)
                         try:
-                            await asyncio.wait_for(asyncio.shield(wait_task), timeout=5)
+                            await asyncio.wait_for(
+                                asyncio.shield(wait_task),
+                                timeout=PROCESS_STOP_TIMEOUT_SECONDS,
+                            )
                         except asyncio.TimeoutError:
-                            proc.kill()
+                            try:
+                                proc.kill()
+                            except ProcessLookupError:
+                                pass
                             await wait_task
                         break
                     await asyncio.wait({wait_task}, timeout=1)
-                    await asyncio.to_thread(rec.bundle.refresh_manifest, state="recording")
-                    current_segments = rec.bundle.next_segment_index()
-                    if current_segments > observed_segments:
-                        observed_segments = current_segments
-                        last_progress = asyncio.get_running_loop().time()
-                        self._observe_progress(rec)
-                    elif (
+                    now = asyncio.get_running_loop().time()
+                    self._observe_progress(rec)
+                    if rec.fragment_count > observed_segments:
+                        observed_segments = rec.fragment_count
+                        last_progress = now
+                    if now - last_manifest_refresh >= ACTIVE_MANIFEST_REFRESH_SECONDS:
+                        await asyncio.to_thread(rec.bundle.refresh_manifest, state="recording")
+                        last_manifest_refresh = asyncio.get_running_loop().time()
+                    if (
                         not wait_task.done()
                         and not stall_signaled
-                        and asyncio.get_running_loop().time() - last_progress > self._stall_seconds
+                        and now - last_progress > self._stall_seconds
                     ):
                         stall_signaled = True
                         rec.state = "stalled"
@@ -1353,9 +1646,25 @@ class RecordingEngine:
                     await stderr_task
                     stderr_task = None
             except asyncio.CancelledError:
+                rec.starting = False
                 await self._terminate_process(rec)
                 if wait_task:
                     await asyncio.gather(wait_task, return_exceptions=True)
+                if rec.proc is not None and rec.proc.returncode is not None:
+                    rec.last_exit_code = rec.proc.returncode
+                if rec.stop_reason == "application_shutdown" or (
+                    not self._running and not rec.finalize_requested
+                ):
+                    rec.bundle.preserve_temporary_components()
+                    rec.bundle.refresh_manifest(state="interrupted", reason="application_shutdown")
+                    raise
+                if rec.finalize_requested:
+                    await self._finalize_bundle(
+                        rec,
+                        incomplete=True,
+                        reason="episode_finalizing_during_startup",
+                    )
+                    return
                 rec.bundle.preserve_temporary_components()
                 rec.bundle.refresh_manifest(state="interrupted", reason="recording_task_cancelled")
                 raise
@@ -1369,9 +1678,27 @@ class RecordingEngine:
                     rec.device_id,
                 )
             finally:
+                rec.starting = False
                 if rec.proc is not None and rec.proc.returncode is not None:
                     rec.last_exit_code = rec.proc.returncode
+                stdin = getattr(rec.proc, "stdin", None) if rec.proc is not None else None
+                if stdin is not None:
+                    try:
+                        stdin.close()
+                    except Exception:
+                        pass
                 rec.proc = None
+                for fd in (audio_read_fd, video_read_fd, video_write_fd):
+                    if fd is not None:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                if audio_pipe is not None:
+                    try:
+                        audio_pipe[1].close()
+                    except Exception:
+                        pass
                 if stderr_task is not None:
                     # Always drain and join stderr: an unconsumed child pipe can block
                     # FFmpeg; only a bounded, credential-redacted tail is retained.
@@ -1380,6 +1707,11 @@ class RecordingEngine:
                     except asyncio.TimeoutError:
                         stderr_task.cancel()
                         await asyncio.gather(stderr_task, return_exceptions=True)
+                    except Exception:
+                        pass
+                elif proc is not None and proc.stderr is not None:
+                    try:
+                        proc.stderr.close()
                     except Exception:
                         pass
 
@@ -1413,7 +1745,8 @@ class RecordingEngine:
                 await self._finalize_from_retry_task(rec)
                 return
 
-            segments_after = rec.bundle.next_segment_index()
+            self._observe_progress(rec)
+            segments_after = rec.fragment_count
             retry_attempt = 0 if segments_after > segments_before else retry_attempt + 1
             rec.last_exit_code = returncode
             rec.reconnect_count += 1
@@ -1597,6 +1930,10 @@ class RecordingEngine:
     ) -> None:
         if rec.published:
             return
+        if incomplete:
+            rec.bundle.mark_incomplete(reason)
+        incomplete = incomplete or rec.bundle.state.incomplete
+        reason = rec.bundle.state.incomplete_reason or reason
         ended_at = datetime.now(tz=timezone.utc)
         manifest = rec.bundle.prepare_finalize(
             ended_at=ended_at,

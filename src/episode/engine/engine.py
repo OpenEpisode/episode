@@ -62,6 +62,7 @@ class EpisodeEngine:
         quiescent_grace_seconds: int = DEFAULT_QUIESCENT_GRACE_SECONDS,
         capture_profiles: CaptureProfileService | None = None,
         finalizer: EpisodeFinalizer | None = None,
+        lifecycle_lock: asyncio.Lock | None = None,
     ):
         self._repo = repo
         self._bus = bus
@@ -70,7 +71,7 @@ class EpisodeEngine:
         self._capture_profiles = capture_profiles or CaptureProfileService(repo)
         self._running = False
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-        self._lifecycle_lock = asyncio.Lock()
+        self._lifecycle_lock = lifecycle_lock or asyncio.Lock()
         self._timeout_task: asyncio.Task | None = None
         self._finalizer = finalizer
         self._defer_finalization = False

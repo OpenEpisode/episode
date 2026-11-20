@@ -134,6 +134,54 @@ def test_uncommitted_temporary_components_are_preserved_as_incomplete(tmp_path):
     assert not temporary_segment.exists()
 
 
+def test_preserved_partial_components_stay_incomplete_after_retry_and_reload(tmp_path):
+    bundle = _bundle(tmp_path)
+    _write_playable_bundle(bundle)
+    temporary_segment = bundle.root / "segments" / "segment-000002.m4s.tmp"
+    temporary_segment.write_bytes(b"partial fragment")
+
+    first = bundle.prepare_finalize(ended_at=datetime(2026, 8, 27, 12, 0, 8, tzinfo=timezone.utc))
+    assert first["state"] == "incomplete"
+    assert bundle.state.incomplete is True
+    assert bundle.capture_state_path.exists()
+
+    reloaded = HLSRecordingBundle.load(bundle.capture_state_path)
+    second = reloaded.prepare_finalize(
+        ended_at=datetime(2026, 8, 27, 12, 0, 9, tzinfo=timezone.utc)
+    )
+
+    assert second["state"] == "incomplete"
+    assert second["playlist_validation"]["temporary_components_preserved"] is True
+    assert second["playlist_validation"]["preserved_temporary_component_count"] == 1
+    assert second["components"] == first["components"]
+
+
+def test_incomplete_marker_write_failure_is_retryable(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    original_write = bundle.write_capture_state
+    attempts = 0
+
+    def fail_once():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("capture state unavailable")
+        original_write()
+
+    monkeypatch.setattr(bundle, "write_capture_state", fail_once)
+    assert json.loads(bundle.capture_state_path.read_text())["incomplete"] is False
+    with pytest.raises(OSError, match="capture state unavailable"):
+        bundle.mark_incomplete("partial_output")
+
+    assert bundle.state.incomplete is True
+    assert json.loads(bundle.capture_state_path.read_text())["incomplete"] is False
+
+    bundle.mark_incomplete("partial_output")
+
+    assert json.loads(bundle.capture_state_path.read_text())["incomplete"] is True
+    assert HLSRecordingBundle.load(bundle.capture_state_path).state.incomplete is True
+
+
 def test_component_manifest_inventories_immutable_hls_fragments(tmp_path):
     bundle = _bundle(tmp_path)
     _write_playable_bundle(bundle)

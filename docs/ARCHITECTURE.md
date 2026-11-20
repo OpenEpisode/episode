@@ -538,6 +538,13 @@ the same bundle with a playlist discontinuity when its Episode is still active;
 otherwise it finalizes the bundle. Legacy `.mp4.part` files retain their
 compatibility recovery path.
 
+Each FFmpeg child has dedicated workers for its blocking process wait and stderr
+drain. These lifetime operations do not occupy the shared asyncio executor, so a
+live capture cannot starve another capture's cleanup or ordinary filesystem jobs.
+An incomplete finalization decision is retained in the capture state before
+publication, and preserved partial components remain incomplete across retries
+and recovery.
+
 The recording action copies the camera video bitstream and transcodes audio to
 AAC when present; it does not silently transcode video Evidence for browser
 compatibility. Video normally arrives over a camera URL, but a plugin may instead

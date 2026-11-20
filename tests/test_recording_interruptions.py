@@ -121,6 +121,7 @@ async def test_repeated_ffmpeg_failures_reconnect_into_one_episode_recording(
 
     class FailedProcess:
         returncode = 1
+        stderr = None
 
         def terminate(self):
             return None
@@ -134,6 +135,7 @@ async def test_repeated_ffmpeg_failures_reconnect_into_one_episode_recording(
     class RecoveringProcess:
         def __init__(self):
             self.returncode = None
+            self.stderr = None
 
         def terminate(self):
             self.returncode = -15
@@ -147,8 +149,8 @@ async def test_repeated_ffmpeg_failures_reconnect_into_one_episode_recording(
             await recovery_stopped.wait()
             return self.returncode
 
-    async def start_ffmpeg(*args, **kwargs):
-        attempts.append(tuple(str(arg) for arg in args))
+    def start_ffmpeg(command, **kwargs):
+        attempts.append(tuple(str(arg) for arg in command))
         if len(attempts) <= 5:
             return FailedProcess()
 
@@ -168,7 +170,7 @@ async def test_repeated_ffmpeg_failures_reconnect_into_one_episode_recording(
     async def persist_evidence(message):
         await repository.create_evidence(Evidence(**message.data["evidence"]))
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", start_ffmpeg)
+    monkeypatch.setattr(recorder, "_spawn_ffmpeg", start_ffmpeg)
     bus.subscribe("evidence.received", persist_evidence)
     try:
         await recorder.start()
@@ -258,6 +260,7 @@ async def test_retry_backoff_is_interruptible_when_camera_is_offline(tmp_path, m
 
     class FailedProcess:
         returncode = 1
+        stderr = None
 
         def terminate(self):
             return None
@@ -268,7 +271,7 @@ async def test_retry_backoff_is_interruptible_when_camera_is_offline(tmp_path, m
         async def wait(self):
             return self.returncode
 
-    async def start_ffmpeg(*args, **kwargs):
+    def start_ffmpeg(*args, **kwargs):
         nonlocal attempts
         attempts += 1
         return FailedProcess()
@@ -280,7 +283,7 @@ async def test_retry_backoff_is_interruptible_when_camera_is_offline(tmp_path, m
             raise RuntimeError("temporary Evidence persistence failure")
         await repository.create_evidence(Evidence(**message.data["evidence"]))
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", start_ffmpeg)
+    monkeypatch.setattr(recorder, "_spawn_ffmpeg", start_ffmpeg)
     bus.subscribe("evidence.received", persist_evidence)
     try:
         await recorder.start()
@@ -445,6 +448,7 @@ async def test_reconnect_wait_is_capped_by_remaining_capture_lease(tmp_path, mon
 
     class FailedProcess:
         returncode = 1
+        stderr = None
 
         def terminate(self):
             return None
@@ -455,7 +459,7 @@ async def test_reconnect_wait_is_capped_by_remaining_capture_lease(tmp_path, mon
         async def wait(self):
             return self.returncode
 
-    async def start_ffmpeg(*_args, **_kwargs):
+    def start_ffmpeg(*_args, **_kwargs):
         return FailedProcess()
 
     repository = RepositoryStub()
@@ -465,13 +469,13 @@ async def test_reconnect_wait_is_capped_by_remaining_capture_lease(tmp_path, mon
         publication_attempts.append(evidence)
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", start_ffmpeg)
     recorder = RecordingEngine(
         repository,
         EventBus(),
         str(tmp_path),
         evidence_sink=fail_publication,
     )
+    monkeypatch.setattr(recorder, "_spawn_ffmpeg", start_ffmpeg)
     recorder._running = True
     recorder._retry_initial_seconds = 10
     recorder._retry_max_seconds = 10

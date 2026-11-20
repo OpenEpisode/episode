@@ -48,12 +48,14 @@ class Application:
         self._lifecycle = Lifecycle()
         self._bus = EventBus()
         self._repo = Repository(config)
+        self._episode_lifecycle_lock = asyncio.Lock()
         self._capture_profiles = CaptureProfileService(self._repo)
         self._engine = EpisodeEngine(
             self._repo,
             self._bus,
             config.episode_timeout,
             capture_profiles=self._capture_profiles,
+            lifecycle_lock=self._episode_lifecycle_lock,
         )
         self._ingress_router = IngressRouter()
         self._ingestion = IngestionService(
@@ -72,6 +74,7 @@ class Application:
             fragment_seconds=config.actions.recording.fragment_seconds,
             episode_timeout_seconds=config.episode_timeout,
             media=self._media,
+            lifecycle_lock=self._episode_lifecycle_lock,
         )
         self._engine.set_finalizer(self._recorder.finalize_episode)
         self._recorder.set_evidence_sink(self._engine.ingest_recording_evidence)

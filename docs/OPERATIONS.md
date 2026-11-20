@@ -290,6 +290,13 @@ the camera username and password, because FFmpeg prints the full stream URL,
 credentials included, whenever it cannot open it. Host and port are kept so the
 failing camera is still identifiable.
 
+FFmpeg is launched with a synchronous local process-creation call so the recorder
+owns its process handle before yielding to Episode finalization. Process creation
+is normally brief, but an operating-system stall inside `Popen` has no hard
+application-level deadline. This is separate from the RTSP socket timeout above.
+After the handle is assigned, recorder shutdown waits up to five seconds for the
+child to exit before killing it.
+
 ## Shutdown and recovery
 
 During shutdown, Episode signals all active FFmpeg processes together and
@@ -317,6 +324,38 @@ critical path.
 
 Use **System → Recordings** to inspect active, reconnecting, stalled, or
 interrupted captures.
+
+### Active manifest freshness
+
+The `manifest.json` beside an active HLS playlist is a sidecar inventory, not
+the live progress source. Episode refreshes it at most once every 60 seconds
+while capture is running. This is a refresh cadence, not a strict maximum-age
+guarantee: startup or reconnect delays and slow filesystem scans can extend how
+old the sidecar is. Finalization rebuilds the inventory from the complete
+bundle; use the active recording view or playlist for current progress rather
+than treating a temporarily absent sidecar entry as a missing fragment.
+
+### Recover an interrupted capture safely
+
+1. Check the Episode state and **System → Recordings**. An `ACTIVE` or
+   `QUIESCENT` Episode can resume the same HLS workspace after a restart, with
+   an explicit playlist discontinuity. A `FINALIZING` Episode retries bundle
+   finalization; do not start a second recording or move its workspace.
+2. Let the Episode finish its lifecycle and inspect the resulting Evidence.
+   Episode marks output incomplete when the playlist or its referenced
+   components are invalid, or temporary media could not be committed. Incomplete
+   components are preserved and inventoried for diagnosis; they are not
+   successful complete recordings.
+3. If the Episode remains `FINALIZING` or the recording stays interrupted,
+   preserve the entire `data/episodes/<episode-id>/recordings/` directory and
+   relevant logs. Check writable storage and database health. If a service
+   restart is needed, use the existing data volume and run only one Episode
+   instance against it; startup resumes mutable workspaces or retries
+   finalization. Do not hand-edit `index.m3u8` or `manifest.json`, delete
+   fragments, or remove the workspace as a repair step.
+4. Treat an `incomplete_recording` on a `CLOSED` Episode as preserved partial
+   output, not as media that will be appended later. Closed Episodes are sealed;
+   copy any needed components before separate, deliberate cleanup.
 
 ## Data and portability
 

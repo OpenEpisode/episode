@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -936,6 +938,143 @@ async def test_a_handler_blocked_in_push_is_a_stalled_source_not_a_failed_plugin
     await harness.close()
 
 
+@pytest.mark.asyncio
+async def test_plugin_video_pipe_setup_failure_reaps_child_and_closes_descriptors(
+    tmp_path, monkeypatch
+):
+    """A failed video-pipe handoff must reap the already-owned child and close both pipe ends."""
+    if not Path("/proc/self/fd").is_dir():
+        pytest.skip("requires /proc to verify pipe descriptor cleanup")
+
+    async def handler(push) -> None:
+        await push(b"\x00\x00\x00\x01frame")
+        await asyncio.Event().wait()
+
+    harness = Harness(tmp_path)
+    original_pipe = os.pipe
+    created_pipe_targets: set[str] = set()
+
+    def track_pipe():
+        read_fd, write_fd = original_pipe()
+        created_pipe_targets.add(os.readlink(f"/proc/self/fd/{read_fd}"))
+        return read_fd, write_fd
+
+    monkeypatch.setattr(os, "pipe", track_pipe)
+    original_spawn = harness.recorder._spawn_ffmpeg
+    spawned = []
+    setup_failed = asyncio.Event()
+    stderr_targets = []
+
+    def spawn_child(_command, **kwargs):
+        process = original_spawn([sys.executable, "-c", "import time; time.sleep(60)"], **kwargs)
+        spawned.append(process)
+        stderr_targets.append(os.readlink(f"/proc/self/fd/{process.stderr.fileno()}"))
+        return process
+
+    async def fail_connect(_protocol_factory, _pipe):
+        setup_failed.set()
+        raise OSError("video pipe setup failed")
+
+    monkeypatch.setattr(harness.recorder, "_spawn_ffmpeg", spawn_child)
+    await harness.start(handler)
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "connect_write_pipe", fail_connect)
+    recording = await harness.begin()
+
+    try:
+        await asyncio.wait_for(setup_failed.wait(), timeout=3)
+        assert spawned
+        process = spawned[0]
+        await harness.await_recording(recording, timeout=5)
+        assert process.returncode is not None
+        with pytest.raises(ProcessLookupError):
+            os.kill(process.pid, 0)
+        assert process.stderr.closed
+        assert (await harness.evidence()).evidence_type == "incomplete_recording"
+    finally:
+        await harness.close()
+
+    open_pipe_targets = set()
+    for fd_path in Path("/proc/self/fd").iterdir():
+        try:
+            target = os.readlink(fd_path)
+        except OSError:
+            continue
+        if target.startswith("pipe:["):
+            open_pipe_targets.add(target)
+    assert created_pipe_targets.isdisjoint(open_pipe_targets)
+    assert set(stderr_targets).isdisjoint(open_pipe_targets)
+
+
+@pytest.mark.asyncio
+async def test_plugin_audio_pipe_setup_failure_closes_descriptors_without_child(
+    tmp_path, monkeypatch
+):
+    """Audio negotiation failures release the pipe and handler before FFmpeg is spawned."""
+    if not Path("/proc/self/fd").is_dir():
+        pytest.skip("requires /proc to verify pipe descriptor cleanup")
+
+    handler_stopped = asyncio.Event()
+
+    async def handler(push, audio=None) -> None:
+        try:
+            await push(b"\x00\x00\x00\x01frame")
+            assert audio is not None
+            await audio(b"audio")
+            await asyncio.Event().wait()
+        finally:
+            handler_stopped.set()
+
+    harness = Harness(tmp_path)
+    original_pipe = os.pipe
+    created_pipe_targets: set[str] = set()
+
+    def track_pipe():
+        read_fd, write_fd = original_pipe()
+        created_pipe_targets.add(os.readlink(f"/proc/self/fd/{read_fd}"))
+        return read_fd, write_fd
+
+    monkeypatch.setattr(os, "pipe", track_pipe)
+    spawned = []
+    setup_failed = asyncio.Event()
+
+    def should_not_spawn(*_args, **_kwargs):
+        spawned.append(True)
+        raise AssertionError("audio setup must fail before spawning FFmpeg")
+
+    async def fail_connect(_protocol_factory, _pipe):
+        setup_failed.set()
+        raise OSError("audio pipe setup failed")
+
+    monkeypatch.setattr(harness.recorder, "_spawn_ffmpeg", should_not_spawn)
+    await harness.start(
+        handler,
+        audio_codec_hint="aac",
+    )
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "connect_write_pipe", fail_connect)
+    recording = await harness.begin()
+
+    try:
+        await asyncio.wait_for(setup_failed.wait(), timeout=3)
+        await harness.await_recording(recording, timeout=5)
+        assert spawned == []
+        assert handler_stopped.is_set()
+        assert (await harness.evidence()).evidence_type == "incomplete_recording"
+    finally:
+        await harness.close()
+
+    open_pipe_targets = set()
+    for fd_path in Path("/proc/self/fd").iterdir():
+        try:
+            target = os.readlink(fd_path)
+        except OSError:
+            continue
+        if target.startswith("pipe:["):
+            open_pipe_targets.add(target)
+    assert created_pipe_targets.isdisjoint(open_pipe_targets)
+
+
 @needs_ffmpeg
 @pytest.mark.asyncio
 async def test_corrupt_handler_bytes_are_reported_not_silently_recorded(tmp_path):
@@ -1093,28 +1232,57 @@ def _stream_codecs(path: Path) -> list[str]:
 
 @needs_ffmpeg
 @pytest.mark.asyncio
-async def test_native_audio_is_recorded_in_the_same_bundle_as_the_video(tmp_path):
+async def test_native_audio_is_recorded_in_the_same_bundle_and_pipes_are_released(
+    tmp_path, monkeypatch
+):
     """A source that sends AAC alongside its picture records both, with the audio untouched."""
+    if not Path("/proc/self/fd").is_dir():
+        pytest.skip("requires /proc to verify pipe descriptor cleanup")
+
     harness = Harness(tmp_path)
-    await harness.start(_live_av_feed(), audio_codec_hint="aac")
-    recording = await harness.begin()
-    await harness.await_feed(recording)
-    await harness.recorder._stop_recording(recording, reason="test_done")
+    original_pipe = os.pipe
+    created_pipe_targets = set()
 
-    assert recording.audio_recorded is True
-    assert (recording.bundle.root / "init.mp4").stat().st_size > 0
+    def track_pipe():
+        read_fd, write_fd = original_pipe()
+        created_pipe_targets.add(os.readlink(f"/proc/self/fd/{read_fd}"))
+        return read_fd, write_fd
 
-    joined = tmp_path / "joined.mp4"
-    _join(recording.bundle, joined)
-    assert sorted(_stream_codecs(joined)) == ["aac", "hevc"]
-    assert _probe(joined, "stream=sample_rate").split() == ["16000"]
-    assert float(_probe(joined, "format=duration")) > 3.0
+    monkeypatch.setattr(os, "pipe", track_pipe)
+    closed = False
+    try:
+        await harness.start(_live_av_feed(), audio_codec_hint="aac")
+        recording = await harness.begin()
+        await harness.await_feed(recording)
+        await harness.recorder._stop_recording(recording, reason="test_done")
 
-    evidence = await harness.evidence()
-    assert evidence.evidence_type == "recording"
-    assert evidence.metadata["fragment_count"] >= 2
+        assert recording.audio_recorded is True
+        assert (recording.bundle.root / "init.mp4").stat().st_size > 0
 
-    await harness.close()
+        joined = tmp_path / "joined.mp4"
+        _join(recording.bundle, joined)
+        assert sorted(_stream_codecs(joined)) == ["aac", "hevc"]
+        assert _probe(joined, "stream=sample_rate").split() == ["16000"]
+        assert float(_probe(joined, "format=duration")) > 3.0
+
+        evidence = await harness.evidence()
+        assert evidence.evidence_type == "recording"
+        assert evidence.metadata["fragment_count"] >= 2
+
+        await harness.close()
+        closed = True
+        open_pipe_targets = set()
+        for fd_path in Path("/proc/self/fd").iterdir():
+            try:
+                target = os.readlink(fd_path)
+            except OSError:
+                continue
+            if target.startswith("pipe:["):
+                open_pipe_targets.add(target)
+        assert created_pipe_targets.isdisjoint(open_pipe_targets)
+    finally:
+        if not closed:
+            await harness.close()
 
 
 @needs_ffmpeg

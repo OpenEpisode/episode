@@ -5,7 +5,7 @@ import json
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -56,6 +56,8 @@ class HLSCaptureState:
     session_id: str
     started_at: datetime
     video_source_id: str = ""
+    incomplete: bool = False
+    incomplete_reason: str | None = None
 
 
 class HLSRecordingBundle:
@@ -104,6 +106,12 @@ class HLSRecordingBundle:
             session_id=raw["session_id"],
             started_at=started_at,
             video_source_id=str(raw.get("video_source_id", "")),
+            incomplete=raw.get("incomplete") is True,
+            incomplete_reason=(
+                raw.get("incomplete_reason")
+                if isinstance(raw.get("incomplete_reason"), str)
+                else None
+            ),
         )
         return cls(capture_state_path.parent, state)
 
@@ -138,8 +146,32 @@ class HLSRecordingBundle:
                 "session_id": self.state.session_id,
                 "started_at": _utc_iso(self.state.started_at),
                 "video_source_id": self.state.video_source_id,
+                "incomplete": self.state.incomplete,
+                **(
+                    {"incomplete_reason": self.state.incomplete_reason}
+                    if self.state.incomplete_reason
+                    else {}
+                ),
             },
         )
+
+    def mark_incomplete(self, reason: str | None = None) -> None:
+        """Persist that this capture must never be promoted to complete on retry."""
+        incomplete_reason = self.state.incomplete_reason or reason
+        self.state = replace(
+            self.state,
+            incomplete=True,
+            incomplete_reason=incomplete_reason,
+        )
+        # Always retry the write. A previous attempt may have updated the in-memory
+        # state before the atomic capture-state write failed.
+        self.write_capture_state()
+
+    def _preserved_incomplete_components(self) -> list[Path]:
+        incomplete = self.root / "incomplete"
+        if not incomplete.is_dir():
+            return []
+        return sorted(path for path in incomplete.rglob("*") if path.is_file())
 
     def next_segment_index(self) -> int:
         indexes = []
@@ -473,22 +505,28 @@ class HLSRecordingBundle:
         reason: str | None = None,
         incomplete: bool = False,
     ) -> dict[str, Any]:
-        preserved_temporary = self.preserve_temporary_components()
+        self.preserve_temporary_components()
         validation = self.validate_playlist()
-        validation["preserved_temporary_component_count"] = len(preserved_temporary)
-        validation["playlist_temporary_preserved"] = any(
-            Path(path).name.startswith(f"{PLAYLIST_NAME}.tmp") for path in preserved_temporary
-        )
-        validation["temporary_components_preserved"] = bool(preserved_temporary)
         if validation["valid"]:
             if not self.ensure_endlist():
-                preserved_temporary.extend(self.preserve_temporary_components())
+                self.preserve_temporary_components()
             validation = self.validate_playlist(require_endlist=True)
-            validation["preserved_temporary_component_count"] = len(preserved_temporary)
-            validation["playlist_temporary_preserved"] = any(
-                Path(path).name.startswith(f"{PLAYLIST_NAME}.tmp") for path in preserved_temporary
-            )
-            validation["temporary_components_preserved"] = bool(preserved_temporary)
+        preserved_components = self._preserved_incomplete_components()
+        preserved_incomplete = bool(preserved_components)
+        invalid_playlist = validation["valid"] is not True
+        incomplete = incomplete or self.state.incomplete or preserved_incomplete or invalid_playlist
+        if preserved_incomplete:
+            reason = reason or "incomplete_components_preserved"
+        if invalid_playlist:
+            reason = reason or "invalid_hls_playlist"
+        if incomplete:
+            self.mark_incomplete(self.state.incomplete_reason or reason)
+            reason = self.state.incomplete_reason or reason
+        validation["preserved_temporary_component_count"] = len(preserved_components)
+        validation["playlist_temporary_preserved"] = any(
+            path.name.startswith(f"{PLAYLIST_NAME}.tmp") for path in preserved_components
+        )
+        validation["temporary_components_preserved"] = preserved_incomplete
 
         output_complete = (
             validation["valid"]

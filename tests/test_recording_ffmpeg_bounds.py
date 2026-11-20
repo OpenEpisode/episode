@@ -14,6 +14,7 @@ kept tail must be redacted before it reaches a log line or a status field.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import shutil
 import time
@@ -239,17 +240,8 @@ def test_stderr_tail_is_bounded_while_reading(recorder_repo, bus, config, tmp_pa
     """The reader cannot grow without limit on a chatty ffmpeg, only the tail survives."""
     recording = _bundle_recording(tmp_path)
 
-    class NoisyStream:
-        def __init__(self) -> None:
-            self.lines = [b"x" * 500 + b"\n"] * 200
-
-        async def readline(self):
-            return self.lines.pop(0) if self.lines else b""
-
-    class NoisyProcess:
-        stderr = NoisyStream()
-
-    asyncio.run(RecordingEngine._drain_stderr(recording, NoisyProcess()))
+    stream = io.BytesIO((b"x" * 500 + b"\n") * 200)
+    asyncio.run(RecordingEngine._drain_stderr(recording, stream))
     assert len(recording.ffmpeg_stderr) <= FFMPEG_STDERR_TAIL_CHARS
 
 
@@ -329,13 +321,13 @@ async def test_a_child_without_stderr_keeps_a_plain_reconnect_reason(
         async def wait(self):
             return self.returncode
 
-    async def failed_ffmpeg(*args, **kwargs):
+    def failed_ffmpeg(*args, **kwargs):
         return SilentFailedProcess()
 
     _wire_evidence(recorder_repo, bus)
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", failed_ffmpeg)
     await _episode(recorder_repo, "episode-quiet")
     recorder = RecordingEngine(recorder_repo, bus, config.data_dir)
+    monkeypatch.setattr(recorder, "_spawn_ffmpeg", failed_ffmpeg)
     await recorder.start()
     await recorder._start_recording("episode-quiet", _video_device("camera-x"), "rtsp://cam/stream")
     recording = recorder._recordings[("episode-quiet", "camera-x")]
